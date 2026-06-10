@@ -84,6 +84,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
         app.diff
             .iter()
             .skip(app.diff_scroll)
+            .take(area.height.saturating_sub(2) as usize)
             .map(|dl| {
                 let bg = match dl.kind {
                     LineKind::Add => Some(ADD_BG),
@@ -154,6 +155,19 @@ mod tests {
         let dump: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains("a.rs"));
         assert!(dump.contains("[ ]"));
+    }
+
+    #[test]
+    fn scroll_offset_hides_earlier_lines() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = app_with_diff();
+        // diff is [Hunk "@@ -1 +1 @@", Add "let x = 1;"]; scroll past the hunk header.
+        app.diff_scroll = 1;
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(!dump.contains("@@ -1 +1 @@"));
+        assert!(dump.contains("let x = 1;"));
     }
 
     #[test]

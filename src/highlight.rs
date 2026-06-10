@@ -28,6 +28,7 @@ fn assets() -> &'static Assets {
 /// Convert a syntect RGBA colour to a ratatui Color.
 /// Alpha == 0 means "no colour" in syntect conventions.
 fn syntect_color_to_ratatui(c: syntect::highlighting::Color) -> Option<Color> {
+    // syntect uses alpha == 0 as the "unset / no color" sentinel, not transparency.
     if c.a > 0 {
         Some(Color::Rgb(c.r, c.g, c.b))
     } else {
