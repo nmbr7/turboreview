@@ -13,7 +13,7 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::Terminal;
 
-use turboreview::app::{App, Mode, Pane};
+use turboreview::app::{App, Mode, Pane, Section};
 use turboreview::git::Repo;
 use turboreview::{review, ui};
 
@@ -22,8 +22,9 @@ fn main() -> Result<()> {
     let repo = Repo::discover(&PathBuf::from(&repo_arg))?;
     let root = repo.workdir()?;
 
-    let files = repo.changed_files(Mode::Unstaged)?;
-    let mut app = App::new(files, root.clone());
+    let unstaged = repo.changed_files(Mode::Unstaged)?;
+    let staged = repo.changed_files(Mode::Staged)?;
+    let mut app = App::new(unstaged, staged, root.clone());
     app.reviewed = review::load(&root)?;
     refresh_diff(&repo, &mut app);
 
@@ -34,10 +35,14 @@ fn main() -> Result<()> {
 }
 
 fn refresh_diff(repo: &Repo, app: &mut App) {
-    match app.selected_path() {
-        Some(path) => {
+    match (app.selected_path(), app.selected_section()) {
+        (Some(path), Some(section)) => {
             let path = path.clone();
-            match repo.diff_for(&path, app.mode) {
+            let mode = match section {
+                Section::Unstaged => Mode::Unstaged,
+                Section::Staged => Mode::Staged,
+            };
+            match repo.diff_for(&path, mode) {
                 Ok(lines) => {
                     app.status_msg = None;
                     app.set_diff(lines);
@@ -48,18 +53,28 @@ fn refresh_diff(repo: &Repo, app: &mut App) {
                 }
             }
         }
-        None => app.set_diff(Vec::new()),
+        _ => app.set_diff(Vec::new()),
     }
 }
 
-fn reload_files(repo: &Repo, app: &mut App) {
-    match repo.changed_files(app.mode) {
-        Ok(files) => {
-            app.files = files;
-            app.rebuild_rows(); // rebuilds rows and clamps selected
+fn reload_all(repo: &Repo, app: &mut App) {
+    let unstaged = match repo.changed_files(Mode::Unstaged) {
+        Ok(f) => f,
+        Err(e) => {
+            app.status_msg = Some(format!("list error: {e}"));
+            return;
         }
-        Err(e) => app.status_msg = Some(format!("list error: {e}")),
-    }
+    };
+    let staged = match repo.changed_files(Mode::Staged) {
+        Ok(f) => f,
+        Err(e) => {
+            app.status_msg = Some(format!("list error: {e}"));
+            return;
+        }
+    };
+    app.unstaged = unstaged;
+    app.staged = staged;
+    app.rebuild_rows();
     refresh_diff(repo, app);
 }
 
@@ -94,8 +109,27 @@ fn run(
                     (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(()),
                     (KeyCode::Tab, _) => app.toggle_focus(),
                     (KeyCode::Char('s'), _) => {
-                        app.toggle_mode();
-                        reload_files(repo, app);
+                        if app.focus == Pane::Files {
+                            if let (Some(path), Some(section)) =
+                                (app.selected_path().cloned(), app.selected_section())
+                            {
+                                let result = match section {
+                                    Section::Unstaged => repo.stage_file(&path),
+                                    Section::Staged => repo.unstage_file(&path),
+                                };
+                                match result {
+                                    Ok(()) => {
+                                        app.status_msg = None;
+                                        reload_all(repo, app);
+                                    }
+                                    Err(e) => {
+                                        app.status_msg = Some(format!("stage error: {e}"));
+                                    }
+                                }
+                            }
+                            // If a Header or Dir is selected, s does nothing
+                        }
+                        // s in Diff pane is deferred (does nothing this phase)
                     }
                     (KeyCode::Char(' '), _) => {
                         app.toggle_reviewed();
@@ -114,8 +148,6 @@ fn run(
                     (KeyCode::Enter, _) => {
                         if app.focus == Pane::Files {
                             app.toggle_collapse();
-                            // Only reload the diff if the selection now sits on a
-                            // file; collapsing a dir shouldn't wipe the visible diff.
                             if app.selected_path().is_some() {
                                 refresh_diff(repo, app);
                             }

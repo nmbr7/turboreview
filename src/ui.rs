@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, LineKind, Mode, Pane};
+use crate::app::{App, LineKind, Pane, Section};
 use crate::highlight::highlight_code;
 use crate::theme;
 use crate::tree::RowKind;
@@ -42,28 +42,37 @@ fn focused_border(app: &App, pane: Pane) -> Style {
 }
 
 fn render_files(frame: &mut Frame, app: &App, area: Rect) {
-    let mode = match app.mode {
-        Mode::Staged => "STAGED",
-        Mode::Unstaged => "UNSTAGED",
-    };
     let items: Vec<ListItem> = app
         .rows
         .iter()
         .map(|row| {
             let indent = "  ".repeat(row.depth);
             match &row.kind {
+                RowKind::Header { section, count } => {
+                    let label = match section {
+                        Section::Unstaged => format!("{}▌ Unstaged ({})", indent, count),
+                        Section::Staged => format!("{}▌ Staged ({})", indent, count),
+                    };
+                    let line = Line::from(Span::styled(
+                        label,
+                        Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                    ));
+                    ListItem::new(line)
+                }
                 RowKind::Dir { collapsed, .. } => {
                     let glyph = if *collapsed { "▸" } else { "▾" };
                     let text = format!("{}{} {}", indent, glyph, row.name);
                     ListItem::new(Line::from(text))
                 }
-                RowKind::File { file_index } => {
-                    let (mark, mark_style) = if app.is_reviewed(*file_index) {
+                RowKind::File { section, file_index } => {
+                    let files = app.section_files(*section);
+                    let file_path = &files[*file_index].path;
+                    let (mark, mark_style) = if app.is_reviewed_path(file_path) {
                         ("✓ ", Style::default().fg(theme::TICK))
                     } else {
                         ("○ ", Style::default().fg(theme::ACCENT_DIM))
                     };
-                    let icon = crate::icons::icon_for(&app.files[*file_index].path);
+                    let icon = crate::icons::icon_for(file_path);
                     let line = Line::from(vec![
                         Span::raw(indent),
                         Span::styled(mark, mark_style),
@@ -75,9 +84,9 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let title = if app.hide_reviewed {
-        format!(" Files [{}] (hiding reviewed) ", mode)
+        " Files (hiding reviewed) ".to_string()
     } else {
-        format!(" Files [{}] ", mode)
+        " Files ".to_string()
     };
     let list = List::new(items)
         .block(
@@ -157,7 +166,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let base = "Tab:focus  s:staged  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:fold  q:quit";
+    let base = "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:fold  q:quit";
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
         None => base.to_string(),
@@ -176,7 +185,7 @@ mod tests {
 
     fn app_with_diff() -> App {
         let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
-        let mut app = App::new(files, PathBuf::from("/repo"));
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.set_diff(vec![
             DiffLine { kind: LineKind::Hunk, text: "@@ -1 +1 @@".into(), old_lineno: None, new_lineno: None },
             DiffLine { kind: LineKind::Add, text: "let x = 1;".into(), old_lineno: None, new_lineno: Some(1) },
@@ -214,7 +223,7 @@ mod tests {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
-        let app = App::new(files, PathBuf::from("/repo"));
+        let app = App::new(files, vec![], PathBuf::from("/repo"));
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains("No changes"));
@@ -225,7 +234,7 @@ mod tests {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
-        let mut app = App::new(files, PathBuf::from("/repo"));
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.set_diff(vec![
             DiffLine { kind: LineKind::Context, text: "ABCDEFGHIJ".into(), old_lineno: Some(1), new_lineno: Some(1) },
         ]);
@@ -247,7 +256,7 @@ mod tests {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
-        let mut app = App::new(files, PathBuf::from("/repo"));
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.set_diff(vec![
             DiffLine { kind: LineKind::Context, text: "ctx".into(), old_lineno: Some(7), new_lineno: Some(7) },
             DiffLine { kind: LineKind::Add, text: "added".into(), old_lineno: None, new_lineno: Some(8) },
@@ -255,11 +264,9 @@ mod tests {
         ]);
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        // gutter line numbers must appear in the rendered buffer
         assert!(dump.contains('7'), "context line number 7 missing");
         assert!(dump.contains('8'), "add line number 8 missing");
         assert!(dump.contains('5'), "del line number 5 missing");
-        // code text must still appear
         assert!(dump.contains("ctx"), "context text missing");
         assert!(dump.contains("added"), "add text missing");
         assert!(dump.contains("removed"), "del text missing");
@@ -267,22 +274,18 @@ mod tests {
 
     #[test]
     fn tree_view_shows_dir_and_basenames() {
-        // App with src/main.rs and top.rs → should show "src" (dir row), "main.rs" (basename), "top.rs" (basename)
-        // After the tree-view change, the full path "src/main.rs" must NOT appear as a single token —
-        // instead "src" is a dir row and "main.rs" is a file row with just the basename.
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let files = vec![
             FileChange { path: PathBuf::from("src/main.rs"), status: Status::Modified },
             FileChange { path: PathBuf::from("top.rs"), status: Status::Modified },
         ];
-        let app = App::new(files, PathBuf::from("/repo"));
+        let app = App::new(files, vec![], PathBuf::from("/repo"));
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains("src"), "directory name 'src' missing from tree view");
         assert!(dump.contains("main.rs"), "file basename 'main.rs' missing from tree view");
         assert!(dump.contains("top.rs"), "file basename 'top.rs' missing from tree view");
-        // Full path "src/main.rs" should NOT appear as one token (tree renders basename only)
         assert!(!dump.contains("src/main.rs"), "full path 'src/main.rs' should not appear; tree view shows basenames");
     }
 
@@ -291,10 +294,41 @@ mod tests {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
-        let mut app = App::new(files, PathBuf::from("/repo"));
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        // select a.rs row (row 1) and review it
+        app.selected = 1;
         app.toggle_reviewed(); // review a.rs
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains("✓"));
+    }
+
+    #[test]
+    fn both_sections_headers_render_when_both_non_empty() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let unstaged = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let staged = vec![FileChange { path: PathBuf::from("b.rs"), status: Status::Added }];
+        let app = App::new(unstaged, staged, PathBuf::from("/repo"));
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains("Unstaged"), "Unstaged header missing");
+        assert!(dump.contains("Staged"), "Staged header missing");
+        assert!(dump.contains("a.rs"), "a.rs missing");
+        assert!(dump.contains("b.rs"), "b.rs missing");
+    }
+
+    #[test]
+    fn files_title_has_no_mode_label() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let app = App::new(files, vec![], PathBuf::from("/repo"));
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        // The block title should show " Files " but not the old [STAGED/UNSTAGED] mode string
+        assert!(dump.contains("Files"), "Files title missing");
+        assert!(!dump.contains("STAGED"), "[STAGED] mode label should be gone");
+        assert!(!dump.contains("UNSTAGED"), "[UNSTAGED] mode label should be gone");
     }
 }

@@ -1,9 +1,15 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::tree::{Row, RowKind};
 
 const MAX_HSCROLL: usize = 500;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Section {
+    Unstaged,
+    Staged,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -56,32 +62,32 @@ impl DiffLine {
 
 pub struct App {
     pub repo_root: PathBuf,
-    pub mode: Mode,
     pub focus: Pane,
-    pub files: Vec<FileChange>,
+    pub unstaged: Vec<FileChange>,
+    pub staged: Vec<FileChange>,
     pub selected: usize,
     pub diff: Vec<DiffLine>,
     pub diff_scroll: usize,
     pub diff_hscroll: usize,
     pub reviewed: HashSet<PathBuf>,
     pub status_msg: Option<String>,
-    pub collapsed: HashSet<PathBuf>,
+    pub collapsed: HashSet<(Section, PathBuf)>,
     pub rows: Vec<Row>,
     pub hide_reviewed: bool,
 }
 
 enum RowId {
-    File(std::path::PathBuf),
-    Dir(std::path::PathBuf),
+    File(Section, std::path::PathBuf),
+    Dir(Section, std::path::PathBuf),
 }
 
 impl App {
-    pub fn new(files: Vec<FileChange>, repo_root: PathBuf) -> Self {
+    pub fn new(unstaged: Vec<FileChange>, staged: Vec<FileChange>, repo_root: PathBuf) -> Self {
         let mut app = App {
             repo_root,
-            mode: Mode::Unstaged,
             focus: Pane::Files,
-            files,
+            unstaged,
+            staged,
             selected: 0,
             diff: Vec::new(),
             diff_scroll: 0,
@@ -100,7 +106,7 @@ impl App {
         let prev = self.selected_identity();
         let empty = HashSet::new();
         let hidden = if self.hide_reviewed { &self.reviewed } else { &empty };
-        self.rows = crate::tree::build_rows(&self.files, &self.collapsed, hidden);
+        self.rows = crate::tree::build_rows(&self.unstaged, &self.staged, &self.collapsed, hidden);
         self.selected = match prev.and_then(|id| self.find_row(&id)) {
             Some(i) => i,
             None => self.selected.min(self.rows.len().saturating_sub(1)),
@@ -110,19 +116,31 @@ impl App {
     fn selected_identity(&self) -> Option<RowId> {
         let row = self.rows.get(self.selected)?;
         match &row.kind {
-            crate::tree::RowKind::File { file_index } =>
-                Some(RowId::File(self.files[*file_index].path.clone())),
-            crate::tree::RowKind::Dir { path, .. } => Some(RowId::Dir(path.clone())),
+            RowKind::File { section, file_index } => {
+                let files = self.section_files(*section);
+                Some(RowId::File(*section, files[*file_index].path.clone()))
+            }
+            RowKind::Dir { section, path, .. } => Some(RowId::Dir(*section, path.clone())),
+            RowKind::Header { .. } => None,
         }
     }
 
     fn find_row(&self, id: &RowId) -> Option<usize> {
         self.rows.iter().position(|r| match (&r.kind, id) {
-            (crate::tree::RowKind::File { file_index }, RowId::File(p)) =>
-                &self.files[*file_index].path == p,
-            (crate::tree::RowKind::Dir { path, .. }, RowId::Dir(p)) => path == p,
+            (RowKind::File { section: rs, file_index }, RowId::File(s, p)) if rs == s => {
+                let files = self.section_files(*rs);
+                &files[*file_index].path == p
+            }
+            (RowKind::Dir { section: rs, path, .. }, RowId::Dir(s, p)) if rs == s => path == p,
             _ => false,
         })
+    }
+
+    pub fn section_files(&self, section: Section) -> &[FileChange] {
+        match section {
+            Section::Unstaged => &self.unstaged,
+            Section::Staged => &self.staged,
+        }
     }
 
     pub fn toggle_hide_reviewed(&mut self) {
@@ -132,16 +150,23 @@ impl App {
 
     pub fn selected_path(&self) -> Option<&PathBuf> {
         match self.rows.get(self.selected) {
-            Some(Row { kind: RowKind::File { file_index }, .. }) => {
-                self.files.get(*file_index).map(|f| &f.path)
+            Some(Row { kind: RowKind::File { section, file_index }, .. }) => {
+                self.section_files(*section).get(*file_index).map(|f| &f.path)
             }
+            _ => None,
+        }
+    }
+
+    pub fn selected_section(&self) -> Option<Section> {
+        match self.rows.get(self.selected) {
+            Some(Row { kind: RowKind::File { section, .. }, .. }) => Some(*section),
             _ => None,
         }
     }
 
     pub fn selected_file_index(&self) -> Option<usize> {
         match self.rows.get(self.selected) {
-            Some(Row { kind: RowKind::File { file_index }, .. }) => Some(*file_index),
+            Some(Row { kind: RowKind::File { file_index, .. }, .. }) => Some(*file_index),
             _ => None,
         }
     }
@@ -163,7 +188,6 @@ impl App {
 
     pub fn scroll_h(&mut self, delta: isize) {
         let next = (self.diff_hscroll as isize + delta).max(0);
-        // cap at a sane maximum so we don't scroll into the void
         self.diff_hscroll = (next as usize).min(MAX_HSCROLL);
     }
 
@@ -198,13 +222,6 @@ impl App {
         };
     }
 
-    pub fn toggle_mode(&mut self) {
-        self.mode = match self.mode {
-            Mode::Unstaged => Mode::Staged,
-            Mode::Staged => Mode::Unstaged,
-        };
-    }
-
     pub fn toggle_reviewed(&mut self) {
         let Some(path) = self.selected_path().cloned() else {
             return;
@@ -215,8 +232,14 @@ impl App {
         self.rebuild_rows();
     }
 
+    pub fn is_reviewed_path(&self, path: &Path) -> bool {
+        self.reviewed.contains(path)
+    }
+
+    /// Legacy helper used by existing tests — checks by index into the combined
+    /// unstaged list (tests that use `sample()` with only unstaged files).
     pub fn is_reviewed(&self, idx: usize) -> bool {
-        self.files
+        self.unstaged
             .get(idx)
             .map(|f| self.reviewed.contains(&f.path))
             .unwrap_or(false)
@@ -224,12 +247,12 @@ impl App {
 
     pub fn toggle_collapse(&mut self) {
         if let Some(row) = self.rows.get(self.selected) {
-            if let RowKind::Dir { path, .. } = &row.kind {
-                let path = path.clone();
-                if self.collapsed.contains(&path) {
-                    self.collapsed.remove(&path);
+            if let RowKind::Dir { section, path, .. } = &row.kind {
+                let key = (*section, path.clone());
+                if self.collapsed.contains(&key) {
+                    self.collapsed.remove(&key);
                 } else {
-                    self.collapsed.insert(path);
+                    self.collapsed.insert(key);
                 }
                 self.rebuild_rows();
             }
@@ -242,36 +265,38 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// Build an App with files in the unstaged list only (mirrors the old `App::new(files, root)` pattern).
     fn sample() -> App {
         let files = vec![
             FileChange { path: PathBuf::from("a.rs"), status: Status::Modified },
             FileChange { path: PathBuf::from("b.rs"), status: Status::Added },
             FileChange { path: PathBuf::from("c.rs"), status: Status::Deleted },
         ];
-        App::new(files, PathBuf::from("/repo"))
+        App::new(files, vec![], PathBuf::from("/repo"))
     }
 
     #[test]
     fn selection_moves_and_clamps() {
         let mut app = sample();
+        // rows: Header(Unstaged) + a.rs + b.rs + c.rs + Header(Staged) = 5 rows
+        // selected starts at 0 (Header row), but move_selection starts at 0
         assert_eq!(app.selected, 0);
         app.move_selection(1);
         assert_eq!(app.selected, 1);
         app.move_selection(-5);
         assert_eq!(app.selected, 0); // clamp low
         app.move_selection(99);
-        assert_eq!(app.selected, 2); // clamp high
+        assert_eq!(app.selected, 4); // clamp high to last row (Header(Staged))
     }
 
     #[test]
-    fn focus_and_mode_toggle() {
+    fn focus_toggle() {
         let mut app = sample();
         assert_eq!(app.focus, Pane::Files);
         app.toggle_focus();
         assert_eq!(app.focus, Pane::Diff);
-        assert_eq!(app.mode, Mode::Unstaged);
-        app.toggle_mode();
-        assert_eq!(app.mode, Mode::Staged);
+        app.toggle_focus();
+        assert_eq!(app.focus, Pane::Files);
     }
 
     #[test]
@@ -294,7 +319,8 @@ mod tests {
         let mut app = sample();
         app.focus = Pane::Files;
         app.to_bottom();
-        assert_eq!(app.selected, 2);
+        // 5 rows total; last index = 4
+        assert_eq!(app.selected, 4);
         app.to_top();
         assert_eq!(app.selected, 0);
     }
@@ -313,6 +339,8 @@ mod tests {
     #[test]
     fn toggle_reviewed_tracks_selected_file() {
         let mut app = sample();
+        // selected=0 is Header row; move to row 1 (a.rs)
+        app.selected = 1;
         assert!(!app.is_reviewed(0));
         app.toggle_reviewed();
         assert!(app.is_reviewed(0));
@@ -335,59 +363,58 @@ mod tests {
 
     #[test]
     fn flat_files_selected_path_resolves_via_rows() {
-        // Flat files (no dirs) produce File rows; selected_path still returns file path.
-        let app = sample();
-        assert_eq!(app.selected, 0);
+        // With the two-section model, row 0 is Header(Unstaged), row 1 is a.rs
+        let mut app = sample();
+        app.selected = 1; // a.rs row
         assert_eq!(app.selected_path(), Some(&PathBuf::from("a.rs")));
     }
 
     #[test]
     fn selected_file_index_returns_correct_index() {
         let mut app = sample();
-        app.selected = 1;
+        // row 2 is b.rs (index 1 in unstaged)
+        app.selected = 2;
         assert_eq!(app.selected_file_index(), Some(1));
     }
 
     #[test]
     fn move_selection_clamps_against_rows_length() {
-        let app = sample();
-        // 3 flat files → 3 rows; move_selection(99) clamps to 2
-        let mut app2 = sample();
-        app2.move_selection(99);
-        assert_eq!(app2.selected, 2);
-        let _ = app; // just to show same setup
+        let mut app = sample();
+        // 3 flat files in unstaged: rows = Header(U) + a + b + c + Header(S) = 5
+        app.move_selection(99);
+        assert_eq!(app.selected, 4); // clamped to last row
     }
 
     #[test]
     fn toggle_collapse_hides_and_shows_dir_children() {
-        // Build app with src/main.rs, src/ui.rs, README.md
+        // Build app with src/main.rs, src/ui.rs, README.md in unstaged
         let files = vec![
             FileChange { path: PathBuf::from("src/main.rs"), status: Status::Modified },
             FileChange { path: PathBuf::from("src/ui.rs"), status: Status::Modified },
             FileChange { path: PathBuf::from("README.md"), status: Status::Modified },
         ];
-        let mut app = App::new(files, PathBuf::from("/repo"));
-        // rows: Dir "src" (0), File "main.rs" (1), File "ui.rs" (2), File "README.md" (3)
-        assert_eq!(app.rows.len(), 4);
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        // rows: Header(U), Dir "src" (1), main.rs (2), ui.rs (3), README.md (4), Header(S) (5)
+        assert_eq!(app.rows.len(), 6);
 
-        // Select the Dir row (index 0) and collapse it
-        app.selected = 0;
+        // Select the Dir row (index 1) and collapse it
+        app.selected = 1;
         app.toggle_collapse();
-        // Now rows should be: Dir "src" (collapsed), File "README.md" → 2 rows
-        assert_eq!(app.rows.len(), 2);
-        assert!(matches!(app.rows[0].kind, crate::tree::RowKind::Dir { collapsed: true, .. }));
-
-        // Toggle again → expand back to 4 rows
-        app.selected = 0;
-        app.toggle_collapse();
+        // Now rows should be: Header(U), Dir "src" (collapsed), README.md, Header(S) → 4 rows
         assert_eq!(app.rows.len(), 4);
+        assert!(matches!(app.rows[1].kind, crate::tree::RowKind::Dir { collapsed: true, .. }));
+
+        // Toggle again → expand back to 6 rows
+        app.selected = 1;
+        app.toggle_collapse();
+        assert_eq!(app.rows.len(), 6);
     }
 
     #[test]
     fn toggle_collapse_on_file_row_does_nothing() {
-        let mut app = sample(); // flat files → all File rows
+        let mut app = sample(); // flat files → all File rows (plus 2 Headers)
         let initial_len = app.rows.len();
-        app.selected = 0;
+        app.selected = 1; // a.rs File row
         app.toggle_collapse();
         assert_eq!(app.rows.len(), initial_len);
     }
@@ -397,9 +424,9 @@ mod tests {
         let files = vec![
             FileChange { path: PathBuf::from("src/main.rs"), status: Status::Modified },
         ];
-        let mut app = App::new(files, PathBuf::from("/repo"));
-        // rows: Dir "src" (0), File "main.rs" (1)
-        app.selected = 0; // Dir row
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        // rows: Header(U)(0), Dir "src" (1), File "main.rs" (2), Header(S) (3)
+        app.selected = 1; // Dir row
         assert_eq!(app.selected_path(), None);
     }
 
@@ -408,7 +435,8 @@ mod tests {
         let app = sample();
         // rows should be pre-built in App::new
         assert!(!app.rows.is_empty());
-        assert_eq!(app.rows.len(), 3); // 3 flat files → 3 rows
+        // 3 flat files → Header(U) + 3 files + Header(S) = 5 rows
+        assert_eq!(app.rows.len(), 5);
     }
 
     #[test]
@@ -425,17 +453,18 @@ mod tests {
             FileChange { path: PathBuf::from("a.rs"), status: Status::Modified },
             FileChange { path: PathBuf::from("b.rs"), status: Status::Added },
         ];
-        let mut app = App::new(files, PathBuf::from("/repo"));
-        // review a.rs (selected index 0)
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        // Select a.rs (row 1) and review it
+        app.selected = 1;
         app.toggle_reviewed();
         assert!(app.is_reviewed(0));
-        // before hiding, both rows present
-        assert_eq!(app.rows.len(), 2);
+        // before hiding: Header(U) + a.rs + b.rs + Header(S) = 4 rows
+        assert_eq!(app.rows.len(), 4);
         app.toggle_hide_reviewed();
-        // a.rs hidden -> only b.rs row remains
-        assert_eq!(app.rows.len(), 1);
+        // a.rs hidden -> Header(U) + b.rs + Header(S) = 3 rows
+        assert_eq!(app.rows.len(), 3);
         app.toggle_hide_reviewed();
-        assert_eq!(app.rows.len(), 2); // shown again
+        assert_eq!(app.rows.len(), 4); // shown again
     }
 
     #[test]
@@ -445,10 +474,11 @@ mod tests {
             FileChange { path: PathBuf::from("b.rs"), status: Status::Added },
             FileChange { path: PathBuf::from("c.rs"), status: Status::Deleted },
         ];
-        let mut app = App::new(files, PathBuf::from("/repo"));
-        app.selected = 2; // c.rs
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        // row 3 is c.rs (index 2 in unstaged); rows: H(U)(0) a(1) b(2) c(3) H(S)(4)
+        app.selected = 3;
         app.rebuild_rows();
-        // c.rs still selected (flat files: identity preserved, index unchanged here)
+        // c.rs still selected (identity preserved)
         assert_eq!(app.selected_path().unwrap(), &PathBuf::from("c.rs"));
     }
 
@@ -457,8 +487,9 @@ mod tests {
         let files = vec![
             FileChange { path: PathBuf::from("src/main.rs"), status: Status::Modified },
         ];
-        let mut app = App::new(files, PathBuf::from("/repo"));
-        app.selected = 0; // Dir "src" row
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        // rows: Header(U)(0), Dir "src"(1), File "main.rs"(2), Header(S)(3)
+        app.selected = 1; // Dir "src" row
         app.toggle_reviewed();
         // reviewed set should remain empty
         assert!(app.reviewed.is_empty());
@@ -470,13 +501,30 @@ mod tests {
             FileChange { path: PathBuf::from("a.rs"), status: Status::Modified },
             FileChange { path: PathBuf::from("b.rs"), status: Status::Added },
         ];
-        let mut app = App::new(files, PathBuf::from("/repo"));
-        app.toggle_hide_reviewed(); // hide-mode on, nothing reviewed yet -> both rows
-        assert_eq!(app.rows.len(), 2);
-        // review the selected file (a.rs at index 0); in hide-mode it should vanish
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.toggle_hide_reviewed(); // hide-mode on, nothing reviewed yet
+        // rows: Header(U)(0) + a.rs(1) + b.rs(2) + Header(S)(3) = 4 rows
+        assert_eq!(app.rows.len(), 4);
+        // select a.rs and review it
+        app.selected = 1;
         app.toggle_reviewed();
-        assert_eq!(app.rows.len(), 1);
-        // selection must still be valid and resolve to the remaining file b.rs
+        // rows: Header(U)(0) + b.rs(1) + Header(S)(2) = 3 rows
+        assert_eq!(app.rows.len(), 3);
+        // selection must still be valid; after clamping, row 1 = b.rs
         assert_eq!(app.selected_path().unwrap(), &PathBuf::from("b.rs"));
+    }
+
+    #[test]
+    fn selected_section_returns_correct_section() {
+        let unstaged = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let staged = vec![FileChange { path: PathBuf::from("b.rs"), status: Status::Added }];
+        let mut app = App::new(unstaged, staged, PathBuf::from("/repo"));
+        // rows: Header(U)(0), a.rs(1), Header(S)(2), b.rs(3)
+        app.selected = 1;
+        assert_eq!(app.selected_section(), Some(Section::Unstaged));
+        app.selected = 3;
+        assert_eq!(app.selected_section(), Some(Section::Staged));
+        app.selected = 0; // Header row
+        assert_eq!(app.selected_section(), None);
     }
 }

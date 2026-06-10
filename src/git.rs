@@ -89,6 +89,39 @@ impl Repo {
         Ok(lines)
     }
 
+    /// Stage the given path: copy its working-tree state into the index.
+    /// For a deleted file this removes it from the index; otherwise adds it.
+    pub fn stage_file(&self, path: &Path) -> Result<()> {
+        let mut index = self.inner.index()?;
+        let workdir = self.inner.workdir().context("bare repo")?;
+        if workdir.join(path).exists() {
+            index.add_path(path)?;
+        } else {
+            // file deleted on disk -> stage the deletion
+            index.remove_path(path)?;
+        }
+        index.write()?;
+        Ok(())
+    }
+
+    /// Unstage the given path: reset its index entry to HEAD (like `git reset HEAD <path>`).
+    /// Index-only; the working tree is never modified.
+    pub fn unstage_file(&self, path: &Path) -> Result<()> {
+        match self.inner.head() {
+            Ok(head) => {
+                let obj = head.peel(git2::ObjectType::Commit)?;
+                self.inner.reset_default(Some(&obj), std::iter::once(path))?;
+            }
+            Err(_) => {
+                // unborn HEAD: no commit to reset to -> remove the entry from the index
+                let mut index = self.inner.index()?;
+                index.remove_path(path)?;
+                index.write()?;
+            }
+        }
+        Ok(())
+    }
+
     /// List changed files for the given mode.
     pub fn changed_files(&self, mode: Mode) -> Result<Vec<FileChange>> {
         let diff = self.build_diff(mode)?;
@@ -210,6 +243,37 @@ mod tests {
         let r = Repo::discover(dir.path()).unwrap();
         let lines = r.diff_for(Path::new("f.txt"), Mode::Unstaged).unwrap();
         assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn stage_file_moves_untracked_into_index() {
+        let (dir, _repo) = init_repo();
+        std::fs::write(dir.path().join("n.txt"), "hi\n").unwrap();
+        let r = Repo::discover(dir.path()).unwrap();
+        assert_eq!(r.changed_files(Mode::Unstaged).unwrap().len(), 1);
+        r.stage_file(Path::new("n.txt")).unwrap();
+        // now it shows staged, not unstaged
+        assert_eq!(r.changed_files(Mode::Staged).unwrap().len(), 1);
+        assert_eq!(r.changed_files(Mode::Unstaged).unwrap().len(), 0);
+        // file still on disk (working tree untouched)
+        assert!(dir.path().join("n.txt").exists());
+    }
+
+    #[test]
+    fn unstage_file_moves_staged_back_and_keeps_file() {
+        let (dir, repo) = init_repo();
+        commit_file(&repo, dir.path(), "f.txt", "one\n");
+        std::fs::write(dir.path().join("f.txt"), "one\ntwo\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("f.txt")).unwrap();
+        index.write().unwrap();
+        let r = Repo::discover(dir.path()).unwrap();
+        assert_eq!(r.changed_files(Mode::Staged).unwrap().len(), 1);
+        r.unstage_file(Path::new("f.txt")).unwrap();
+        assert_eq!(r.changed_files(Mode::Staged).unwrap().len(), 0);
+        assert_eq!(r.changed_files(Mode::Unstaged).unwrap().len(), 1);
+        // working-tree content preserved
+        assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "one\ntwo\n");
     }
 
     #[test]
