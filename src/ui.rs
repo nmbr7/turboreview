@@ -1,16 +1,13 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, LineKind, Mode, Pane};
 use crate::highlight::highlight_code;
+use crate::theme;
 use crate::tree::RowKind;
-
-const SELECTED_BG: Color = Color::Rgb(60, 60, 90);
-const ADD_BG: Color = Color::Rgb(20, 50, 20);
-const DEL_BG: Color = Color::Rgb(55, 20, 20);
 
 fn gutter(dl: &crate::app::DiffLine) -> String {
     let n = dl.new_lineno.or(dl.old_lineno);
@@ -38,9 +35,9 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 fn focused_border(app: &App, pane: Pane) -> Style {
     if app.focus == pane {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme::ACCENT_DIM)
     }
 }
 
@@ -57,7 +54,7 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
             let indent = "  ".repeat(row.depth);
             let mut style = Style::default();
             if i == app.selected {
-                style = style.bg(SELECTED_BG).add_modifier(Modifier::BOLD);
+                style = style.bg(theme::SELECTED_BG).add_modifier(Modifier::BOLD);
             }
             let text = match &row.kind {
                 RowKind::Dir { collapsed, .. } => {
@@ -103,7 +100,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
     let lines: Vec<Line> = if app.diff.is_empty() {
         vec![Line::from(Span::styled(
             "No changes",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::PLACEHOLDER),
         ))]
     } else {
         app.diff
@@ -112,20 +109,20 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             .take(area.height.saturating_sub(2) as usize)
             .map(|dl| {
                 let bg = match dl.kind {
-                    LineKind::Add => Some(ADD_BG),
-                    LineKind::Del => Some(DEL_BG),
+                    LineKind::Add => Some(theme::ADD_BG),
+                    LineKind::Del => Some(theme::DEL_BG),
                     _ => None,
                 };
                 if dl.kind == LineKind::Hunk {
                     let shifted: String = dl.text.chars().skip(app.diff_hscroll).collect();
                     return Line::from(Span::styled(
                         shifted,
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(theme::HUNK),
                     ));
                 }
                 let gutter_span = Span::styled(
                     gutter(dl),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme::ACCENT_DIM),
                 );
                 let shifted: String = dl.text.chars().skip(app.diff_hscroll).collect();
                 let mut spans: Vec<Span> = highlight_code(&shifted, &ext);
@@ -157,7 +154,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         Some(msg) => format!("{}   |   {}", base, msg),
         None => base.to_string(),
     };
-    let para = Paragraph::new(text).style(Style::default().fg(Color::Gray));
+    let para = Paragraph::new(text).style(Style::default().fg(theme::ACCENT_DIM));
     frame.render_widget(para, area);
 }
 

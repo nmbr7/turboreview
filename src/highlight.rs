@@ -16,11 +16,12 @@ fn assets() -> &'static Assets {
     ASSETS.get_or_init(|| {
         let syntaxes = SyntaxSet::load_defaults_newlines();
         let mut themes = ThemeSet::load_defaults();
-        // base16-ocean.dark is bundled in syntect's default ThemeSet.
+        // Try base16-mocha.dark (closest bundled to Catppuccin Mocha), fall back to base16-ocean.dark.
         let theme = themes
             .themes
-            .remove("base16-ocean.dark")
-            .expect("bundled theme present");
+            .remove("base16-mocha.dark")
+            .or_else(|| themes.themes.remove("base16-ocean.dark"))
+            .expect("a bundled dark theme present");
         Assets { syntaxes, theme }
     })
 }
@@ -102,4 +103,5 @@ mod tests {
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(joined.contains("anything goes"));
     }
+
 }
