@@ -19,7 +19,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     let panes = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
         .split(outer[0]);
 
     render_files(frame, app, panes[0]);

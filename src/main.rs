@@ -26,8 +26,8 @@ fn main() -> Result<()> {
 
     let mut terminal = setup_terminal()?;
     let result = run(&mut terminal, &repo, &mut app);
-    restore_terminal(&mut terminal)?;
-    result
+    let restore = restore_terminal(&mut terminal);
+    result.and(restore)
 }
 
 fn refresh_diff(repo: &Repo, app: &mut App) {
@@ -99,7 +99,9 @@ fn run(
             }
             (KeyCode::Char(' '), _) => {
                 app.toggle_reviewed();
-                review::save(&app.repo_root, &app.reviewed)?;
+                if let Err(e) = review::save(&app.repo_root, &app.reviewed) {
+                    app.status_msg = Some(format!("save error: {e}"));
+                }
             }
             (KeyCode::Char('G'), _) => app.to_bottom(),
             (KeyCode::Up, _) | (KeyCode::Char('k'), _) => move_in_focus(repo, app, -1),
