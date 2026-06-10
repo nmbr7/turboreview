@@ -16,7 +16,7 @@ pub struct Row {
     pub kind: RowKind,
 }
 
-pub fn build_rows(files: &[FileChange], collapsed: &HashSet<PathBuf>) -> Vec<Row> {
+pub fn build_rows(files: &[FileChange], collapsed: &HashSet<PathBuf>, hidden: &HashSet<PathBuf>) -> Vec<Row> {
     // Build a tree structure then emit rows in DFS pre-order.
     // Each node is either a directory or a file.
     // Dirs sort before files at each level; within each kind, alphabetical.
@@ -134,6 +134,9 @@ pub fn build_rows(files: &[FileChange], collapsed: &HashSet<PathBuf>) -> Vec<Row
 
     let mut root: Vec<Node> = Vec::new();
     for (idx, file) in files.iter().enumerate() {
+        if hidden.contains(&file.path) {
+            continue;
+        }
         let path_str = file.path.to_string_lossy();
         let components: Vec<&str> = path_str.split('/').collect();
         insert(&mut root, &components, idx, "");
@@ -165,7 +168,7 @@ mod tests {
         // a.rs, b.rs at top level (no dirs) -> two File rows at depth 0
         let files = make_files(&["a.rs", "b.rs"]);
         let collapsed = HashSet::new();
-        let rows = build_rows(&files, &collapsed);
+        let rows = build_rows(&files, &collapsed, &HashSet::new());
 
         assert_eq!(rows.len(), 2);
 
@@ -185,7 +188,7 @@ mod tests {
         // dirs sort before files at root level, so "src" before "README.md"
         let files = make_files(&["src/main.rs", "src/ui.rs", "README.md"]);
         let collapsed = HashSet::new();
-        let rows = build_rows(&files, &collapsed);
+        let rows = build_rows(&files, &collapsed, &HashSet::new());
 
         assert_eq!(rows.len(), 4);
 
@@ -214,7 +217,7 @@ mod tests {
         let files = make_files(&["src/main.rs", "src/ui.rs", "README.md"]);
         let mut collapsed = HashSet::new();
         collapsed.insert(PathBuf::from("src"));
-        let rows = build_rows(&files, &collapsed);
+        let rows = build_rows(&files, &collapsed, &HashSet::new());
 
         assert_eq!(rows.len(), 2);
 
@@ -231,12 +234,27 @@ mod tests {
     }
 
     #[test]
+    fn hidden_files_are_omitted_and_empty_dirs_pruned() {
+        // src/a.rs, src/b.rs, top.rs ; hide src/a.rs and src/b.rs -> src dir pruned
+        let files = make_files(&["src/a.rs", "src/b.rs", "top.rs"]);
+        let collapsed = HashSet::new();
+        let mut hidden = HashSet::new();
+        hidden.insert(PathBuf::from("src/a.rs"));
+        hidden.insert(PathBuf::from("src/b.rs"));
+        let rows = build_rows(&files, &collapsed, &hidden);
+        // only top.rs remains; src dir gone
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "top.rs");
+        assert!(matches!(rows[0].kind, RowKind::File { .. }));
+    }
+
+    #[test]
     fn same_basename_at_root_and_nested_stay_distinct() {
         // A file at root and one nested under a dir share the basename "foo.rs".
         // They must remain two separate File rows pointing at distinct indices.
         let files = make_files(&["foo.rs", "src/foo.rs"]);
         let collapsed = HashSet::new();
-        let rows = build_rows(&files, &collapsed);
+        let rows = build_rows(&files, &collapsed, &HashSet::new());
 
         // Expected order: Dir "src" (depth 0), File "foo.rs" (depth 1, index 1),
         // File "foo.rs" (depth 0, index 0) — dirs sort before files at root.

@@ -102,8 +102,13 @@ fn run(
                         if let Err(e) = review::save(&app.repo_root, &app.reviewed) {
                             app.status_msg = Some(format!("save error: {e}"));
                         }
+                        refresh_diff(repo, app);
                     }
                     (KeyCode::Char('G'), _) => app.to_bottom(),
+                    (KeyCode::Char('R'), _) => {
+                        app.toggle_hide_reviewed();
+                        refresh_diff(repo, app);
+                    }
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => move_in_focus(repo, app, -1),
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => move_in_focus(repo, app, 1),
                     (KeyCode::Enter, _) => {

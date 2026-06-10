@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::tree::{self, Row, RowKind};
+use crate::tree::{Row, RowKind};
 
 const MAX_HSCROLL: usize = 500;
 
@@ -67,6 +67,12 @@ pub struct App {
     pub status_msg: Option<String>,
     pub collapsed: HashSet<PathBuf>,
     pub rows: Vec<Row>,
+    pub hide_reviewed: bool,
+}
+
+enum RowId {
+    File(std::path::PathBuf),
+    Dir(std::path::PathBuf),
 }
 
 impl App {
@@ -84,17 +90,44 @@ impl App {
             status_msg: None,
             collapsed: HashSet::new(),
             rows: Vec::new(),
+            hide_reviewed: false,
         };
         app.rebuild_rows();
         app
     }
 
     pub fn rebuild_rows(&mut self) {
-        self.rows = tree::build_rows(&self.files, &self.collapsed);
-        let max = self.rows.len().saturating_sub(1);
-        if self.selected > max {
-            self.selected = max;
+        let prev = self.selected_identity();
+        let empty = HashSet::new();
+        let hidden = if self.hide_reviewed { &self.reviewed } else { &empty };
+        self.rows = crate::tree::build_rows(&self.files, &self.collapsed, hidden);
+        self.selected = match prev.and_then(|id| self.find_row(&id)) {
+            Some(i) => i,
+            None => self.selected.min(self.rows.len().saturating_sub(1)),
+        };
+    }
+
+    fn selected_identity(&self) -> Option<RowId> {
+        let row = self.rows.get(self.selected)?;
+        match &row.kind {
+            crate::tree::RowKind::File { file_index } =>
+                Some(RowId::File(self.files[*file_index].path.clone())),
+            crate::tree::RowKind::Dir { path, .. } => Some(RowId::Dir(path.clone())),
         }
+    }
+
+    fn find_row(&self, id: &RowId) -> Option<usize> {
+        self.rows.iter().position(|r| match (&r.kind, id) {
+            (crate::tree::RowKind::File { file_index }, RowId::File(p)) =>
+                &self.files[*file_index].path == p,
+            (crate::tree::RowKind::Dir { path, .. }, RowId::Dir(p)) => path == p,
+            _ => false,
+        })
+    }
+
+    pub fn toggle_hide_reviewed(&mut self) {
+        self.hide_reviewed = !self.hide_reviewed;
+        self.rebuild_rows();
     }
 
     pub fn selected_path(&self) -> Option<&PathBuf> {
@@ -178,6 +211,7 @@ impl App {
                 self.reviewed.insert(path);
             }
         }
+        self.rebuild_rows();
     }
 
     pub fn is_reviewed(&self, idx: usize) -> bool {
@@ -382,6 +416,39 @@ mod tests {
         app.focus = Pane::Files;
         app.to_bottom();
         assert_eq!(app.selected, app.rows.len() - 1);
+    }
+
+    #[test]
+    fn hide_reviewed_hides_reviewed_file() {
+        let files = vec![
+            FileChange { path: PathBuf::from("a.rs"), status: Status::Modified },
+            FileChange { path: PathBuf::from("b.rs"), status: Status::Added },
+        ];
+        let mut app = App::new(files, PathBuf::from("/repo"));
+        // review a.rs (selected index 0)
+        app.toggle_reviewed();
+        assert!(app.is_reviewed(0));
+        // before hiding, both rows present
+        assert_eq!(app.rows.len(), 2);
+        app.toggle_hide_reviewed();
+        // a.rs hidden -> only b.rs row remains
+        assert_eq!(app.rows.len(), 1);
+        app.toggle_hide_reviewed();
+        assert_eq!(app.rows.len(), 2); // shown again
+    }
+
+    #[test]
+    fn rebuild_preserves_selection_identity() {
+        let files = vec![
+            FileChange { path: PathBuf::from("a.rs"), status: Status::Modified },
+            FileChange { path: PathBuf::from("b.rs"), status: Status::Added },
+            FileChange { path: PathBuf::from("c.rs"), status: Status::Deleted },
+        ];
+        let mut app = App::new(files, PathBuf::from("/repo"));
+        app.selected = 2; // c.rs
+        app.rebuild_rows();
+        // c.rs still selected (flat files: identity preserved, index unchanged here)
+        assert_eq!(app.selected_path().unwrap(), &PathBuf::from("c.rs"));
     }
 
     #[test]

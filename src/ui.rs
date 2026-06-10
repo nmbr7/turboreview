@@ -73,11 +73,16 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
             ListItem::new(Line::from(text)).style(style)
         })
         .collect();
+    let title = if app.hide_reviewed {
+        format!(" Files [{}] (hiding reviewed) ", mode)
+    } else {
+        format!(" Files [{}] ", mode)
+    };
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(focused_border(app, Pane::Files))
-            .title(format!(" Files [{}] ", mode)),
+            .title(title),
     );
     frame.render_widget(list, area);
 }
@@ -147,7 +152,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let base = "Tab:focus  s:staged  Space:review  up/down/jk:move  gg/G  hl:hscroll  Enter:fold  q:quit";
+    let base = "Tab:focus  s:staged  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:fold  q:quit";
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
         None => base.to_string(),
