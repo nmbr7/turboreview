@@ -42,7 +42,7 @@ fn refresh_diff(repo: &Repo, app: &mut App) {
                 Section::Unstaged => Mode::Unstaged,
                 Section::Staged => Mode::Staged,
             };
-            match repo.diff_for(&path, mode, app.context_lines) {
+            match repo.diff_for(&path, mode, app.effective_context()) {
                 Ok(lines) => {
                     app.status_msg = None;
                     app.set_diff(lines);
@@ -147,11 +147,20 @@ fn run(
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => move_in_focus(repo, app, 1),
                     (KeyCode::Enter, _) => {
                         if app.focus == Pane::Files {
-                            app.toggle_collapse();
                             if app.selected_path().is_some() {
-                                refresh_diff(repo, app);
+                                app.focus = Pane::Diff; // jump into the diff to read this file
+                            } else {
+                                app.toggle_collapse(); // dir row: fold/unfold (no-op on header)
+                                if app.selected_path().is_some() {
+                                    refresh_diff(repo, app);
+                                }
                             }
                         }
+                    }
+                    (KeyCode::Esc, _) => app.focus = Pane::Files,
+                    (KeyCode::Char('F'), _) => {
+                        app.toggle_full_file();
+                        refresh_diff(repo, app);
                     }
                     (KeyCode::Char('l'), _) | (KeyCode::Right, _) => {
                         if app.focus == Pane::Diff { app.scroll_h(1); }

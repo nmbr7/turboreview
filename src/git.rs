@@ -278,6 +278,21 @@ mod tests {
     }
 
     #[test]
+    fn diff_for_large_context_includes_more_lines() {
+        let (dir, repo) = init_repo();
+        commit_file(&repo, dir.path(), "f.txt", "a\nb\nc\nd\ne\nf\ng\nh\n");
+        std::fs::write(dir.path().join("f.txt"), "a\nb\nc\nd\nE\nf\ng\nh\n").unwrap();
+        let r = Repo::discover(dir.path()).unwrap();
+        let few = r.diff_for(Path::new("f.txt"), Mode::Unstaged, 0).unwrap();
+        let many = r.diff_for(Path::new("f.txt"), Mode::Unstaged, 1_000_000).unwrap();
+        // full-file view shows every line; zero-context shows only the changed lines (+ hunk header)
+        assert!(many.len() > few.len());
+        // full view should contain all 8 file lines as context/changed
+        let ctx_and_changed = many.iter().filter(|l| l.kind != crate::app::LineKind::Hunk).count();
+        assert!(ctx_and_changed >= 8);
+    }
+
+    #[test]
     fn diff_for_staged_unborn_head_yields_add_lines() {
         let (dir, repo) = init_repo();
         fs::write(dir.path().join("s.txt"), "one\ntwo\n").unwrap();

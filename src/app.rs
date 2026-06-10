@@ -75,6 +75,7 @@ pub struct App {
     pub rows: Vec<Row>,
     pub hide_reviewed: bool,
     pub context_lines: u32,
+    pub full_file: bool,
 }
 
 enum RowId {
@@ -99,9 +100,18 @@ impl App {
             rows: Vec::new(),
             hide_reviewed: false,
             context_lines: 3,
+            full_file: false,
         };
         app.rebuild_rows();
         app
+    }
+
+    pub fn toggle_full_file(&mut self) {
+        self.full_file = !self.full_file;
+    }
+
+    pub fn effective_context(&self) -> u32 {
+        if self.full_file { u32::MAX } else { self.context_lines }
     }
 
     pub fn rebuild_rows(&mut self) {
@@ -537,6 +547,19 @@ mod tests {
         assert_eq!(app.selected_section(), Some(Section::Staged));
         app.selected = 0; // Header row
         assert_eq!(app.selected_section(), None);
+    }
+
+    #[test]
+    fn effective_context_returns_context_lines_or_max() {
+        let mut app = sample();
+        // default: full_file is false -> effective_context == context_lines
+        assert_eq!(app.effective_context(), app.context_lines);
+        // toggle full_file on -> effective_context == u32::MAX
+        app.toggle_full_file();
+        assert_eq!(app.effective_context(), u32::MAX);
+        // toggle back off -> effective_context == context_lines again
+        app.toggle_full_file();
+        assert_eq!(app.effective_context(), app.context_lines);
     }
 
     #[test]

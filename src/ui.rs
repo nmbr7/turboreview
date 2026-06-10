@@ -109,9 +109,14 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or("")
         .to_string();
 
+    let ctx_label = if app.full_file {
+        "full file".to_string()
+    } else {
+        format!("ctx {}", app.context_lines)
+    };
     let title = app
         .selected_path()
-        .map(|p| format!(" Diff: {} (ctx {}) ", p.display(), app.context_lines))
+        .map(|p| format!(" Diff: {} ({}) ", p.display(), ctx_label))
         .unwrap_or_else(|| " Diff ".to_string());
 
     let lines: Vec<Line> = if app.diff.is_empty() {
@@ -171,7 +176,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let base = "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:fold  +/-:context  q:quit";
+    let base = "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:files  F:full-file  +/-:context  q:quit";
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
         None => base.to_string(),
