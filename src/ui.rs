@@ -101,8 +101,9 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                     _ => None,
                 };
                 if dl.kind == LineKind::Hunk {
+                    let shifted: String = dl.text.chars().skip(app.diff_hscroll).collect();
                     return Line::from(Span::styled(
-                        dl.text.clone(),
+                        shifted,
                         Style::default().fg(Color::Cyan),
                     ));
                 }
@@ -110,7 +111,8 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                     gutter(dl),
                     Style::default().fg(Color::DarkGray),
                 );
-                let mut spans: Vec<Span> = highlight_code(&dl.text, &ext);
+                let shifted: String = dl.text.chars().skip(app.diff_hscroll).collect();
+                let mut spans: Vec<Span> = highlight_code(&shifted, &ext);
                 if let Some(bg) = bg {
                     for s in spans.iter_mut() {
                         s.style = s.style.bg(bg);
@@ -134,7 +136,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let base = "Tab:focus  s:staged  Space:review  up/down/jk:move  gg/G  q:quit";
+    let base = "Tab:focus  s:staged  Space:review  up/down/jk:move  gg/G  hl:hscroll  q:quit";
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
         None => base.to_string(),
@@ -195,6 +197,27 @@ mod tests {
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains("No changes"));
+    }
+
+    #[test]
+    fn hscroll_offsets_diff_text() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, PathBuf::from("/repo"));
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Context, text: "ABCDEFGHIJ".into(), old_lineno: Some(1), new_lineno: Some(1) },
+        ]);
+        // no scroll: "ABCDEF..." visible
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump0: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump0.contains("ABCDEFGHIJ"));
+        // scroll right 4: leading "ABCD" gone, "EFGHIJ" remains
+        app.diff_hscroll = 4;
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump1: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump1.contains("EFGHIJ"));
+        assert!(!dump1.contains("ABCDEFGHIJ"));
     }
 
     #[test]

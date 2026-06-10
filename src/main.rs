@@ -108,6 +108,12 @@ fn run(
                     (KeyCode::Char('G'), _) => app.to_bottom(),
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => move_in_focus(repo, app, -1),
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => move_in_focus(repo, app, 1),
+                    (KeyCode::Char('l'), _) | (KeyCode::Right, _) => {
+                        if app.focus == Pane::Diff { app.scroll_h(1); }
+                    }
+                    (KeyCode::Char('h'), _) | (KeyCode::Left, _) => {
+                        if app.focus == Pane::Diff { app.scroll_h(-1); }
+                    }
                     _ => {}
                 }
             }

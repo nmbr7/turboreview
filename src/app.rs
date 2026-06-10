@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+const MAX_HSCROLL: usize = 500;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Unstaged,
@@ -58,6 +60,7 @@ pub struct App {
     pub selected: usize,
     pub diff: Vec<DiffLine>,
     pub diff_scroll: usize,
+    pub diff_hscroll: usize,
     pub reviewed: HashSet<PathBuf>,
     pub status_msg: Option<String>,
 }
@@ -72,6 +75,7 @@ impl App {
             selected: 0,
             diff: Vec::new(),
             diff_scroll: 0,
+            diff_hscroll: 0,
             reviewed: HashSet::new(),
             status_msg: None,
         }
@@ -84,6 +88,7 @@ impl App {
     pub fn set_diff(&mut self, diff: Vec<DiffLine>) {
         self.diff = diff;
         self.diff_scroll = 0;
+        self.diff_hscroll = 0;
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -93,6 +98,12 @@ impl App {
         let max = self.files.len() as isize - 1;
         let next = (self.selected as isize + delta).clamp(0, max);
         self.selected = next as usize;
+    }
+
+    pub fn scroll_h(&mut self, delta: isize) {
+        let next = (self.diff_hscroll as isize + delta).max(0);
+        // cap at a sane maximum so we don't scroll into the void
+        self.diff_hscroll = (next as usize).min(MAX_HSCROLL);
     }
 
     pub fn scroll_diff(&mut self, delta: isize) {
@@ -230,5 +241,16 @@ mod tests {
         assert!(app.is_reviewed(0));
         app.toggle_reviewed();
         assert!(!app.is_reviewed(0));
+    }
+
+    #[test]
+    fn hscroll_clamps_at_zero_and_resets_on_set_diff() {
+        let mut app = sample();
+        app.scroll_h(-5);
+        assert_eq!(app.diff_hscroll, 0); // clamp low
+        app.scroll_h(3);
+        assert_eq!(app.diff_hscroll, 3);
+        app.set_diff(vec![DiffLine::context("x", 1, 1); 2]);
+        assert_eq!(app.diff_hscroll, 0); // reset on new diff
     }
 }
