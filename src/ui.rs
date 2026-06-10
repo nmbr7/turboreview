@@ -58,7 +58,8 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
             if i == app.selected {
                 style = style.bg(SELECTED_BG).add_modifier(Modifier::BOLD);
             }
-            ListItem::new(Line::from(format!("{}{}", check, f.path.display()))).style(style)
+            let icon = crate::icons::icon_for(&f.path);
+            ListItem::new(Line::from(format!("{}{} {}", check, icon, f.path.display()))).style(style)
         })
         .collect();
     let list = List::new(items).block(
