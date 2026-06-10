@@ -17,6 +17,8 @@ and 3 (each gets its own spec + plan cycle later). Build Phase 1 end-to-end firs
 
 - `git2` (0.21) — repo access, diffs
 - `ratatui` (0.30) + `crossterm` (default backend) — TUI + input
+- `syntect` + `syntect-tui` — syntax highlighting → ratatui `Span`s (multi-language,
+  detect by file extension, bundled dark theme)
 - `serde` / `serde_json` — config + (Phase 2) coverage JSON
 - Phase 2: llvm-cov JSON export (`cargo llvm-cov --json`)
 - Phase 3: `dap` crate (DAP client) + external `codelldb` adapter (>=1.11, stdio)
@@ -29,8 +31,22 @@ and 3 (each gets its own spec + plan cycle later). Build Phase 1 end-to-end firs
 ### Goal
 
 Two-pane TUI. Left: changed-file list with a reviewed checkbox and selected-file
-highlight. Right: diff of the selected file. Toggle staged/unstaged. Focus-based
-navigation with scroll + `gg`/`G`. Reviewed state persists to a file.
+highlight. Right: diff of the selected file, with **syntax-highlighted code** (multi-
+language, detected by file extension). Toggle staged/unstaged. Focus-based navigation
+with scroll + `gg`/`G`. Reviewed state persists to a file.
+
+### Color composition (key rule)
+
+Three color layers stack without conflict because they target different channels:
+
+- **Foreground (fg):** syntax-highlight token colors (`syntect` → `syntect-tui`).
+- **Background (bg):** diff status + selection. add/del get a subtle bg tint;
+  the selected diff line (Phase 1) and coverage (Phase 2) set bg. **Selection bg wins**
+  over coverage bg.
+
+So a line is: syntect spans (fg) re-styled with a single bg per the diff/selection
+layer. Lines syntect can't highlight (unknown extension) fall back to plain fg +
+diff/selection bg.
 
 ### Layout
 
@@ -94,8 +110,12 @@ navigation with scroll + `gg`/`G`. Reviewed state persists to a file.
 
 5. **`ui`** — render `&App` → frame. Two panes (`Layout` horizontal split) + status
    bar (vertical split). File rows: checkbox glyph + path, selected row gets bg via
-   `Style::bg`. Diff lines colored by kind (add=green fg, del=red fg, hunk=cyan).
-   Focused pane gets a highlighted border. No git, no mutation.
+   `Style::bg`. Focused pane gets a highlighted border. No git, no mutation.
+   - **Diff lines:** code text syntax-highlighted via a `highlight` helper (`syntect`
+     + `syntect-tui` → `Vec<Span>` with token fg colors); detect syntax by file
+     extension, bundled dark theme. Then apply the per-line **bg** (diff status /
+     selected line) over those spans. Hunk headers (`@@`) styled plainly (cyan).
+     `+`/`-` markers keep a status fg/bg cue. See "Color composition" above.
 
 6. **`main`** — parse args (repo path, optional `--config`), `crossterm` raw mode +
    alt screen, load review set, build `App`, event loop: read key → `app` transition →
@@ -121,11 +141,15 @@ Review toggle → `app.reviewed` → `review::save`.
 - `review` module: round-trip `load`/`save`, toggle behavior, dir creation.
 - `app` module: pure transition tests (selection clamping, focus toggle, mode toggle,
   scroll bounds, gg/G) — no terminal.
-- `ui`: smoke render via ratatui `TestBackend` — asserts no panic + key glyphs present.
+- `ui` / `highlight`: smoke render via ratatui `TestBackend` — asserts no panic + key
+  glyphs present; `highlight` helper returns >1 span for a known Rust line and falls
+  back cleanly for unknown extension. Load syntect `SyntaxSet`/`ThemeSet` once
+  (lazy/`OnceCell`) — not per render.
 
 ### Out of scope (Phase 1)
 
-Coverage overlay, debugger, variables pane, search, editing/staging actions.
+Coverage overlay, debugger, variables pane, search, editing/staging actions,
+configurable syntax theme (one bundled dark theme only).
 
 ---
 
