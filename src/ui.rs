@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, LineKind, Mode, Pane};
@@ -49,25 +49,29 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app
         .rows
         .iter()
-        .enumerate()
-        .map(|(i, row)| {
+        .map(|row| {
             let indent = "  ".repeat(row.depth);
-            let mut style = Style::default();
-            if i == app.selected {
-                style = style.bg(theme::SELECTED_BG).add_modifier(Modifier::BOLD);
-            }
-            let text = match &row.kind {
+            match &row.kind {
                 RowKind::Dir { collapsed, .. } => {
                     let glyph = if *collapsed { "▸" } else { "▾" };
-                    format!("{}{} {}", indent, glyph, row.name)
+                    let text = format!("{}{} {}", indent, glyph, row.name);
+                    ListItem::new(Line::from(text))
                 }
                 RowKind::File { file_index } => {
-                    let check = if app.is_reviewed(*file_index) { "[x] " } else { "[ ] " };
+                    let (mark, mark_style) = if app.is_reviewed(*file_index) {
+                        ("✓ ", Style::default().fg(theme::TICK))
+                    } else {
+                        ("○ ", Style::default().fg(theme::ACCENT_DIM))
+                    };
                     let icon = crate::icons::icon_for(&app.files[*file_index].path);
-                    format!("{}{}{} {}", indent, check, icon, row.name)
+                    let line = Line::from(vec![
+                        Span::raw(indent),
+                        Span::styled(mark, mark_style),
+                        Span::raw(format!("{} {}", icon, row.name)),
+                    ]);
+                    ListItem::new(line)
                 }
-            };
-            ListItem::new(Line::from(text)).style(style)
+            }
         })
         .collect();
     let title = if app.hide_reviewed {
@@ -75,13 +79,17 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         format!(" Files [{}] ", mode)
     };
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(focused_border(app, Pane::Files))
-            .title(title),
-    );
-    frame.render_widget(list, area);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(focused_border(app, Pane::Files))
+                .title(title),
+        )
+        .highlight_style(Style::default().bg(theme::SELECTED_BG).add_modifier(Modifier::BOLD));
+    let mut state = ListState::default();
+    state.select(Some(app.selected));
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
@@ -185,7 +193,7 @@ mod tests {
         let buf = terminal.backend().buffer().clone();
         let dump: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains("a.rs"));
-        assert!(dump.contains("[ ]"));
+        assert!(dump.contains("○"));
     }
 
     #[test]
@@ -276,5 +284,17 @@ mod tests {
         assert!(dump.contains("top.rs"), "file basename 'top.rs' missing from tree view");
         // Full path "src/main.rs" should NOT appear as one token (tree renders basename only)
         assert!(!dump.contains("src/main.rs"), "full path 'src/main.rs' should not appear; tree view shows basenames");
+    }
+
+    #[test]
+    fn reviewed_file_shows_tick() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, PathBuf::from("/repo"));
+        app.toggle_reviewed(); // review a.rs
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains("✓"));
     }
 }

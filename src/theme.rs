@@ -23,6 +23,9 @@ pub const PLACEHOLDER: Color = Color::Rgb(0x6c, 0x70, 0x86);
 /// Sky — hunk header text.
 pub const HUNK: Color = Color::Rgb(0x89, 0xdc, 0xeb);
 
+/// Green — reviewed file tick (✓).
+pub const TICK: Color = Color::Rgb(0xa6, 0xe3, 0xa1); // catppuccin green
+
 #[cfg(test)]
 mod tests {
     use super::*;
