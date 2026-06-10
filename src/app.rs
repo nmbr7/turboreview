@@ -206,10 +206,11 @@ impl App {
     }
 
     pub fn toggle_reviewed(&mut self) {
-        if let Some(path) = self.selected_path().cloned() {
-            if !self.reviewed.remove(&path) {
-                self.reviewed.insert(path);
-            }
+        let Some(path) = self.selected_path().cloned() else {
+            return;
+        };
+        if !self.reviewed.remove(&path) {
+            self.reviewed.insert(path);
         }
         self.rebuild_rows();
     }
@@ -461,5 +462,21 @@ mod tests {
         app.toggle_reviewed();
         // reviewed set should remain empty
         assert!(app.reviewed.is_empty());
+    }
+
+    #[test]
+    fn reviewing_in_hide_mode_drops_file_and_keeps_valid_selection() {
+        let files = vec![
+            FileChange { path: PathBuf::from("a.rs"), status: Status::Modified },
+            FileChange { path: PathBuf::from("b.rs"), status: Status::Added },
+        ];
+        let mut app = App::new(files, PathBuf::from("/repo"));
+        app.toggle_hide_reviewed(); // hide-mode on, nothing reviewed yet -> both rows
+        assert_eq!(app.rows.len(), 2);
+        // review the selected file (a.rs at index 0); in hide-mode it should vanish
+        app.toggle_reviewed();
+        assert_eq!(app.rows.len(), 1);
+        // selection must still be valid and resolve to the remaining file b.rs
+        assert_eq!(app.selected_path().unwrap(), &PathBuf::from("b.rs"));
     }
 }
