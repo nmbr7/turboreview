@@ -74,6 +74,7 @@ pub struct App {
     pub collapsed: HashSet<(Section, PathBuf)>,
     pub rows: Vec<Row>,
     pub hide_reviewed: bool,
+    pub context_lines: u32,
 }
 
 enum RowId {
@@ -97,6 +98,7 @@ impl App {
             collapsed: HashSet::new(),
             rows: Vec::new(),
             hide_reviewed: false,
+            context_lines: 3,
         };
         app.rebuild_rows();
         app
@@ -117,8 +119,10 @@ impl App {
         let row = self.rows.get(self.selected)?;
         match &row.kind {
             RowKind::File { section, file_index } => {
-                let files = self.section_files(*section);
-                Some(RowId::File(*section, files[*file_index].path.clone()))
+                return self
+                    .section_files(*section)
+                    .get(*file_index)
+                    .map(|f| RowId::File(*section, f.path.clone()));
             }
             RowKind::Dir { section, path, .. } => Some(RowId::Dir(*section, path.clone())),
             RowKind::Header { .. } => None,
@@ -128,8 +132,7 @@ impl App {
     fn find_row(&self, id: &RowId) -> Option<usize> {
         self.rows.iter().position(|r| match (&r.kind, id) {
             (RowKind::File { section: rs, file_index }, RowId::File(s, p)) if rs == s => {
-                let files = self.section_files(*rs);
-                &files[*file_index].path == p
+                self.section_files(*rs).get(*file_index).map_or(false, |f| &f.path == p)
             }
             (RowKind::Dir { section: rs, path, .. }, RowId::Dir(s, p)) if rs == s => path == p,
             _ => false,
@@ -257,6 +260,14 @@ impl App {
                 self.rebuild_rows();
             }
         }
+    }
+
+    pub fn inc_context(&mut self) {
+        self.context_lines = (self.context_lines + 1).min(50);
+    }
+
+    pub fn dec_context(&mut self) {
+        self.context_lines = self.context_lines.saturating_sub(1);
     }
 }
 
@@ -526,5 +537,24 @@ mod tests {
         assert_eq!(app.selected_section(), Some(Section::Staged));
         app.selected = 0; // Header row
         assert_eq!(app.selected_section(), None);
+    }
+
+    #[test]
+    fn context_lines_inc_dec_clamp() {
+        let mut app = sample();
+        assert_eq!(app.context_lines, 3);
+        // inc clamps at 50
+        for _ in 0..60 {
+            app.inc_context();
+        }
+        assert_eq!(app.context_lines, 50);
+        // dec clamps at 0
+        for _ in 0..60 {
+            app.dec_context();
+        }
+        assert_eq!(app.context_lines, 0);
+        // one more dec stays at 0
+        app.dec_context();
+        assert_eq!(app.context_lines, 0);
     }
 }

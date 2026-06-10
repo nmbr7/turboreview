@@ -111,7 +111,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 
     let title = app
         .selected_path()
-        .map(|p| format!(" Diff: {} ", p.display()))
+        .map(|p| format!(" Diff: {} (ctx {}) ", p.display(), app.context_lines))
         .unwrap_or_else(|| " Diff ".to_string());
 
     let lines: Vec<Line> = if app.diff.is_empty() {
@@ -148,6 +148,11 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                         s.style = s.style.bg(bg);
                     }
                 }
+                if dl.kind == LineKind::Context {
+                    for s in spans.iter_mut() {
+                        s.style = s.style.add_modifier(Modifier::DIM);
+                    }
+                }
                 let mut all_spans = Vec::with_capacity(1 + spans.len());
                 all_spans.push(gutter_span);
                 all_spans.extend(spans);
@@ -166,7 +171,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let base = "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:fold  q:quit";
+    let base = "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:fold  +/-:context  q:quit";
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
         None => base.to_string(),

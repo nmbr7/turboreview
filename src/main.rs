@@ -42,7 +42,7 @@ fn refresh_diff(repo: &Repo, app: &mut App) {
                 Section::Unstaged => Mode::Unstaged,
                 Section::Staged => Mode::Staged,
             };
-            match repo.diff_for(&path, mode) {
+            match repo.diff_for(&path, mode, app.context_lines) {
                 Ok(lines) => {
                     app.status_msg = None;
                     app.set_diff(lines);
@@ -158,6 +158,14 @@ fn run(
                     }
                     (KeyCode::Char('h'), _) | (KeyCode::Left, _) => {
                         if app.focus == Pane::Diff { app.scroll_h(-1); }
+                    }
+                    (KeyCode::Char('+'), _) | (KeyCode::Char('='), _) => {
+                        app.inc_context();
+                        refresh_diff(repo, app);
+                    }
+                    (KeyCode::Char('-'), _) => {
+                        app.dec_context();
+                        refresh_diff(repo, app);
                     }
                     _ => {}
                 }

@@ -50,11 +50,12 @@ impl Repo {
     }
 
     /// Build the diff lines for a single file path (relative to the repo root).
-    pub fn diff_for(&self, file: &Path, mode: Mode) -> Result<Vec<DiffLine>> {
+    pub fn diff_for(&self, file: &Path, mode: Mode, context: u32) -> Result<Vec<DiffLine>> {
         let mut opts = DiffOptions::new();
         opts.include_untracked(true)
             .recurse_untracked_dirs(true)
             .show_untracked_content(true)
+            .context_lines(context)
             .pathspec(file);
         let diff = self.diff_with_opts(mode, &mut opts)?;
 
@@ -94,7 +95,7 @@ impl Repo {
     pub fn stage_file(&self, path: &Path) -> Result<()> {
         let mut index = self.inner.index()?;
         let workdir = self.inner.workdir().context("bare repo")?;
-        if workdir.join(path).exists() {
+        if workdir.join(path).symlink_metadata().is_ok() {
             index.add_path(path)?;
         } else {
             // file deleted on disk -> stage the deletion
@@ -210,7 +211,7 @@ mod tests {
         let (dir, _repo) = init_repo();
         fs::write(dir.path().join("new.txt"), "line1\nline2\n").unwrap();
         let repo = Repo::discover(dir.path()).unwrap();
-        let lines = repo.diff_for(Path::new("new.txt"), Mode::Unstaged).unwrap();
+        let lines = repo.diff_for(Path::new("new.txt"), Mode::Unstaged, 3).unwrap();
         let added: Vec<_> = lines.iter().filter(|l| l.kind == LineKind::Add).collect();
         assert_eq!(added.len(), 2);
         assert!(added.iter().any(|l| l.text.contains("line1")));
@@ -220,7 +221,7 @@ mod tests {
     fn diff_for_missing_path_is_empty() {
         let (dir, _repo) = init_repo();
         let repo = Repo::discover(dir.path()).unwrap();
-        let lines = repo.diff_for(Path::new("missing.txt"), Mode::Unstaged).unwrap();
+        let lines = repo.diff_for(Path::new("missing.txt"), Mode::Unstaged, 3).unwrap();
         assert!(lines.is_empty());
     }
 
@@ -230,7 +231,7 @@ mod tests {
         commit_file(&repo, dir.path(), "f.txt", "alpha\nbeta\n");
         fs::write(dir.path().join("f.txt"), "alpha\nGAMMA\n").unwrap();
         let r = Repo::discover(dir.path()).unwrap();
-        let lines = r.diff_for(Path::new("f.txt"), Mode::Unstaged).unwrap();
+        let lines = r.diff_for(Path::new("f.txt"), Mode::Unstaged, 3).unwrap();
         assert!(lines.iter().any(|l| l.kind == LineKind::Add && l.text.contains("GAMMA")));
         assert!(lines.iter().any(|l| l.kind == LineKind::Del && l.text.contains("beta")));
         assert!(lines.iter().any(|l| l.kind == LineKind::Context && l.text.contains("alpha")));
@@ -241,7 +242,7 @@ mod tests {
         let (dir, repo) = init_repo();
         commit_file(&repo, dir.path(), "f.txt", "x\n");
         let r = Repo::discover(dir.path()).unwrap();
-        let lines = r.diff_for(Path::new("f.txt"), Mode::Unstaged).unwrap();
+        let lines = r.diff_for(Path::new("f.txt"), Mode::Unstaged, 3).unwrap();
         assert!(lines.is_empty());
     }
 
@@ -284,7 +285,7 @@ mod tests {
         index.add_path(Path::new("s.txt")).unwrap();
         index.write().unwrap();
         let r = Repo::discover(dir.path()).unwrap();
-        let lines = r.diff_for(Path::new("s.txt"), Mode::Staged).unwrap();
+        let lines = r.diff_for(Path::new("s.txt"), Mode::Staged, 3).unwrap();
         let adds: Vec<_> = lines.iter().filter(|l| l.kind == LineKind::Add).collect();
         assert_eq!(adds.len(), 2);
     }
