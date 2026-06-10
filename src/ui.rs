@@ -6,6 +6,7 @@ use ratatui::Frame;
 
 use crate::app::{App, LineKind, Mode, Pane};
 use crate::highlight::highlight_code;
+use crate::tree::RowKind;
 
 const SELECTED_BG: Color = Color::Rgb(60, 60, 90);
 const ADD_BG: Color = Color::Rgb(20, 50, 20);
@@ -49,17 +50,27 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Unstaged => "UNSTAGED",
     };
     let items: Vec<ListItem> = app
-        .files
+        .rows
         .iter()
         .enumerate()
-        .map(|(i, f)| {
-            let check = if app.is_reviewed(i) { "[x] " } else { "[ ] " };
+        .map(|(i, row)| {
+            let indent = "  ".repeat(row.depth);
             let mut style = Style::default();
             if i == app.selected {
                 style = style.bg(SELECTED_BG).add_modifier(Modifier::BOLD);
             }
-            let icon = crate::icons::icon_for(&f.path);
-            ListItem::new(Line::from(format!("{}{} {}", check, icon, f.path.display()))).style(style)
+            let text = match &row.kind {
+                RowKind::Dir { collapsed, .. } => {
+                    let glyph = if *collapsed { "▸" } else { "▾" };
+                    format!("{}{} {}", indent, glyph, row.name)
+                }
+                RowKind::File { file_index } => {
+                    let check = if app.is_reviewed(*file_index) { "[x] " } else { "[ ] " };
+                    let icon = crate::icons::icon_for(&app.files[*file_index].path);
+                    format!("{}{}{} {}", indent, check, icon, row.name)
+                }
+            };
+            ListItem::new(Line::from(text)).style(style)
         })
         .collect();
     let list = List::new(items).block(
@@ -136,7 +147,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let base = "Tab:focus  s:staged  Space:review  up/down/jk:move  gg/G  hl:hscroll  q:quit";
+    let base = "Tab:focus  s:staged  Space:review  up/down/jk:move  gg/G  hl:hscroll  Enter:fold  q:quit";
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
         None => base.to_string(),
@@ -242,5 +253,26 @@ mod tests {
         assert!(dump.contains("ctx"), "context text missing");
         assert!(dump.contains("added"), "add text missing");
         assert!(dump.contains("removed"), "del text missing");
+    }
+
+    #[test]
+    fn tree_view_shows_dir_and_basenames() {
+        // App with src/main.rs and top.rs → should show "src" (dir row), "main.rs" (basename), "top.rs" (basename)
+        // After the tree-view change, the full path "src/main.rs" must NOT appear as a single token —
+        // instead "src" is a dir row and "main.rs" is a file row with just the basename.
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![
+            FileChange { path: PathBuf::from("src/main.rs"), status: Status::Modified },
+            FileChange { path: PathBuf::from("top.rs"), status: Status::Modified },
+        ];
+        let app = App::new(files, PathBuf::from("/repo"));
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains("src"), "directory name 'src' missing from tree view");
+        assert!(dump.contains("main.rs"), "file basename 'main.rs' missing from tree view");
+        assert!(dump.contains("top.rs"), "file basename 'top.rs' missing from tree view");
+        // Full path "src/main.rs" should NOT appear as one token (tree renders basename only)
+        assert!(!dump.contains("src/main.rs"), "full path 'src/main.rs' should not appear; tree view shows basenames");
     }
 }

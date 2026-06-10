@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use crate::tree::{self, Row, RowKind};
+
 const MAX_HSCROLL: usize = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,11 +65,13 @@ pub struct App {
     pub diff_hscroll: usize,
     pub reviewed: HashSet<PathBuf>,
     pub status_msg: Option<String>,
+    pub collapsed: HashSet<PathBuf>,
+    pub rows: Vec<Row>,
 }
 
 impl App {
     pub fn new(files: Vec<FileChange>, repo_root: PathBuf) -> Self {
-        App {
+        let mut app = App {
             repo_root,
             mode: Mode::Unstaged,
             focus: Pane::Files,
@@ -78,11 +82,35 @@ impl App {
             diff_hscroll: 0,
             reviewed: HashSet::new(),
             status_msg: None,
+            collapsed: HashSet::new(),
+            rows: Vec::new(),
+        };
+        app.rebuild_rows();
+        app
+    }
+
+    pub fn rebuild_rows(&mut self) {
+        self.rows = tree::build_rows(&self.files, &self.collapsed);
+        let max = self.rows.len().saturating_sub(1);
+        if self.selected > max {
+            self.selected = max;
         }
     }
 
     pub fn selected_path(&self) -> Option<&PathBuf> {
-        self.files.get(self.selected).map(|f| &f.path)
+        match self.rows.get(self.selected) {
+            Some(Row { kind: RowKind::File { file_index }, .. }) => {
+                self.files.get(*file_index).map(|f| &f.path)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn selected_file_index(&self) -> Option<usize> {
+        match self.rows.get(self.selected) {
+            Some(Row { kind: RowKind::File { file_index }, .. }) => Some(*file_index),
+            _ => None,
+        }
     }
 
     pub fn set_diff(&mut self, diff: Vec<DiffLine>) {
@@ -92,10 +120,10 @@ impl App {
     }
 
     pub fn move_selection(&mut self, delta: isize) {
-        if self.files.is_empty() {
+        if self.rows.is_empty() {
             return;
         }
-        let max = self.files.len() as isize - 1;
+        let max = self.rows.len() as isize - 1;
         let next = (self.selected as isize + delta).clamp(0, max);
         self.selected = next as usize;
     }
@@ -125,7 +153,7 @@ impl App {
 
     pub fn to_bottom(&mut self) {
         match self.focus {
-            Pane::Files => self.selected = self.files.len().saturating_sub(1),
+            Pane::Files => self.selected = self.rows.len().saturating_sub(1),
             Pane::Diff => self.diff_scroll = self.diff.len().saturating_sub(1),
         }
     }
@@ -157,6 +185,20 @@ impl App {
             .get(idx)
             .map(|f| self.reviewed.contains(&f.path))
             .unwrap_or(false)
+    }
+
+    pub fn toggle_collapse(&mut self) {
+        if let Some(row) = self.rows.get(self.selected) {
+            if let RowKind::Dir { path, .. } = &row.kind {
+                let path = path.clone();
+                if self.collapsed.contains(&path) {
+                    self.collapsed.remove(&path);
+                } else {
+                    self.collapsed.insert(path);
+                }
+                self.rebuild_rows();
+            }
+        }
     }
 }
 
@@ -252,5 +294,105 @@ mod tests {
         assert_eq!(app.diff_hscroll, 3);
         app.set_diff(vec![DiffLine::context("x", 1, 1); 2]);
         assert_eq!(app.diff_hscroll, 0); // reset on new diff
+    }
+
+    // --- NEW TREE-BASED TESTS ---
+
+    #[test]
+    fn flat_files_selected_path_resolves_via_rows() {
+        // Flat files (no dirs) produce File rows; selected_path still returns file path.
+        let app = sample();
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.selected_path(), Some(&PathBuf::from("a.rs")));
+    }
+
+    #[test]
+    fn selected_file_index_returns_correct_index() {
+        let mut app = sample();
+        app.selected = 1;
+        assert_eq!(app.selected_file_index(), Some(1));
+    }
+
+    #[test]
+    fn move_selection_clamps_against_rows_length() {
+        let app = sample();
+        // 3 flat files → 3 rows; move_selection(99) clamps to 2
+        let mut app2 = sample();
+        app2.move_selection(99);
+        assert_eq!(app2.selected, 2);
+        let _ = app; // just to show same setup
+    }
+
+    #[test]
+    fn toggle_collapse_hides_and_shows_dir_children() {
+        // Build app with src/main.rs, src/ui.rs, README.md
+        let files = vec![
+            FileChange { path: PathBuf::from("src/main.rs"), status: Status::Modified },
+            FileChange { path: PathBuf::from("src/ui.rs"), status: Status::Modified },
+            FileChange { path: PathBuf::from("README.md"), status: Status::Modified },
+        ];
+        let mut app = App::new(files, PathBuf::from("/repo"));
+        // rows: Dir "src" (0), File "main.rs" (1), File "ui.rs" (2), File "README.md" (3)
+        assert_eq!(app.rows.len(), 4);
+
+        // Select the Dir row (index 0) and collapse it
+        app.selected = 0;
+        app.toggle_collapse();
+        // Now rows should be: Dir "src" (collapsed), File "README.md" → 2 rows
+        assert_eq!(app.rows.len(), 2);
+        assert!(matches!(app.rows[0].kind, crate::tree::RowKind::Dir { collapsed: true, .. }));
+
+        // Toggle again → expand back to 4 rows
+        app.selected = 0;
+        app.toggle_collapse();
+        assert_eq!(app.rows.len(), 4);
+    }
+
+    #[test]
+    fn toggle_collapse_on_file_row_does_nothing() {
+        let mut app = sample(); // flat files → all File rows
+        let initial_len = app.rows.len();
+        app.selected = 0;
+        app.toggle_collapse();
+        assert_eq!(app.rows.len(), initial_len);
+    }
+
+    #[test]
+    fn selected_path_returns_none_for_dir_row() {
+        let files = vec![
+            FileChange { path: PathBuf::from("src/main.rs"), status: Status::Modified },
+        ];
+        let mut app = App::new(files, PathBuf::from("/repo"));
+        // rows: Dir "src" (0), File "main.rs" (1)
+        app.selected = 0; // Dir row
+        assert_eq!(app.selected_path(), None);
+    }
+
+    #[test]
+    fn rebuild_rows_called_after_app_new() {
+        let app = sample();
+        // rows should be pre-built in App::new
+        assert!(!app.rows.is_empty());
+        assert_eq!(app.rows.len(), 3); // 3 flat files → 3 rows
+    }
+
+    #[test]
+    fn to_bottom_uses_rows_length() {
+        let mut app = sample();
+        app.focus = Pane::Files;
+        app.to_bottom();
+        assert_eq!(app.selected, app.rows.len() - 1);
+    }
+
+    #[test]
+    fn toggle_reviewed_on_dir_row_does_nothing() {
+        let files = vec![
+            FileChange { path: PathBuf::from("src/main.rs"), status: Status::Modified },
+        ];
+        let mut app = App::new(files, PathBuf::from("/repo"));
+        app.selected = 0; // Dir "src" row
+        app.toggle_reviewed();
+        // reviewed set should remain empty
+        assert!(app.reviewed.is_empty());
     }
 }

@@ -56,9 +56,7 @@ fn reload_files(repo: &Repo, app: &mut App) {
     match repo.changed_files(app.mode) {
         Ok(files) => {
             app.files = files;
-            if app.selected >= app.files.len() {
-                app.selected = app.files.len().saturating_sub(1);
-            }
+            app.rebuild_rows(); // rebuilds rows and clamps selected
         }
         Err(e) => app.status_msg = Some(format!("list error: {e}")),
     }
@@ -108,6 +106,12 @@ fn run(
                     (KeyCode::Char('G'), _) => app.to_bottom(),
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => move_in_focus(repo, app, -1),
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => move_in_focus(repo, app, 1),
+                    (KeyCode::Enter, _) => {
+                        if app.focus == Pane::Files {
+                            app.toggle_collapse();
+                            refresh_diff(repo, app);
+                        }
+                    }
                     (KeyCode::Char('l'), _) | (KeyCode::Right, _) => {
                         if app.focus == Pane::Diff { app.scroll_h(1); }
                     }
