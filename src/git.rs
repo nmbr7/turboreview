@@ -42,6 +42,52 @@ impl Repo {
         Ok(diff)
     }
 
+    /// Build the diff lines for a single file path (relative to the repo root).
+    pub fn diff_for(&self, file: &Path, mode: Mode) -> Result<Vec<DiffLine>> {
+        let mut opts = DiffOptions::new();
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true)
+            .pathspec(file);
+        let diff = match mode {
+            Mode::Unstaged => self.inner.diff_index_to_workdir(None, Some(&mut opts))?,
+            Mode::Staged => {
+                let head_tree = match self.inner.head() {
+                    Ok(head) => Some(head.peel_to_tree()?),
+                    Err(_) => None,
+                };
+                self.inner
+                    .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?
+            }
+        };
+
+        let mut lines = Vec::new();
+        diff.print(git2::DiffFormat::Patch, |_delta, hunk, line| {
+            let origin = line.origin();
+            let kind = match origin {
+                '+' => LineKind::Add,
+                '-' => LineKind::Del,
+                ' ' => LineKind::Context,
+                'H' => LineKind::Hunk,
+                _ => return true, // 'F' file header, binary, etc: skip
+            };
+            let text = if kind == LineKind::Hunk {
+                hunk.map(|h| String::from_utf8_lossy(h.header()).trim_end().to_string())
+                    .unwrap_or_default()
+            } else {
+                String::from_utf8_lossy(line.content()).trim_end_matches('\n').to_string()
+            };
+            lines.push(DiffLine {
+                kind,
+                text,
+                old_lineno: line.old_lineno(),
+                new_lineno: line.new_lineno(),
+            });
+            true
+        })?;
+        Ok(lines)
+    }
+
     /// List changed files for the given mode.
     pub fn changed_files(&self, mode: Mode) -> Result<Vec<FileChange>> {
         let diff = self.build_diff(mode)?;
@@ -110,5 +156,24 @@ mod tests {
         let staged = r.changed_files(Mode::Staged).unwrap();
         assert_eq!(staged.len(), 1);
         assert_eq!(staged[0].path, PathBuf::from("a.txt"));
+    }
+
+    #[test]
+    fn diff_for_untracked_file_yields_added_lines() {
+        let (dir, _repo) = init_repo();
+        fs::write(dir.path().join("new.txt"), "line1\nline2\n").unwrap();
+        let repo = Repo::discover(dir.path()).unwrap();
+        let lines = repo.diff_for(Path::new("new.txt"), Mode::Unstaged).unwrap();
+        let added: Vec<_> = lines.iter().filter(|l| l.kind == LineKind::Add).collect();
+        assert_eq!(added.len(), 2);
+        assert!(added.iter().any(|l| l.text.contains("line1")));
+    }
+
+    #[test]
+    fn diff_for_unchanged_file_is_empty() {
+        let (dir, _repo) = init_repo();
+        let repo = Repo::discover(dir.path()).unwrap();
+        let lines = repo.diff_for(Path::new("missing.txt"), Mode::Unstaged).unwrap();
+        assert!(lines.is_empty());
     }
 }
