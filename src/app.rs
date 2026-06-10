@@ -114,8 +114,8 @@ impl App {
 
     pub fn to_bottom(&mut self) {
         match self.focus {
-            Pane::Files => self.move_selection(isize::MAX / 2),
-            Pane::Diff => self.scroll_diff(isize::MAX / 2),
+            Pane::Files => self.selected = self.files.len().saturating_sub(1),
+            Pane::Diff => self.diff_scroll = self.diff.len().saturating_sub(1),
         }
     }
 
@@ -209,6 +209,17 @@ mod tests {
         assert_eq!(app.selected, 2);
         app.to_top();
         assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn set_diff_resets_scroll() {
+        let mut app = sample();
+        app.set_diff(vec![DiffLine::context("x", 1, 1); 5]);
+        app.focus = Pane::Diff;
+        app.scroll_diff(3);
+        assert_eq!(app.diff_scroll, 3);
+        app.set_diff(vec![DiffLine::context("y", 1, 1); 2]);
+        assert_eq!(app.diff_scroll, 0);
     }
 
     #[test]
