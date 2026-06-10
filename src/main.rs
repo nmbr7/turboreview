@@ -109,7 +109,11 @@ fn run(
                     (KeyCode::Enter, _) => {
                         if app.focus == Pane::Files {
                             app.toggle_collapse();
-                            refresh_diff(repo, app);
+                            // Only reload the diff if the selection now sits on a
+                            // file; collapsing a dir shouldn't wipe the visible diff.
+                            if app.selected_path().is_some() {
+                                refresh_diff(repo, app);
+                            }
                         }
                     }
                     (KeyCode::Char('l'), _) | (KeyCode::Right, _) => {

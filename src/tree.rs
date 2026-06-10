@@ -229,4 +229,23 @@ mod tests {
         assert_eq!(rows[1].name, "README.md");
         assert_eq!(rows[1].kind, RowKind::File { file_index: 2 });
     }
+
+    #[test]
+    fn same_basename_at_root_and_nested_stay_distinct() {
+        // A file at root and one nested under a dir share the basename "foo.rs".
+        // They must remain two separate File rows pointing at distinct indices.
+        let files = make_files(&["foo.rs", "src/foo.rs"]);
+        let collapsed = HashSet::new();
+        let rows = build_rows(&files, &collapsed);
+
+        // Expected order: Dir "src" (depth 0), File "foo.rs" (depth 1, index 1),
+        // File "foo.rs" (depth 0, index 0) — dirs sort before files at root.
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].name, "src");
+        assert!(matches!(rows[0].kind, RowKind::Dir { .. }));
+        assert_eq!(rows[1].depth, 1);
+        assert_eq!(rows[1].kind, RowKind::File { file_index: 1 });
+        assert_eq!(rows[2].depth, 0);
+        assert_eq!(rows[2].kind, RowKind::File { file_index: 0 });
+    }
 }
