@@ -273,11 +273,11 @@ impl App {
     }
 
     pub fn inc_context(&mut self) {
-        self.context_lines = (self.context_lines + 1).min(50);
+        self.context_lines = (self.context_lines + 5).min(50);
     }
 
     pub fn dec_context(&mut self) {
-        self.context_lines = self.context_lines.saturating_sub(1);
+        self.context_lines = self.context_lines.saturating_sub(5);
     }
 }
 
@@ -565,6 +565,11 @@ mod tests {
     #[test]
     fn context_lines_inc_dec_clamp() {
         let mut app = sample();
+        assert_eq!(app.context_lines, 3);
+        // step is 5
+        app.inc_context();
+        assert_eq!(app.context_lines, 8);
+        app.dec_context();
         assert_eq!(app.context_lines, 3);
         // inc clamps at 50
         for _ in 0..60 {
