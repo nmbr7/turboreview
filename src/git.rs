@@ -25,21 +25,28 @@ impl Repo {
             .context("repository has no working directory (bare repo)")
     }
 
-    fn build_diff(&self, mode: Mode) -> Result<Diff<'_>> {
-        let mut opts = DiffOptions::new();
-        opts.include_untracked(true).recurse_untracked_dirs(true);
+    /// Shared diff builder: runs the mode match with the given pre-configured options.
+    fn diff_with_opts<'a>(&'a self, mode: Mode, opts: &mut DiffOptions) -> Result<Diff<'a>> {
         let diff = match mode {
-            Mode::Unstaged => self.inner.diff_index_to_workdir(None, Some(&mut opts))?,
+            Mode::Unstaged => self.inner.diff_index_to_workdir(None, Some(opts))?,
             Mode::Staged => {
                 let head_tree = match self.inner.head() {
                     Ok(head) => Some(head.peel_to_tree()?),
                     Err(_) => None, // unborn HEAD: compare empty tree -> index
                 };
                 self.inner
-                    .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?
+                    .diff_tree_to_index(head_tree.as_ref(), None, Some(opts))?
             }
         };
         Ok(diff)
+    }
+
+    // Only file metadata is needed here (not line content), so
+    // show_untracked_content is intentionally omitted. Use diff_for for content.
+    fn build_diff(&self, mode: Mode) -> Result<Diff<'_>> {
+        let mut opts = DiffOptions::new();
+        opts.include_untracked(true).recurse_untracked_dirs(true);
+        self.diff_with_opts(mode, &mut opts)
     }
 
     /// Build the diff lines for a single file path (relative to the repo root).
@@ -49,17 +56,7 @@ impl Repo {
             .recurse_untracked_dirs(true)
             .show_untracked_content(true)
             .pathspec(file);
-        let diff = match mode {
-            Mode::Unstaged => self.inner.diff_index_to_workdir(None, Some(&mut opts))?,
-            Mode::Staged => {
-                let head_tree = match self.inner.head() {
-                    Ok(head) => Some(head.peel_to_tree()?),
-                    Err(_) => None,
-                };
-                self.inner
-                    .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?
-            }
-        };
+        let diff = self.diff_with_opts(mode, &mut opts)?;
 
         let mut lines = Vec::new();
         diff.print(git2::DiffFormat::Patch, |_delta, hunk, line| {
@@ -72,10 +69,14 @@ impl Repo {
                 _ => return true, // 'F' file header, binary, etc: skip
             };
             let text = if kind == LineKind::Hunk {
-                hunk.map(|h| String::from_utf8_lossy(h.header()).trim_end().to_string())
-                    .unwrap_or_default()
+                match hunk {
+                    Some(h) => String::from_utf8_lossy(h.header()).trim_end().to_string(),
+                    None => String::from_utf8_lossy(line.content()).trim_end().to_string(),
+                }
             } else {
-                String::from_utf8_lossy(line.content()).trim_end_matches('\n').to_string()
+                String::from_utf8_lossy(line.content())
+                    .trim_end_matches(|c| c == '\n' || c == '\r')
+                    .to_string()
             };
             lines.push(DiffLine {
                 kind,
@@ -109,7 +110,7 @@ impl Repo {
 fn map_status(s: git2::Delta) -> Status {
     use git2::Delta::*;
     match s {
-        Added | Untracked => Status::Added,
+        Added | Untracked | Copied => Status::Added,
         Deleted => Status::Deleted,
         Modified => Status::Modified,
         Renamed => Status::Renamed,
@@ -131,6 +132,19 @@ mod tests {
         cfg.set_str("user.name", "t").unwrap();
         cfg.set_str("user.email", "t@t").unwrap();
         (dir, repo)
+    }
+
+    fn commit_file(repo: &Repository, dir: &Path, name: &str, content: &str) {
+        fs::write(dir.join(name), content).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(name)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, "c", &tree, &parents).unwrap();
     }
 
     #[test]
@@ -170,10 +184,44 @@ mod tests {
     }
 
     #[test]
-    fn diff_for_unchanged_file_is_empty() {
+    fn diff_for_missing_path_is_empty() {
         let (dir, _repo) = init_repo();
         let repo = Repo::discover(dir.path()).unwrap();
         let lines = repo.diff_for(Path::new("missing.txt"), Mode::Unstaged).unwrap();
         assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn diff_for_modified_tracked_file_has_add_and_del_lines() {
+        let (dir, repo) = init_repo();
+        commit_file(&repo, dir.path(), "f.txt", "alpha\nbeta\n");
+        fs::write(dir.path().join("f.txt"), "alpha\nGAMMA\n").unwrap();
+        let r = Repo::discover(dir.path()).unwrap();
+        let lines = r.diff_for(Path::new("f.txt"), Mode::Unstaged).unwrap();
+        assert!(lines.iter().any(|l| l.kind == LineKind::Add && l.text.contains("GAMMA")));
+        assert!(lines.iter().any(|l| l.kind == LineKind::Del && l.text.contains("beta")));
+        assert!(lines.iter().any(|l| l.kind == LineKind::Context && l.text.contains("alpha")));
+    }
+
+    #[test]
+    fn diff_for_unmodified_tracked_file_is_empty() {
+        let (dir, repo) = init_repo();
+        commit_file(&repo, dir.path(), "f.txt", "x\n");
+        let r = Repo::discover(dir.path()).unwrap();
+        let lines = r.diff_for(Path::new("f.txt"), Mode::Unstaged).unwrap();
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn diff_for_staged_unborn_head_yields_add_lines() {
+        let (dir, repo) = init_repo();
+        fs::write(dir.path().join("s.txt"), "one\ntwo\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("s.txt")).unwrap();
+        index.write().unwrap();
+        let r = Repo::discover(dir.path()).unwrap();
+        let lines = r.diff_for(Path::new("s.txt"), Mode::Staged).unwrap();
+        let adds: Vec<_> = lines.iter().filter(|l| l.kind == LineKind::Add).collect();
+        assert_eq!(adds.len(), 2);
     }
 }
