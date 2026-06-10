@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseEventKind,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -71,41 +74,48 @@ fn run(
     loop {
         terminal.draw(|f| ui::render(f, app))?;
 
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
+        match event::read()? {
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
 
-        if matches!(key.code, KeyCode::Char('g')) && key.modifiers.is_empty() {
-            if pending_g {
-                app.to_top();
+                if matches!(key.code, KeyCode::Char('g')) && key.modifiers.is_empty() {
+                    if pending_g {
+                        app.to_top();
+                        pending_g = false;
+                    } else {
+                        pending_g = true;
+                    }
+                    continue;
+                }
                 pending_g = false;
-            } else {
-                pending_g = true;
-            }
-            continue;
-        }
-        pending_g = false;
 
-        match (key.code, key.modifiers) {
-            (KeyCode::Char('q'), _) => return Ok(()),
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(()),
-            (KeyCode::Tab, _) => app.toggle_focus(),
-            (KeyCode::Char('s'), _) => {
-                app.toggle_mode();
-                reload_files(repo, app);
-            }
-            (KeyCode::Char(' '), _) => {
-                app.toggle_reviewed();
-                if let Err(e) = review::save(&app.repo_root, &app.reviewed) {
-                    app.status_msg = Some(format!("save error: {e}"));
+                match (key.code, key.modifiers) {
+                    (KeyCode::Char('q'), _) => return Ok(()),
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(()),
+                    (KeyCode::Tab, _) => app.toggle_focus(),
+                    (KeyCode::Char('s'), _) => {
+                        app.toggle_mode();
+                        reload_files(repo, app);
+                    }
+                    (KeyCode::Char(' '), _) => {
+                        app.toggle_reviewed();
+                        if let Err(e) = review::save(&app.repo_root, &app.reviewed) {
+                            app.status_msg = Some(format!("save error: {e}"));
+                        }
+                    }
+                    (KeyCode::Char('G'), _) => app.to_bottom(),
+                    (KeyCode::Up, _) | (KeyCode::Char('k'), _) => move_in_focus(repo, app, -1),
+                    (KeyCode::Down, _) | (KeyCode::Char('j'), _) => move_in_focus(repo, app, 1),
+                    _ => {}
                 }
             }
-            (KeyCode::Char('G'), _) => app.to_bottom(),
-            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => move_in_focus(repo, app, -1),
-            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => move_in_focus(repo, app, 1),
+            Event::Mouse(m) => match m.kind {
+                MouseEventKind::ScrollUp => move_in_focus(repo, app, -1),
+                MouseEventKind::ScrollDown => move_in_focus(repo, app, 1),
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -124,11 +134,11 @@ fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
         hook(info);
     }));
     let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
@@ -137,7 +147,7 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
     Ok(())
 }
