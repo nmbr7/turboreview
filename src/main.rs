@@ -176,6 +176,9 @@ fn run(
                         app.dec_context();
                         refresh_diff(repo, app);
                     }
+                    (KeyCode::Char('z'), _) => app.toggle_files(),
+                    (KeyCode::Char('>'), _) | (KeyCode::Char('.'), _) => app.widen_files(),
+                    (KeyCode::Char('<'), _) | (KeyCode::Char(','), _) => app.narrow_files(),
                     _ => {}
                 }
             }

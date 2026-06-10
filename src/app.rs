@@ -76,6 +76,8 @@ pub struct App {
     pub hide_reviewed: bool,
     pub context_lines: u32,
     pub full_file: bool,
+    pub show_files: bool,
+    pub file_pane_pct: u16,
 }
 
 enum RowId {
@@ -101,6 +103,8 @@ impl App {
             hide_reviewed: false,
             context_lines: 3,
             full_file: false,
+            show_files: true,
+            file_pane_pct: 25,
         };
         app.rebuild_rows();
         app
@@ -108,6 +112,24 @@ impl App {
 
     pub fn toggle_full_file(&mut self) {
         self.full_file = !self.full_file;
+    }
+
+    pub fn toggle_files(&mut self) {
+        self.show_files = !self.show_files;
+        // Can't navigate a hidden file list — keep focus on the diff while hidden.
+        if !self.show_files {
+            self.focus = Pane::Diff;
+        } else {
+            self.focus = Pane::Files;
+        }
+    }
+
+    pub fn widen_files(&mut self) {
+        self.file_pane_pct = (self.file_pane_pct + 5).min(60);
+    }
+
+    pub fn narrow_files(&mut self) {
+        self.file_pane_pct = self.file_pane_pct.saturating_sub(5).max(10);
     }
 
     pub fn effective_context(&self) -> u32 {
@@ -584,5 +606,36 @@ mod tests {
         // one more dec stays at 0
         app.dec_context();
         assert_eq!(app.context_lines, 0);
+    }
+
+    #[test]
+    fn file_pane_resize_clamps() {
+        let mut app = sample();
+        assert_eq!(app.file_pane_pct, 25);
+        // widen to clamp at 60
+        for _ in 0..20 {
+            app.widen_files();
+        }
+        assert_eq!(app.file_pane_pct, 60);
+        // narrow to clamp at 10
+        for _ in 0..20 {
+            app.narrow_files();
+        }
+        assert_eq!(app.file_pane_pct, 10);
+    }
+
+    #[test]
+    fn toggle_files_sets_focus() {
+        let mut app = sample();
+        assert_eq!(app.show_files, true);
+        assert_eq!(app.focus, Pane::Files);
+        // toggle off: show_files false + focus Diff
+        app.toggle_files();
+        assert_eq!(app.show_files, false);
+        assert_eq!(app.focus, Pane::Diff);
+        // toggle on: show_files true + focus Files
+        app.toggle_files();
+        assert_eq!(app.show_files, true);
+        assert_eq!(app.focus, Pane::Files);
     }
 }

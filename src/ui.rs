@@ -23,13 +23,20 @@ pub fn render(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
-    let panes = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
-        .split(outer[0]);
-
-    render_files(frame, app, panes[0]);
-    render_diff(frame, app, panes[1]);
+    let main_area = outer[0];
+    if app.show_files {
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(app.file_pane_pct),
+                Constraint::Percentage(100 - app.file_pane_pct),
+            ])
+            .split(main_area);
+        render_files(frame, app, panes[0]);
+        render_diff(frame, app, panes[1]);
+    } else {
+        render_diff(frame, app, main_area);
+    }
     render_status(frame, app, outer[1]);
 }
 
@@ -176,7 +183,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let base = "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:files  F:full-file  +/-:context  q:quit";
+    let base = "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:files  F:full-file  +/-:context  z:hide-files  <>:resize  q:quit";
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
         None => base.to_string(),
@@ -340,5 +347,18 @@ mod tests {
         assert!(dump.contains("Files"), "Files title missing");
         assert!(!dump.contains("STAGED"), "[STAGED] mode label should be gone");
         assert!(!dump.contains("UNSTAGED"), "[UNSTAGED] mode label should be gone");
+    }
+
+    #[test]
+    fn hidden_file_pane_shows_only_diff() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("zzz.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.show_files = false;
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(!dump.contains("zzz.rs")); // file pane hidden
+        assert!(dump.contains("No changes") || dump.contains("Diff")); // diff pane present
     }
 }
