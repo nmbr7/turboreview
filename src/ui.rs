@@ -11,6 +11,14 @@ const SELECTED_BG: Color = Color::Rgb(60, 60, 90);
 const ADD_BG: Color = Color::Rgb(20, 50, 20);
 const DEL_BG: Color = Color::Rgb(55, 20, 20);
 
+fn gutter(dl: &crate::app::DiffLine) -> String {
+    let n = dl.new_lineno.or(dl.old_lineno);
+    match n {
+        Some(n) => format!("{:>4} ", n),
+        None => "     ".to_string(),
+    }
+}
+
 pub fn render(frame: &mut Frame, app: &App) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -97,13 +105,20 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                         Style::default().fg(Color::Cyan),
                     ));
                 }
+                let gutter_span = Span::styled(
+                    gutter(dl),
+                    Style::default().fg(Color::DarkGray),
+                );
                 let mut spans: Vec<Span> = highlight_code(&dl.text, &ext);
                 if let Some(bg) = bg {
                     for s in spans.iter_mut() {
                         s.style = s.style.bg(bg);
                     }
                 }
-                Line::from(spans)
+                let mut all_spans = Vec::with_capacity(1 + spans.len());
+                all_spans.push(gutter_span);
+                all_spans.extend(spans);
+                Line::from(all_spans)
             })
             .collect()
     };
@@ -179,5 +194,29 @@ mod tests {
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains("No changes"));
+    }
+
+    #[test]
+    fn diff_shows_line_numbers() {
+        use crate::app::LineKind;
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, PathBuf::from("/repo"));
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Context, text: "ctx".into(), old_lineno: Some(7), new_lineno: Some(7) },
+            DiffLine { kind: LineKind::Add, text: "added".into(), old_lineno: None, new_lineno: Some(8) },
+            DiffLine { kind: LineKind::Del, text: "removed".into(), old_lineno: Some(5), new_lineno: None },
+        ]);
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        // gutter line numbers must appear in the rendered buffer
+        assert!(dump.contains('7'), "context line number 7 missing");
+        assert!(dump.contains('8'), "add line number 8 missing");
+        assert!(dump.contains('5'), "del line number 5 missing");
+        // code text must still appear
+        assert!(dump.contains("ctx"), "context text missing");
+        assert!(dump.contains("added"), "add text missing");
+        assert!(dump.contains("removed"), "del text missing");
     }
 }
