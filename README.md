@@ -19,7 +19,7 @@ Run inside (or point at) any git repository.
 - **Left pane — Files.** Two sections, `▌ Unstaged (N)` and `▌ Staged (N)`, each a
   collapsible directory tree. The selected file's diff loads on the right. A tick
   (`✓` reviewed / `○` not) sits to the left of each filename; file-type icons use
-  Nerd Font glyphs.
+  Nerd Font glyphs. The pane can be resized or hidden entirely (see keys).
 - **Right pane — Diff.** Syntax-highlighted code with a line-number gutter.
   Added/removed lines are bright with a green/red background; unchanged context
   lines are dimmed so changes stand out. The title shows `(ctx N)` or
@@ -38,6 +38,8 @@ Run inside (or point at) any git repository.
 | `h`/`l` `←`/`→`  | scroll the diff horizontally (Diff pane)                     |
 | `+` / `-`        | increase / decrease diff context lines (step 5)              |
 | `F`              | toggle full-file view (whole file vs hunks only)             |
+| `z`              | hide / show the file pane (diff goes full-width)             |
+| `<` / `>`        | narrow / widen the file pane                                 |
 | `s`              | stage the selected file (Unstaged) / unstage it (Staged)     |
 | `Space`          | toggle the reviewed checkbox on the selected file            |
 | `R`              | toggle hiding reviewed files                                 |
