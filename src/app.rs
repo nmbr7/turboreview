@@ -4,6 +4,15 @@ use std::path::{Path, PathBuf};
 use crate::comments::Comments;
 use crate::tree::{Row, RowKind};
 
+/// Which storage scope is currently active for comments and reviewed flags.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommentScope {
+    /// Working-tree scope: `.turboreview/`
+    Worktree,
+    /// Per-commit scope: `.turboreview/commits/<sha>/`
+    Commit(String),
+}
+
 const MAX_HSCROLL: usize = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -117,6 +126,7 @@ pub struct App {
     pub open_commit: Option<String>,
     pub commit_files: Vec<FileChange>,
     pub show_help: bool,
+    pub comment_scope: CommentScope,
 }
 
 enum RowId {
@@ -152,6 +162,7 @@ impl App {
             open_commit: None,
             commit_files: Vec::new(),
             show_help: false,
+            comment_scope: CommentScope::Worktree,
         };
         app.rebuild_rows();
         app
@@ -359,6 +370,7 @@ impl App {
         if prev == ViewMode::Commits && self.view == ViewMode::Changes {
             self.open_commit = None;
             self.commit_files.clear();
+            self.comment_scope = CommentScope::Worktree;
         }
         // Rows reference the previous view's file set; rebuild so they can't point
         // into a now-cleared list (e.g. commit_files after leaving a commit detail).
@@ -385,7 +397,9 @@ impl App {
 
     /// Open a commit detail view: set the commit's changed files, record its id,
     /// reset the row selection to the first row, and rebuild rows.
+    /// Also sets `comment_scope` to `Commit(id)`.
     pub fn open_commit(&mut self, id: String, files: Vec<FileChange>) {
+        self.comment_scope = CommentScope::Commit(id.clone());
         self.commit_files = files;
         self.open_commit = Some(id);
         self.selected = 0;
@@ -393,10 +407,21 @@ impl App {
     }
 
     /// Close the commit detail view, returning to the commit list.
+    /// Also resets `comment_scope` to `Worktree`.
     pub fn close_commit(&mut self) {
         self.open_commit = None;
         self.commit_files.clear();
+        self.comment_scope = CommentScope::Worktree;
         self.rebuild_rows();
+    }
+
+    /// Return a string label for the current comment scope suitable for the comment log.
+    /// `"worktree"` for working-tree scope, `"commit:<sha>"` for per-commit scope.
+    pub fn scope_label(&self) -> String {
+        match &self.comment_scope {
+            CommentScope::Worktree => "worktree".to_string(),
+            CommentScope::Commit(sha) => format!("commit:{}", sha),
+        }
     }
 
     /// True when we are in the Commits view AND a commit has been drilled into.
@@ -1292,5 +1317,71 @@ mod tests {
         assert_eq!(result[0].path, PathBuf::from("x.rs"));
         assert_eq!(result[1].path, PathBuf::from("y.rs"));
         assert_eq!(result[2].path, PathBuf::from("z.rs"));
+    }
+
+    // ── CommentScope tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn open_commit_sets_comment_scope_to_commit() {
+        let mut app = sample();
+        app.view = ViewMode::Commits;
+        assert_eq!(app.comment_scope, CommentScope::Worktree);
+
+        let files = make_commit_files(&["a.rs"]);
+        app.open_commit("deadbeef1234567890abcdef".to_string(), files);
+
+        assert_eq!(
+            app.comment_scope,
+            CommentScope::Commit("deadbeef1234567890abcdef".to_string())
+        );
+    }
+
+    #[test]
+    fn close_commit_resets_comment_scope_to_worktree() {
+        let mut app = sample();
+        app.view = ViewMode::Commits;
+        let files = make_commit_files(&["a.rs"]);
+        app.open_commit("deadbeef1234567890abcdef".to_string(), files);
+        assert_eq!(
+            app.comment_scope,
+            CommentScope::Commit("deadbeef1234567890abcdef".to_string())
+        );
+
+        app.close_commit();
+
+        assert_eq!(app.comment_scope, CommentScope::Worktree);
+    }
+
+    #[test]
+    fn next_view_from_commits_resets_scope_to_worktree() {
+        let mut app = sample();
+        app.view = ViewMode::Commits;
+        let files = make_commit_files(&["a.rs"]);
+        app.open_commit("aabbccdd11223344".to_string(), files);
+        assert_eq!(
+            app.comment_scope,
+            CommentScope::Commit("aabbccdd11223344".to_string())
+        );
+
+        // next_view from Commits -> Changes clears open_commit and resets scope
+        app.next_view();
+
+        assert_eq!(app.view, ViewMode::Changes);
+        assert_eq!(app.comment_scope, CommentScope::Worktree);
+    }
+
+    #[test]
+    fn scope_label_worktree() {
+        let app = sample();
+        assert_eq!(app.scope_label(), "worktree");
+    }
+
+    #[test]
+    fn scope_label_commit() {
+        let mut app = sample();
+        app.view = ViewMode::Commits;
+        let files = make_commit_files(&["a.rs"]);
+        app.open_commit("abc123def456".to_string(), files);
+        assert_eq!(app.scope_label(), "commit:abc123def456");
     }
 }

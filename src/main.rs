@@ -1,5 +1,5 @@
 use std::io::{self, Stdout};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use ratatui::backend::CrosstermBackend;
@@ -13,10 +13,10 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::Terminal;
 
-use turboreview::app::{App, Mode, Pane, Section, ViewMode};
+use turboreview::app::{App, CommentScope, Mode, Pane, Section, ViewMode};
 use turboreview::comments;
 use turboreview::git::Repo;
-use turboreview::{review, ui};
+use turboreview::{review, storage, ui};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -31,8 +31,10 @@ fn main() -> Result<()> {
     let unstaged = repo.changed_files(Mode::Unstaged)?;
     let staged = repo.changed_files(Mode::Staged)?;
     let mut app = App::new(unstaged, staged, root.clone());
-    app.reviewed = review::load(&root)?;
-    app.comments = comments::Comments::load(&root).unwrap_or_default();
+    // Startup: load from worktree scope
+    let wt_dir = storage::worktree_dir(&root);
+    app.reviewed = review::load(&wt_dir).unwrap_or_default();
+    app.comments = comments::Comments::load(&wt_dir).unwrap_or_default();
     app.commits = repo.log(200).unwrap_or_default();
     refresh_diff(&repo, &mut app);
 
@@ -40,6 +42,16 @@ fn main() -> Result<()> {
     let result = run(&mut terminal, &repo, &mut app);
     let restore = restore_terminal(&mut terminal);
     result.and(restore)
+}
+
+/// Load the comments and reviewed set for the current scope into `app`.
+fn load_scope(repo_root: &Path, app: &mut App) {
+    let dir = match &app.comment_scope {
+        CommentScope::Worktree => storage::worktree_dir(repo_root),
+        CommentScope::Commit(sha) => storage::commit_dir(repo_root, sha),
+    };
+    app.comments = comments::Comments::load(&dir).unwrap_or_default();
+    app.reviewed = review::load(&dir).unwrap_or_default();
 }
 
 fn refresh_diff(repo: &Repo, app: &mut App) {
@@ -135,9 +147,8 @@ fn reload_everything(repo: &Repo, app: &mut App) {
             app.commit_files = repo.commit_files(&id).unwrap_or_default();
         }
     }
-    // Reload reviewed set and comments
-    app.reviewed = review::load(&app.repo_root).unwrap_or_default();
-    app.comments = comments::Comments::load(&app.repo_root).unwrap_or_default();
+    // Reload reviewed set and comments from the CURRENT scope
+    load_scope(&app.repo_root.clone(), app);
     // Rebuild rows and refresh diff
     app.rebuild_rows();
     refresh_diff(repo, app);
@@ -168,22 +179,37 @@ fn run(
                             // FIX 4: anchor comes from CommittedComment (captured at start_comment time).
                             if let Some(committed) = app.input_commit() {
                                 let trimmed = committed.text.trim().to_string();
+                                let action = if trimmed.is_empty() { "remove" } else { "set" };
                                 if trimmed.is_empty() {
                                     app.comments.remove(&committed.file, committed.line);
                                 } else {
                                     app.comments.set(
-                                        committed.file,
+                                        committed.file.clone(),
                                         committed.line,
-                                        committed.hunk,
+                                        committed.hunk.clone(),
                                         trimmed,
-                                        committed.line_text,
-                                        committed.context_before,
-                                        committed.context_after,
+                                        committed.line_text.clone(),
+                                        committed.context_before.clone(),
+                                        committed.context_after.clone(),
                                     );
                                 }
-                                if let Err(e) = app.comments.save(&app.repo_root) {
+                                // Save to the current scope directory
+                                let scope_dir = match &app.comment_scope {
+                                    CommentScope::Worktree => storage::worktree_dir(&app.repo_root),
+                                    CommentScope::Commit(sha) => storage::commit_dir(&app.repo_root, sha),
+                                };
+                                if let Err(e) = app.comments.save(&scope_dir) {
                                     app.status_msg = Some(format!("comment save error: {e}"));
                                 }
+                                // Append to the comment log (best-effort)
+                                let scope_label = app.scope_label();
+                                let _ = storage::append_comment_log(
+                                    &app.repo_root,
+                                    &committed.file,
+                                    committed.line,
+                                    &scope_label,
+                                    action,
+                                );
                             }
                         }
                         KeyCode::Enter => app.input_newline(),
@@ -249,7 +275,12 @@ fn run(
                         // toggle_reviewed would act on the wrong file, so ignore.
                         if !(app.view == ViewMode::Commits && !app.in_commit_detail()) {
                             app.toggle_reviewed();
-                            if let Err(e) = review::save(&app.repo_root, &app.reviewed) {
+                            // Save reviewed to the current scope directory
+                            let scope_dir = match &app.comment_scope {
+                                CommentScope::Worktree => storage::worktree_dir(&app.repo_root),
+                                CommentScope::Commit(sha) => storage::commit_dir(&app.repo_root, sha),
+                            };
+                            if let Err(e) = review::save(&scope_dir, &app.reviewed) {
                                 app.status_msg = Some(format!("save error: {e}"));
                             }
                             refresh_diff(repo, app);
@@ -277,7 +308,9 @@ fn run(
                                     match repo.commit_files(&id) {
                                         Ok(files) => {
                                             app.status_msg = None;
-                                            app.open_commit(id, files);
+                                            app.open_commit(id.clone(), files);
+                                            // Load this commit's scope data
+                                            load_scope(&app.repo_root.clone(), app);
                                             refresh_diff(repo, app);
                                         }
                                         Err(e) => {
@@ -305,6 +338,8 @@ fn run(
                         } else if app.in_commit_detail() {
                             // On the commit's file list: back out to the commit list.
                             app.close_commit();
+                            // Reload worktree scope after leaving commit detail
+                            load_scope(&app.repo_root.clone(), app);
                         } else {
                             app.focus = Pane::Files;
                         }
@@ -327,8 +362,22 @@ fn run(
                         app.dec_context();
                         refresh_diff(repo, app);
                     }
-                    (KeyCode::Char(']'), _) => app.next_view(),
-                    (KeyCode::Char('['), _) => app.prev_view(),
+                    (KeyCode::Char(']'), _) => {
+                        let was_in_commit = app.in_commit_detail();
+                        app.next_view();
+                        // If we were in a commit detail and left, reload worktree scope
+                        if was_in_commit {
+                            load_scope(&app.repo_root.clone(), app);
+                        }
+                    }
+                    (KeyCode::Char('['), _) => {
+                        let was_in_commit = app.in_commit_detail();
+                        app.prev_view();
+                        // If we were in a commit detail and left, reload worktree scope
+                        if was_in_commit {
+                            load_scope(&app.repo_root.clone(), app);
+                        }
+                    }
                     (KeyCode::Char('z'), _) => app.toggle_files(),
                     (KeyCode::Char('>'), _) | (KeyCode::Char('.'), _) => app.widen_files(),
                     (KeyCode::Char('<'), _) | (KeyCode::Char(','), _) => app.narrow_files(),

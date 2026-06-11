@@ -51,8 +51,11 @@ pub struct Comments {
 }
 
 impl Comments {
-    pub fn load(repo_root: &Path) -> Result<Comments> {
-        let file = path_for(repo_root);
+    /// Load comments from `<scope_dir>/comments.json`.
+    /// `scope_dir` is either `<repo_root>/.turboreview` (worktree scope)
+    /// or `<repo_root>/.turboreview/commits/<sha>` (commit scope).
+    pub fn load(scope_dir: &Path) -> Result<Comments> {
+        let file = path_for(scope_dir);
         if !file.exists() {
             return Ok(Comments::default());
         }
@@ -61,11 +64,11 @@ impl Comments {
         Ok(Comments { items })
     }
 
-    pub fn save(&self, repo_root: &Path) -> Result<()> {
-        let dir = repo_root.join(".turboreview");
-        std::fs::create_dir_all(&dir)?;
+    /// Save comments to `<scope_dir>/comments.json`, creating the directory if needed.
+    pub fn save(&self, scope_dir: &Path) -> Result<()> {
+        std::fs::create_dir_all(scope_dir)?;
         let json = serde_json::to_vec_pretty(&self.items)?;
-        std::fs::write(dir.join("comments.json"), json)?;
+        std::fs::write(scope_dir.join("comments.json"), json)?;
         Ok(())
     }
 
@@ -107,8 +110,8 @@ impl Comments {
     }
 }
 
-fn path_for(repo_root: &Path) -> PathBuf {
-    repo_root.join(".turboreview").join("comments.json")
+fn path_for(scope_dir: &Path) -> PathBuf {
+    scope_dir.join("comments.json")
 }
 
 /// Outcome of trying to relocate a comment.
@@ -465,13 +468,15 @@ mod tests {
     #[test]
     fn load_missing_returns_empty() {
         let dir = tempdir().unwrap();
-        let comments = Comments::load(dir.path()).unwrap();
+        let scope = dir.path().join(".turboreview");
+        let comments = Comments::load(&scope).unwrap();
         assert!(comments.items.is_empty());
     }
 
     #[test]
     fn set_save_load_round_trip() {
         let dir = tempdir().unwrap();
+        let scope = dir.path().join(".turboreview");
         let mut comments = Comments::default();
         comments.set(
             PathBuf::from("src/main.rs"),
@@ -482,10 +487,10 @@ mod tests {
             vec![],
             vec![],
         );
-        comments.save(dir.path()).unwrap();
-        assert!(dir.path().join(".turboreview/comments.json").exists());
+        comments.save(&scope).unwrap();
+        assert!(scope.join("comments.json").exists());
 
-        let loaded = Comments::load(dir.path()).unwrap();
+        let loaded = Comments::load(&scope).unwrap();
         assert_eq!(loaded.items.len(), 1);
         let c = &loaded.items[0];
         assert_eq!(c.file, PathBuf::from("src/main.rs"));
@@ -555,6 +560,7 @@ mod tests {
     #[test]
     fn comment_status_response_round_trips_through_save_load() {
         let dir = tempdir().unwrap();
+        let scope = dir.path().join(".turboreview");
         let mut comments = Comments::default();
         comments.set(
             PathBuf::from("src/main.rs"),
@@ -568,9 +574,9 @@ mod tests {
         // Manually set status and response on the created comment
         comments.items[0].status = CommentStatus::Resolved;
         comments.items[0].response = Some("Fixed in latest commit".to_string());
-        comments.save(dir.path()).unwrap();
+        comments.save(&scope).unwrap();
 
-        let loaded = Comments::load(dir.path()).unwrap();
+        let loaded = Comments::load(&scope).unwrap();
         assert_eq!(loaded.items.len(), 1);
         let c = &loaded.items[0];
         assert_eq!(c.status, CommentStatus::Resolved);
