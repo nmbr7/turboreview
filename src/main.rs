@@ -106,13 +106,21 @@ fn run(
                     match key.code {
                         KeyCode::Esc => app.input_cancel(),
                         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            if let Some((file, line, hunk, text)) = app.input_commit() {
-                                let trimmed = text.trim().to_string();
+                            // FIX 4: anchor comes from CommittedComment (captured at start_comment time).
+                            if let Some(committed) = app.input_commit() {
+                                let trimmed = committed.text.trim().to_string();
                                 if trimmed.is_empty() {
-                                    app.comments.remove(&file, line);
+                                    app.comments.remove(&committed.file, committed.line);
                                 } else {
-                                    let (line_text, ctx_before, ctx_after) = app.comment_anchor();
-                                    app.comments.set(file, line, hunk, trimmed, line_text, ctx_before, ctx_after);
+                                    app.comments.set(
+                                        committed.file,
+                                        committed.line,
+                                        committed.hunk,
+                                        trimmed,
+                                        committed.line_text,
+                                        committed.context_before,
+                                        committed.context_after,
+                                    );
                                 }
                                 if let Err(e) = app.comments.save(&app.repo_root) {
                                     app.status_msg = Some(format!("comment save error: {e}"));

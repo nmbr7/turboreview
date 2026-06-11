@@ -93,16 +93,27 @@ pub struct Relocation {
 /// Relocate `comment` against the current file lines `candidates` = slice of (new_lineno, trimmed_text),
 /// sorted ascending by line number (caller guarantees sorted).
 pub fn relocate(comment: &Comment, candidates: &[(u32, String)]) -> Relocation {
-    // Legacy: empty line_text means no anchor — treat as non-stale, unchanged.
+    // Legacy: truly empty line_text (old comments without anchor) — treat as non-stale, unchanged.
     if comment.line_text.is_empty() {
         return Relocation { line: comment.line, stale: false };
     }
 
-    // Find all candidates whose text matches exactly.
+    // FIX 2: NUL (\u{0}) is the blank-line marker sentinel. A blank-line anchor matches
+    // candidates whose trimmed text is also empty. All other anchors match by exact equality.
+    let is_blank_anchor = comment.line_text == "\u{0}";
+    let text_matches = |cand_text: &str| -> bool {
+        if is_blank_anchor {
+            cand_text.is_empty()
+        } else {
+            cand_text == comment.line_text
+        }
+    };
+
+    // Find all candidates whose text matches.
     let matches: Vec<usize> = candidates
         .iter()
         .enumerate()
-        .filter(|(_, (_, text))| text == &comment.line_text)
+        .filter(|(_, (_, text))| text_matches(text))
         .map(|(i, _)| i)
         .collect();
 
@@ -117,50 +128,67 @@ pub fn relocate(comment: &Comment, candidates: &[(u32, String)]) -> Relocation {
         }
         _ => {
             // Multiple matches: score by context + proximity.
-            // score = (context_match_count * 100) - distance_from_orig_line
-            // context_match_count = # of context_before/context_after lines that appear
-            // adjacent to the candidate in candidates.
+            //
+            // FIX 1: Use a TUPLE score (ctx_count, Reverse(distance)) so that ANY context match
+            // unconditionally beats a pure-proximity candidate, regardless of distance magnitude.
+            //
+            // FIX 3: Check context adjacency by new_lineno arithmetic (cand_line ± 1), not
+            // slice index (idx ± 1). Since candidates only contain lines with a new_lineno
+            // (Del lines excluded), slice neighbors may not be truly source-adjacent.
+            // We binary-search the sorted candidates for new_lineno == cand_line ± 1.
+            //
+            // Helper: find the text at a given new_lineno via binary search (candidates sorted).
+            let find_at_lineno = |target_lineno: u32| -> Option<&str> {
+                candidates
+                    .binary_search_by_key(&target_lineno, |(n, _)| *n)
+                    .ok()
+                    .map(|i| candidates[i].1.as_str())
+            };
+
+            let context_match_count = |idx: usize| -> usize {
+                let cand_line = candidates[idx].0;
+                let mut ctx = 0usize;
+
+                // Check immediately preceding source line (new_lineno - 1)
+                if cand_line > 0 {
+                    if let Some(last_before) = comment.context_before.last() {
+                        if find_at_lineno(cand_line - 1) == Some(last_before.as_str()) {
+                            ctx += 1;
+                        }
+                    }
+                }
+                // Check immediately following source line (new_lineno + 1)
+                {
+                    if let Some(first_after) = comment.context_after.first() {
+                        if find_at_lineno(cand_line + 1) == Some(first_after.as_str()) {
+                            ctx += 1;
+                        }
+                    }
+                }
+                // Check second context_before line (new_lineno - 2)
+                if cand_line > 1 && comment.context_before.len() >= 2 {
+                    let second_before = &comment.context_before[comment.context_before.len() - 2];
+                    if find_at_lineno(cand_line - 2) == Some(second_before.as_str()) {
+                        ctx += 1;
+                    }
+                }
+                // Check second context_after line (new_lineno + 2)
+                if comment.context_after.len() >= 2 {
+                    let second_after = &comment.context_after[1];
+                    if find_at_lineno(cand_line + 2) == Some(second_after.as_str()) {
+                        ctx += 1;
+                    }
+                }
+
+                ctx
+            };
+
             let best_idx = matches.iter().copied().max_by_key(|&idx| {
                 let cand_line = candidates[idx].0 as i64;
-                let distance = (cand_line - comment.orig_line as i64).unsigned_abs() as i64;
-
-                let mut ctx_count = 0i64;
-                // Check immediately preceding candidate vs last of context_before
-                if idx > 0 {
-                    if let Some(last_before) = comment.context_before.last() {
-                        if &candidates[idx - 1].1 == last_before {
-                            ctx_count += 1;
-                        }
-                    }
-                }
-                // Check immediately following candidate vs first of context_after
-                if idx + 1 < candidates.len() {
-                    if let Some(first_after) = comment.context_after.first() {
-                        if &candidates[idx + 1].1 == first_after {
-                            ctx_count += 1;
-                        }
-                    }
-                }
-                // Also check the second context_before line (two steps back)
-                if idx > 1 {
-                    if comment.context_before.len() >= 2 {
-                        let second_before = &comment.context_before[comment.context_before.len() - 2];
-                        if &candidates[idx - 2].1 == second_before {
-                            ctx_count += 1;
-                        }
-                    }
-                }
-                // Also check the second context_after line (two steps forward)
-                if idx + 2 < candidates.len() {
-                    if comment.context_after.len() >= 2 {
-                        let second_after = &comment.context_after[1];
-                        if &candidates[idx + 2].1 == second_after {
-                            ctx_count += 1;
-                        }
-                    }
-                }
-
-                (ctx_count * 100) - distance
+                let distance = (cand_line - comment.orig_line as i64).unsigned_abs();
+                let ctx = context_match_count(idx);
+                // FIX 1: tuple so context dominates distance unconditionally
+                (ctx, std::cmp::Reverse(distance))
             }).expect("matches non-empty");
 
             Relocation { line: candidates[best_idx].0, stale: false }
@@ -251,6 +279,41 @@ mod tests {
         assert!(!r.stale);
     }
 
+    // FIX 1 TDD: context must beat pure proximity even when the context match is far away
+    // Specifically: 1 context match at distance 120 must beat 0 context matches at distance 5.
+    // Old formula: (1*100) - 120 = -20  vs  (0*100) - 5 = -5  => old picks the WRONG close one.
+    // Tuple fix: (1, Reverse(120)) vs (0, Reverse(5)) => primary=ctx wins, so correct far one picked.
+    #[test]
+    fn relocate_context_beats_far_proximity() {
+        // Wrong candidate: very close to orig_line (distance=5), NO context match
+        // Correct candidate: far from orig_line (distance=120), WITH one matching context_before line
+        // The comment was at line 100
+        let comment = make_comment(
+            100,
+            "fn process()",
+            vec!["// header comment"],
+            vec![],
+            100,
+        );
+        // Build candidates: same line_text "fn process()" appears at line 105 and line 220
+        let candidates = cands(&[
+            // Wrong: very close, line 105 (distance=5), unrelated neighbor
+            (104, "completely_unrelated"),
+            (105, "fn process()"),          // distance=5 from orig 100, but NO context match
+            (106, "other_stuff"),
+            // Correct: far, line 220 (distance=120), with exact context_before neighbor
+            (219, "// header comment"),     // matches context_before last entry
+            (220, "fn process()"),          // distance=120 from orig 100, but HAS context match
+            (221, "something_after"),
+        ]);
+        let r = relocate(&comment, &candidates);
+        // Should pick line 220 (context match), NOT line 105 (mere proximity)
+        // Old formula: (1*100)-120 = -20 vs (0*100)-5 = -5  =>  old picks 105 (WRONG)
+        // Tuple fix: (1, Reverse(120)) > (0, Reverse(5))    =>  new picks 220 (CORRECT)
+        assert_eq!(r.line, 220, "context match must win over pure proximity even when far");
+        assert!(!r.stale);
+    }
+
     #[test]
     fn relocate_legacy_no_anchor_keeps_line() {
         // comment with empty line_text -> non-stale, line unchanged
@@ -267,6 +330,105 @@ mod tests {
         let r = relocate(&comment, &[]);
         assert!(r.stale);
         assert_eq!(r.line, 5);
+    }
+
+    // FIX 2 TDD: blank-line anchor (NUL sentinel) must relocate or stale, not legacy-skip
+    #[test]
+    fn relocate_blank_line_anchor_relocates_or_stales() {
+        // Subcase A: blank-line comment with a blank candidate near orig with matching context -> relocates
+        let comment = make_comment(
+            10,
+            "\u{0}",                        // NUL = blank-line marker
+            vec!["fn foo() {"],
+            vec!["let x = 1;"],
+            10,
+        );
+        // Candidates: blank line at 11 with correct context neighbors
+        let candidates = cands(&[
+            (9,  "fn foo() {"),
+            (11, ""),                        // blank line candidate (trimmed text is empty)
+            (12, "let x = 1;"),
+        ]);
+        let r = relocate(&comment, &candidates);
+        assert_eq!(r.line, 11, "blank-line anchor should relocate to the blank candidate");
+        assert!(!r.stale);
+
+        // Subcase B: no blank candidate anywhere -> stale
+        let comment2 = make_comment(10, "\u{0}", vec![], vec![], 10);
+        let candidates2 = cands(&[(9, "fn foo() {"), (11, "let x = 1;")]);
+        let r2 = relocate(&comment2, &candidates2);
+        assert!(r2.stale, "blank-line anchor with no blank candidates must be stale");
+    }
+
+    // FIX 3 TDD: context adjacency by new_lineno arithmetic, not slice index
+    // The tricky case: the WRONG candidate happens to have the context text as its slice neighbor
+    // (because the context line is far from it but happens to be adjacent in the slice), while
+    // the CORRECT candidate has the context text truly adjacent by new_lineno.
+    #[test]
+    fn relocate_context_uses_new_lineno_not_slice_index() {
+        // Comment: orig_line=100, line_text="}", context_before=["let x = 1;"]
+        // Candidates include two "}" lines.
+        //
+        // Wrong candidate at line 50:
+        //   - slice[idx-1] = (48, "let x = 1;")   <- slice-adjacent and matches context!
+        //   - BUT new_lineno 50-1=49 is ABSENT (Del line), so the true source predecessor of line 50
+        //     is line 48 with gap (lines 49 skipped). By new_lineno arithmetic, the immediately
+        //     adjacent source line at new_lineno==49 is missing, so no true adjacency.
+        //
+        // Correct candidate at line 100:
+        //   - new_lineno 99 = "let x = 1;" (truly adjacent by source line number)
+        //   - slice[idx-1] = also (99, "let x = 1;") - coincidentally also correct
+        //
+        // Actually we want slice to be WRONG on the wrong candidate. Let me set up:
+        // Candidates list:
+        //   (48, "let x = 1;")  <- present in slice
+        //   (50, "}")           <- slice[idx-1]=(48,"let x = 1;") MATCHES context; new_lineno 49 absent
+        //   (99, "let x = 1;") <- new_lineno 99, truly adjacent to line 100
+        //   (100, "}")          <- new_lineno-1=99 present and matches; also slice[idx-1] matches
+        //   (101, "return;")
+        //
+        // In this layout, BOTH candidates score equally with either approach.
+        // The distinguishing case needs the wrong candidate's slice[idx-1] to match
+        // but its new_lineno-1 NOT to match (because the match is non-adjacent by lineno).
+        //
+        // Setup: wrong candidate at line 200, correct at line 100.
+        // In the slice: wrong candidate's slice[idx-1] has the context text BUT is at new_lineno 150
+        //   (which is NOT adjacent to 200 by source lines).
+        // Correct candidate's new_lineno-1 = 99, which exists in candidates as "let x = 1;".
+        //
+        // Slice order: (99,"let x=1;"), (100,"}"), ..., (150,"let x=1;"), ..., (200,"}")
+        //   For wrong candidate (200): slice[idx-1] = (150,"let x=1;") -> MATCHES context by slice!
+        //     But new_lineno 200-1=199 is absent -> no match by new_lineno.
+        //   For correct candidate (100): slice[idx-1] = (99,"let x=1;") -> matches
+        //     new_lineno 100-1=99 present -> also matches.
+        //
+        // Old (slice-based) behavior: both get ctx_count=1, tie-break by proximity to orig_line=100
+        //   -> picks correct line 100 by proximity (distance 0). Actually that would work!
+        //
+        // For slice-based to pick WRONG, we need orig_line closer to wrong candidate.
+        // Set orig_line=200, correct at 100 (far), wrong at 205 (close, distance=5).
+        // Slice-based: wrong gets ctx=1 (slice match), correct gets ctx=1 (slice match).
+        //   Tie-break by proximity: wrong (distance=5) beats correct (distance=100).
+        // New_lineno-based: wrong gets ctx=0 (lineno 204 absent), correct gets ctx=1.
+        //   Correct wins regardless of distance.
+        let comment = make_comment(200, "}", vec!["let x = 1;"], vec![], 200);
+        let candidates = cands(&[
+            (99,  "let x = 1;"),   // new_lineno 99, truly adjacent to line 100
+            (100, "}"),             // correct: new_lineno-1=99 has "let x=1;"; slice[idx-1]=(99,"let x=1;")
+            (101, "other_stuff"),
+            // Gap here: linenos 102..149 absent
+            (150, "let x = 1;"),   // present in slice; new_lineno 150 (adjacent to nothing meaningful)
+            // Gap here: linenos 151..204 absent (line 204 is a Del line, not in candidates)
+            (205, "}"),             // wrong: distance=5 from orig 200;
+                                    // slice[idx-1]=(150,"let x=1;") -> matches by slice!
+                                    // but new_lineno 205-1=204 is ABSENT -> no match by new_lineno
+            (206, "other"),
+        ]);
+        let r = relocate(&comment, &candidates);
+        // new_lineno-based: correct candidate (100) gets ctx=1, wrong (205) gets ctx=0
+        // => must pick line 100 even though distance=100 (far) vs distance=5 (close)
+        assert_eq!(r.line, 100, "new_lineno adjacency must pick the truly-adjacent context match");
+        assert!(!r.stale);
     }
 
     // ─── Original tests (updated to new 7-arg set signature) ─────────────────

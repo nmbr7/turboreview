@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, InputState, LineKind, Pane, Section, Status};
@@ -150,14 +150,18 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         let page = area.height.saturating_sub(2) as usize;
 
-        // Compute the rendered height (diff line + its inline comment lines) for a
+        // Compute the rendered height (diff line + its inline comment box lines) for a
         // given diff index, so we can scroll in rendered-line space and guarantee the
         // cursor line AND its comment are always visible.
+        // Enhancement 5a: comment box adds top + body lines + bottom = body_count + 2 lines.
         let rendered_height = |i: usize| -> usize {
             let dl = &app.diff[i];
             let comment_lines = app
                 .comment_for(dl)
-                .map(|c| c.text.lines().count().max(1))
+                .map(|c| {
+                    let body = c.text.lines().count().max(1);
+                    body + 2 // +2 for box top (╭─) and bottom (╰─)
+                })
                 .unwrap_or(0);
             1 + comment_lines
         };
@@ -234,29 +238,35 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             result.push(Line::from(all_spans));
             rendered_rows += 1;
 
-            // Inline comment: emit one Line per comment line directly below.
-            // Stale comments get a yellow warning prefix; normal comments use accent-dim italic.
-            // Count each emitted comment line toward the rendered-row budget so we
-            // never over-render past the viewport.
+            // Enhancement 5a: Inline comment box with box-drawing chars.
+            // Normal:  ╭─ comment  /  │ <line>...  /  ╰─
+            // Stale:   ╭─ ⚠ outdated (yellow)  /  │ <line>...  /  ╰─
+            // The top + body lines + bottom are all counted toward the rendered-row budget.
             if let Some(c) = comment {
-                let (comment_style, prefix_text) = if c.stale {
-                    (
-                        Style::default().fg(theme::YELLOW).add_modifier(Modifier::ITALIC | Modifier::DIM),
-                        "    ⚠ (outdated) ",
-                    )
+                let comment_style = if c.stale {
+                    Style::default().fg(theme::YELLOW).add_modifier(Modifier::ITALIC | Modifier::DIM)
                 } else {
-                    (
-                        Style::default().fg(theme::ACCENT_DIM).add_modifier(Modifier::ITALIC),
-                        "    ▏ ",
-                    )
+                    Style::default().fg(theme::ACCENT_DIM).add_modifier(Modifier::ITALIC)
                 };
+                // Top border line
+                if rendered_rows < page {
+                    let top_label = if c.stale { "    ╭─ ⚠ outdated" } else { "    ╭─ comment" };
+                    result.push(Line::from(Span::styled(top_label, comment_style)));
+                    rendered_rows += 1;
+                }
+                // Body lines
                 for comment_line in c.text.lines() {
                     if rendered_rows >= page {
                         break;
                     }
-                    let prefix = Span::styled(prefix_text, comment_style);
+                    let prefix = Span::styled("    │ ", comment_style);
                     let body = Span::styled(comment_line.to_string(), comment_style);
                     result.push(Line::from(vec![prefix, body]));
+                    rendered_rows += 1;
+                }
+                // Bottom border line
+                if rendered_rows < page {
+                    result.push(Line::from(Span::styled("    ╰─", comment_style)));
                     rendered_rows += 1;
                 }
             }
@@ -309,14 +319,17 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 fn render_input_modal(frame: &mut Frame, input: &InputState) {
     let area = centered_rect(60, 40, frame.area());
     frame.render_widget(Clear, area);
-    let title = format!(" Comment line {} (Ctrl-S save, Esc cancel) ", input.target_line);
-    // Append a cursor indicator to the buffer text.
+    let title = format!(" Comment line {} (Ctrl-S save · Esc cancel) ", input.target_line);
+    // Append a cursor block indicator to the buffer text.
     let display_text = format!("{}▏", input.buffer);
+    // Enhancement 5b: rounded border, accent color, horizontal padding for clearer text field.
     let para = Paragraph::new(display_text)
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(theme::ACCENT))
+                .padding(Padding::horizontal(1))
                 .title(title),
         )
         .wrap(Wrap { trim: false });
@@ -528,6 +541,9 @@ mod tests {
             target_file: PathBuf::from("a.rs"),
             target_line: 1,
             target_hunk: "@@ -1 +1 @@".to_string(),
+            anchor_line_text: String::new(),
+            anchor_before: vec![],
+            anchor_after: vec![],
         });
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();

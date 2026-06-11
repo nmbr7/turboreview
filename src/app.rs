@@ -67,6 +67,21 @@ pub struct InputState {
     pub target_file: PathBuf,
     pub target_line: u32,
     pub target_hunk: String,
+    /// Anchor captured at the moment the modal was opened (Fix 4: don't re-derive at Ctrl-S).
+    pub anchor_line_text: String,
+    pub anchor_before: Vec<String>,
+    pub anchor_after: Vec<String>,
+}
+
+/// Result of committing a comment input (returned by `input_commit`).
+pub struct CommittedComment {
+    pub file: PathBuf,
+    pub line: u32,
+    pub hunk: String,
+    pub text: String,
+    pub line_text: String,
+    pub context_before: Vec<String>,
+    pub context_after: Vec<String>,
 }
 
 pub struct App {
@@ -358,11 +373,16 @@ impl App {
         };
         let hunk = self.current_hunk_header();
         let existing = self.comments.get(&file, line_no).map(|c| c.text.clone()).unwrap_or_default();
+        // FIX 4: capture the anchor at the time the modal is opened, not at Ctrl-S time.
+        let (anchor_line_text, anchor_before, anchor_after) = self.comment_anchor();
         self.input = Some(InputState {
             buffer: existing,
             target_file: file,
             target_line: line_no,
             target_hunk: hunk,
+            anchor_line_text,
+            anchor_before,
+            anchor_after,
         });
     }
 
@@ -397,19 +417,35 @@ impl App {
     }
 
     /// Finalise the input: takes the InputState, clears `self.input`,
-    /// and returns `(file, line, hunk, text)` so the caller can
-    /// decide whether to set or remove the comment.
-    pub fn input_commit(&mut self) -> Option<(PathBuf, u32, String, String)> {
+    /// and returns a `CommittedComment` so the caller can decide whether to set or remove it.
+    /// The anchor fields come from the InputState (captured at `start_comment` time, Fix 4).
+    pub fn input_commit(&mut self) -> Option<CommittedComment> {
         let s = self.input.take()?;
-        Some((s.target_file, s.target_line, s.target_hunk, s.buffer))
+        Some(CommittedComment {
+            file: s.target_file,
+            line: s.target_line,
+            hunk: s.target_hunk,
+            text: s.buffer,
+            line_text: s.anchor_line_text,
+            context_before: s.anchor_before,
+            context_after: s.anchor_after,
+        })
     }
 
     /// Build the anchor (line_text, context_before, context_after) for the current cursor line.
     /// Returns trimmed text of the cursor line plus up to 2 non-Hunk lines before and after.
+    /// FIX 2: if the cursor line's trimmed text is empty, returns "\u{0}" (NUL blank-line marker)
+    /// instead of "" (which is the legacy "no anchor" sentinel).
     pub fn comment_anchor(&self) -> (String, Vec<String>, Vec<String>) {
-        let line_text = self.diff.get(self.diff_cursor)
+        let raw_trimmed = self.diff.get(self.diff_cursor)
             .map(|l| l.text.trim().to_string())
             .unwrap_or_default();
+        // Use NUL sentinel for blank lines so relocate can distinguish them from legacy no-anchor.
+        let line_text = if raw_trimmed.is_empty() {
+            "\u{0}".to_string()
+        } else {
+            raw_trimmed
+        };
 
         let cursor = self.diff_cursor.min(self.diff.len());
         let before: Vec<String> = self.diff[..cursor]
@@ -885,18 +921,20 @@ mod tests {
     }
 
     #[test]
-    fn input_commit_returns_tuple_and_clears_input() {
+    fn input_commit_returns_committed_comment_and_clears_input() {
         let mut app = app_with_add_diff();
         app.start_comment();
         app.input_push('g');
         app.input_push('o');
         let result = app.input_commit();
         assert!(result.is_some());
-        let (file, line, hunk, text) = result.unwrap();
-        assert_eq!(file, PathBuf::from("a.rs"));
-        assert_eq!(line, 2);
-        assert_eq!(hunk, "@@ -1,4 +1,8 @@");
-        assert_eq!(text, "go");
+        let committed = result.unwrap();
+        assert_eq!(committed.file, PathBuf::from("a.rs"));
+        assert_eq!(committed.line, 2);
+        assert_eq!(committed.hunk, "@@ -1,4 +1,8 @@");
+        assert_eq!(committed.text, "go");
+        // Anchor from the diff: cursor on "let x = 1;" at new_lineno 2
+        assert_eq!(committed.line_text, "let x = 1;");
         // input cleared
         assert!(app.input.is_none());
     }
@@ -964,5 +1002,58 @@ mod tests {
         // Hunk line at index 2 is skipped; next non-hunk before is "first" at index 1
         assert_eq!(before, vec!["first"]);
         assert_eq!(after, vec!["after"]);
+    }
+
+    // FIX 4 TDD: anchor captured at start_comment time, not at commit time
+    #[test]
+    fn start_comment_captures_anchor_in_input_state() {
+        // Build an app with context lines so comment_anchor() returns real data
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.selected = 1;
+        app.focus = Pane::Diff;
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Context, text: "  let a = 1;  ".into(), old_lineno: Some(1), new_lineno: Some(1) },
+            DiffLine { kind: LineKind::Add, text: "  fn target()  ".into(), old_lineno: None, new_lineno: Some(2) },
+            DiffLine { kind: LineKind::Context, text: "  let b = 2;  ".into(), old_lineno: Some(3), new_lineno: Some(3) },
+        ]);
+        app.diff_cursor = 1; // cursor on Add line "fn target()"
+        app.start_comment();
+
+        let input = app.input.as_ref().expect("input should be active");
+        // Anchor captured at start_comment time
+        assert_eq!(input.anchor_line_text, "fn target()");
+        assert_eq!(input.anchor_before, vec!["let a = 1;"]);
+        assert_eq!(input.anchor_after, vec!["let b = 2;"]);
+    }
+
+    #[test]
+    fn input_commit_includes_anchor_fields() {
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.selected = 1;
+        app.focus = Pane::Diff;
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Context, text: "before_line".into(), old_lineno: Some(1), new_lineno: Some(1) },
+            DiffLine { kind: LineKind::Add, text: "the_target_line".into(), old_lineno: None, new_lineno: Some(2) },
+            DiffLine { kind: LineKind::Context, text: "after_line".into(), old_lineno: Some(3), new_lineno: Some(3) },
+        ]);
+        app.diff_cursor = 1;
+        app.start_comment();
+        app.input_push('n');
+        app.input_push('o');
+        app.input_push('t');
+        app.input_push('e');
+        let result = app.input_commit();
+        assert!(result.is_some());
+        let committed = result.unwrap();
+        assert_eq!(committed.file, PathBuf::from("a.rs"));
+        assert_eq!(committed.line, 2);
+        assert_eq!(committed.hunk, ""); // no hunk header in this diff
+        assert_eq!(committed.text, "note");
+        assert_eq!(committed.line_text, "the_target_line");
+        assert_eq!(committed.context_before, vec!["before_line"]);
+        assert_eq!(committed.context_after, vec!["after_line"]);
+        assert!(app.input.is_none());
     }
 }
