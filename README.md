@@ -48,6 +48,9 @@ In both views:
   Added/removed lines are bright with a green/red background; unchanged context
   lines are dimmed so changes stand out. A line cursor (highlighted row) marks
   where comments attach. The title shows `(ctx N)` or `(full file)`.
+- **Comments pane (toggle with `C`).** An optional third column listing the
+  current scope's comments grouped by status (Open / NeedsInfo / Wontfix /
+  Resolved). Press `Enter` on a comment to jump to its file and line.
 
 Press `?` at any time for an in-app keybinding overlay.
 
@@ -56,11 +59,12 @@ Press `?` at any time for an in-app keybinding overlay.
 | Key              | Action                                                          |
 |------------------|-----------------------------------------------------------------|
 | `[` / `]`        | switch view (Changes ⇆ Commits)                                 |
-| `Tab`            | switch focus (Files / Diff pane)                                |
+| `Tab`            | switch focus across the visible panes                           |
 | `↑`/`↓` `j`/`k`  | move selection / commit / line cursor in the focused pane       |
 | mouse wheel      | move the focused pane's cursor                                  |
 | `gg` / `G`       | jump to top / bottom of the focused pane                        |
-| `Enter`          | open a commit · focus a file's Diff · fold/unfold a directory   |
+| `Enter`          | open commit · focus a file's Diff · fold dir · jump to comment  |
+| `C`              | toggle the comment-list pane                                    |
 | `Esc`            | step back (Diff → files → commit list) / focus the Files pane   |
 | `h`/`l` `←`/`→`  | scroll the diff horizontally (Diff pane)                        |
 | `+` / `-`        | increase / decrease diff context lines (step 5)                 |
@@ -117,8 +121,8 @@ Reviewed flags and comments persist under `<repo>/.turboreview/`:
 | `.turboreview/comment-log.jsonl`                  | append-only activity log (newest last)  |
 
 The comment log records one JSON object per comment add/edit
-(`{path, line, scope, date, action}`), so an agent can read the tail to find the
-latest review activity. Add `.turboreview/` to your `.gitignore` if you don't
+(`{path, line, scope, date, action}`, where `date` is a `YYYY-MM-DD HH:MM:SS`
+timestamp), so an agent can read the tail to find the latest review activity. Add `.turboreview/` to your `.gitignore` if you don't
 want it tracked. `R` hides reviewed files to declutter the list.
 
 ## Display notes
