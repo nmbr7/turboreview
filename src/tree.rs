@@ -46,6 +46,23 @@ pub fn build_rows(
     rows
 }
 
+/// Build rows for a single commit's changed files (Section::Commit).
+/// Produces: Header{section: Commit, count} followed by the tree of commit files.
+pub fn build_commit_rows(
+    files: &[FileChange],
+    collapsed: &HashSet<(Section, PathBuf)>,
+    hidden: &HashSet<PathBuf>,
+) -> Vec<Row> {
+    let mut rows = Vec::new();
+    rows.push(Row {
+        depth: 0,
+        name: "Commit".to_string(),
+        kind: RowKind::Header { section: Section::Commit, count: files.len() },
+    });
+    build_section_rows(files, Section::Commit, collapsed, hidden, &mut rows);
+    rows
+}
+
 fn build_section_rows(
     files: &[FileChange],
     section: Section,
@@ -331,6 +348,25 @@ mod tests {
         assert_eq!(rows[1].kind, RowKind::File { section: Section::Unstaged, file_index: 0 });
         assert!(matches!(rows[2].kind, RowKind::Header { section: Section::Staged, count: 1 }));
         assert_eq!(rows[3].kind, RowKind::File { section: Section::Staged, file_index: 0 });
+    }
+
+    #[test]
+    fn build_commit_rows_emits_commit_section() {
+        let files = make_files(&["src/main.rs", "lib.rs"]);
+        let collapsed = empty_collapsed();
+        let rows = super::build_commit_rows(&files, &collapsed, &HashSet::new());
+
+        // Header(Commit) + Dir(src) + main.rs + lib.rs = 4 rows
+        assert_eq!(rows.len(), 4);
+        assert!(matches!(rows[0].kind, RowKind::Header { section: Section::Commit, count: 2 }));
+        // All non-header rows should have Section::Commit
+        for row in &rows[1..] {
+            match &row.kind {
+                RowKind::Dir { section, .. } => assert_eq!(*section, Section::Commit),
+                RowKind::File { section, .. } => assert_eq!(*section, Section::Commit),
+                RowKind::Header { .. } => panic!("unexpected extra header"),
+            }
+        }
     }
 
     #[test]

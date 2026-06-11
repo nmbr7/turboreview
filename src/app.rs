@@ -10,6 +10,7 @@ const MAX_HSCROLL: usize = 500;
 pub enum Section {
     Unstaged,
     Staged,
+    Commit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,6 +114,8 @@ pub struct App {
     pub input: Option<InputState>,
     pub commits: Vec<crate::git::CommitInfo>,
     pub selected_commit: usize,
+    pub open_commit: Option<String>,
+    pub commit_files: Vec<FileChange>,
 }
 
 enum RowId {
@@ -145,6 +148,8 @@ impl App {
             input: None,
             commits: Vec::new(),
             selected_commit: 0,
+            open_commit: None,
+            commit_files: Vec::new(),
         };
         app.rebuild_rows();
         app
@@ -180,7 +185,11 @@ impl App {
         let prev = self.selected_identity();
         let empty = HashSet::new();
         let hidden = if self.hide_reviewed { &self.reviewed } else { &empty };
-        self.rows = crate::tree::build_rows(&self.unstaged, &self.staged, &self.collapsed, hidden);
+        self.rows = if self.view == ViewMode::Commits && self.open_commit.is_some() {
+            crate::tree::build_commit_rows(&self.commit_files, &self.collapsed, hidden)
+        } else {
+            crate::tree::build_rows(&self.unstaged, &self.staged, &self.collapsed, hidden)
+        };
         self.selected = match prev.and_then(|id| self.find_row(&id)) {
             Some(i) => i,
             None => self.selected.min(self.rows.len().saturating_sub(1)),
@@ -215,6 +224,7 @@ impl App {
         match section {
             Section::Unstaged => &self.unstaged,
             Section::Staged => &self.staged,
+            Section::Commit => &self.commit_files,
         }
     }
 
@@ -334,10 +344,16 @@ impl App {
     }
 
     pub fn next_view(&mut self) {
+        let prev = self.view;
         self.view = match self.view {
             ViewMode::Changes => ViewMode::Commits,
             ViewMode::Commits => ViewMode::Changes,
         };
+        // When leaving Commits, clear any open commit so returning shows a fresh list.
+        if prev == ViewMode::Commits && self.view == ViewMode::Changes {
+            self.open_commit = None;
+            self.commit_files.clear();
+        }
     }
 
     pub fn prev_view(&mut self) {
@@ -356,6 +372,33 @@ impl App {
 
     pub fn selected_commit_info(&self) -> Option<&crate::git::CommitInfo> {
         self.commits.get(self.selected_commit)
+    }
+
+    /// Open a commit detail view: set the commit's changed files, record its id,
+    /// reset the row selection to the first row, and rebuild rows.
+    pub fn open_commit(&mut self, id: String, files: Vec<FileChange>) {
+        self.commit_files = files;
+        self.open_commit = Some(id);
+        self.selected = 0;
+        self.rebuild_rows();
+    }
+
+    /// Close the commit detail view, returning to the commit list.
+    pub fn close_commit(&mut self) {
+        self.open_commit = None;
+        self.commit_files.clear();
+        self.rebuild_rows();
+    }
+
+    /// True when we are in the Commits view AND a commit has been drilled into.
+    pub fn in_commit_detail(&self) -> bool {
+        self.view == ViewMode::Commits && self.open_commit.is_some()
+    }
+
+    /// Return the short id of the open commit (looked up from `self.commits`).
+    pub fn open_commit_short(&self) -> Option<&str> {
+        let id = self.open_commit.as_deref()?;
+        self.commits.iter().find(|c| c.id == id).map(|c| c.short.as_str())
     }
 
     pub fn inc_context(&mut self) {
@@ -1136,5 +1179,73 @@ mod tests {
         assert_eq!(committed.context_before, vec!["before_line"]);
         assert_eq!(committed.context_after, vec!["after_line"]);
         assert!(app.input.is_none());
+    }
+
+    // ── Part 2 TDD: commit-detail open/close/section_files ─────────────────
+
+    fn make_commit_files(paths: &[&str]) -> Vec<FileChange> {
+        paths.iter().map(|p| FileChange { path: PathBuf::from(p), status: Status::Modified }).collect()
+    }
+
+    #[test]
+    fn open_commit_sets_state_and_builds_commit_rows() {
+        let mut app = sample();
+        app.view = ViewMode::Commits;
+        // Give it a commit info so open_commit_short can resolve.
+        app.commits = vec![crate::git::CommitInfo {
+            id: "aaaa1111bbbb2222".to_string(),
+            short: "aaaa1111".to_string(),
+            summary: "test commit".to_string(),
+            author: "tester".to_string(),
+            time: "2024-01-01".to_string(),
+        }];
+        let files = make_commit_files(&["src/main.rs", "lib.rs"]);
+        app.open_commit("aaaa1111bbbb2222".to_string(), files);
+
+        // open_commit field set, commit_files populated
+        assert_eq!(app.open_commit, Some("aaaa1111bbbb2222".to_string()));
+        assert_eq!(app.commit_files.len(), 2);
+        // selected reset
+        assert_eq!(app.selected, 0);
+        // in_commit_detail() is true
+        assert!(app.in_commit_detail());
+        // rows should have: Header(Commit) + Dir(src) + File(main.rs) + File(lib.rs)
+        // = 1 header + 1 dir + 1 file under dir + 1 flat file = 4 rows
+        assert!(app.rows.len() >= 3, "expected at least 3 rows (header + files), got {}", app.rows.len());
+        // First row is a Commit header
+        assert!(matches!(app.rows[0].kind, crate::tree::RowKind::Header { section: Section::Commit, .. }));
+        // At least one File row with Section::Commit
+        let has_commit_file = app.rows.iter().any(|r| matches!(&r.kind, crate::tree::RowKind::File { section: Section::Commit, .. }));
+        assert!(has_commit_file, "expected File rows with Section::Commit");
+    }
+
+    #[test]
+    fn close_commit_clears_state_and_rebuilds() {
+        let mut app = sample();
+        app.view = ViewMode::Commits;
+        let files = make_commit_files(&["a.rs"]);
+        app.open_commit("deadbeef12345678".to_string(), files);
+        assert!(app.in_commit_detail());
+
+        app.close_commit();
+
+        assert_eq!(app.open_commit, None);
+        assert!(app.commit_files.is_empty());
+        assert!(!app.in_commit_detail());
+        // rows rebuilt (no open_commit means back to normal unstaged/staged rows from sample)
+        // sample() has 3 unstaged files -> Header(U) + 3 files + Header(S) = 5 rows
+        assert_eq!(app.rows.len(), 5);
+    }
+
+    #[test]
+    fn section_files_commit_returns_commit_files() {
+        let mut app = sample();
+        let files = make_commit_files(&["x.rs", "y.rs", "z.rs"]);
+        app.commit_files = files.clone();
+        let result = app.section_files(Section::Commit);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].path, PathBuf::from("x.rs"));
+        assert_eq!(result[1].path, PathBuf::from("y.rs"));
+        assert_eq!(result[2].path, PathBuf::from("z.rs"));
     }
 }

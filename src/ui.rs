@@ -45,7 +45,8 @@ pub fn render(frame: &mut Frame, app: &App) {
             .split(main_area);
         match app.view {
             ViewMode::Changes => render_files(frame, app, panes[0]),
-            ViewMode::Commits => render_commits(frame, app, panes[0]),
+            ViewMode::Commits if app.open_commit.is_none() => render_commits(frame, app, panes[0]),
+            ViewMode::Commits => render_files(frame, app, panes[0]),
         }
         render_diff(frame, app, panes[1]);
     } else {
@@ -76,6 +77,10 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
                     let label = match section {
                         Section::Unstaged => format!("{}▌ Unstaged ({})", indent, count),
                         Section::Staged => format!("{}▌ Staged ({})", indent, count),
+                        Section::Commit => {
+                            let short = app.open_commit_short().unwrap_or("commit");
+                            format!("{}▌ Commit {} ({})", indent, short, count)
+                        }
                     };
                     let line = Line::from(Span::styled(
                         label,
@@ -110,7 +115,10 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
             }
         })
         .collect();
-    let title = if app.hide_reviewed {
+    let title = if app.in_commit_detail() {
+        let short = app.open_commit_short().unwrap_or("commit");
+        format!(" Changes  Commits ▸ {} ", short)
+    } else if app.hide_reviewed {
         " [Changes] Commits  (hiding reviewed) ".to_string()
     } else {
         " [Changes] Commits ".to_string()
@@ -184,9 +192,9 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
         .map(|p| format!(" Diff: {} ({}) ", p.display(), ctx_label))
         .unwrap_or_else(|| " Diff ".to_string());
 
-    let lines: Vec<Line> = if app.view == ViewMode::Commits {
+    let lines: Vec<Line> = if app.view == ViewMode::Commits && app.open_commit.is_none() {
         vec![Line::from(Span::styled(
-            "Press Enter to view commit's changes",
+            "Press Enter to open commit  ·  [/] switch view",
             Style::default().fg(theme::PLACEHOLDER),
         ))]
     } else if app.diff.is_empty() {
@@ -382,7 +390,13 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let base = "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:files  F:full-file  +/-:context  z:hide-files  <>:resize  c:comment  [/]:view  q:quit";
+    let base = if app.in_commit_detail() {
+        "Tab:focus  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:back  F:full-file  +/-:context  c:comment  [/]:view  q:quit"
+    } else if app.view == ViewMode::Commits {
+        "up/down/jk:move  gg/G  Enter:open  [/]:view  q:quit"
+    } else {
+        "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:files  F:full-file  +/-:context  z:hide-files  <>:resize  c:comment  [/]:view  q:quit"
+    };
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
         None => base.to_string(),

@@ -43,12 +43,37 @@ fn main() -> Result<()> {
 }
 
 fn refresh_diff(repo: &Repo, app: &mut App) {
+    // Commit-detail: use commit_diff_for instead of working-tree diff.
+    if app.in_commit_detail() {
+        if let (Some(path), Some(id)) = (app.selected_path().cloned(), app.open_commit.clone()) {
+            match repo.commit_diff_for(&id, &path, app.effective_context()) {
+                Ok(lines) => {
+                    app.status_msg = None;
+                    app.set_diff(lines);
+                    let candidates: Vec<(u32, String)> = app.diff.iter()
+                        .filter_map(|l| l.new_lineno.map(|n| (n, l.text.trim().to_string())))
+                        .collect();
+                    app.comments.relocate_file(&path, &candidates);
+                }
+                Err(e) => {
+                    app.status_msg = Some(format!("diff error: {e}"));
+                    app.set_diff(Vec::new());
+                }
+            }
+        } else {
+            app.set_diff(Vec::new());
+        }
+        return;
+    }
+
+    // Working-tree diff.
     match (app.selected_path(), app.selected_section()) {
         (Some(path), Some(section)) => {
             let path = path.clone();
             let mode = match section {
                 Section::Unstaged => Mode::Unstaged,
                 Section::Staged => Mode::Staged,
+                Section::Commit => return, // unreachable in working-tree branch
             };
             match repo.diff_for(&path, mode, app.effective_context()) {
                 Ok(lines) => {
@@ -143,7 +168,7 @@ fn run(
 
                 if matches!(key.code, KeyCode::Char('g')) && key.modifiers.is_empty() {
                     if pending_g {
-                        if app.view == ViewMode::Commits && app.focus == Pane::Files {
+                        if app.view == ViewMode::Commits && app.open_commit.is_none() && app.focus == Pane::Files {
                             app.selected_commit = 0;
                         } else {
                             app.to_top();
@@ -168,6 +193,8 @@ fn run(
                                 let result = match section {
                                     Section::Unstaged => repo.stage_file(&path),
                                     Section::Staged => repo.unstage_file(&path),
+                                    // Commit-detail files cannot be staged/unstaged.
+                                    Section::Commit => continue,
                                 };
                                 match result {
                                     Ok(()) => {
@@ -191,7 +218,7 @@ fn run(
                         refresh_diff(repo, app);
                     }
                     (KeyCode::Char('G'), _) => {
-                        if app.view == ViewMode::Commits && app.focus == Pane::Files {
+                        if app.view == ViewMode::Commits && app.open_commit.is_none() && app.focus == Pane::Files {
                             app.selected_commit = app.commits.len().saturating_sub(1);
                         } else {
                             app.to_bottom();
@@ -205,20 +232,40 @@ fn run(
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => move_in_focus(repo, app, 1),
                     (KeyCode::Enter, _) => {
                         if app.focus == Pane::Files {
-                            if app.view == ViewMode::Commits {
-                                // Part 2 will drill into commit — no-op for now
-                                app.status_msg = Some("commit drill-down coming in Part 2".to_string());
+                            if app.view == ViewMode::Commits && !app.in_commit_detail() {
+                                // Commit list: Enter drills into the selected commit.
+                                if let Some(ci) = app.selected_commit_info() {
+                                    let id = ci.id.clone();
+                                    match repo.commit_files(&id) {
+                                        Ok(files) => {
+                                            app.status_msg = None;
+                                            app.open_commit(id, files);
+                                            refresh_diff(repo, app);
+                                        }
+                                        Err(e) => {
+                                            app.status_msg = Some(format!("commit files error: {e}"));
+                                        }
+                                    }
+                                }
                             } else if app.selected_path().is_some() {
-                                app.focus = Pane::Diff; // jump into the diff to read this file
+                                // File row (either Changes view or commit-detail): jump to diff.
+                                app.focus = Pane::Diff;
                             } else {
-                                app.toggle_collapse(); // dir row: fold/unfold (no-op on header)
+                                // Dir/header row: fold/unfold.
+                                app.toggle_collapse();
                                 if app.selected_path().is_some() {
                                     refresh_diff(repo, app);
                                 }
                             }
                         }
                     }
-                    (KeyCode::Esc, _) => app.focus = Pane::Files,
+                    (KeyCode::Esc, _) => {
+                        if app.in_commit_detail() {
+                            app.close_commit();
+                        } else {
+                            app.focus = Pane::Files;
+                        }
+                    }
                     (KeyCode::Char('F'), _) => {
                         app.toggle_full_file();
                         refresh_diff(repo, app);
@@ -260,9 +307,11 @@ fn run(
 fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
     match app.focus {
         Pane::Files => {
-            if app.view == ViewMode::Commits {
+            if app.view == ViewMode::Commits && app.open_commit.is_none() {
+                // Commit list: move commit selection.
                 app.move_commit_selection(delta);
             } else {
+                // Changes view or commit-detail: move file row selection.
                 app.move_selection(delta);
                 refresh_diff(repo, app);
             }
