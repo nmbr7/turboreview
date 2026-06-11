@@ -139,6 +139,7 @@ pub struct App {
     pub comment_scope: CommentScope,
     pub show_comments: bool,
     pub comment_selected: usize,
+    pub theme: crate::theme::Theme,
 }
 
 enum RowId {
@@ -177,6 +178,7 @@ impl App {
             comment_scope: CommentScope::Worktree,
             show_comments: false,
             comment_selected: 0,
+            theme: crate::theme::Theme::Dark,
         };
         app.rebuild_rows();
         app
@@ -188,6 +190,17 @@ impl App {
 
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
+    }
+
+    pub fn toggle_theme(&mut self) {
+        self.theme = match self.theme {
+            crate::theme::Theme::Dark => crate::theme::Theme::Light,
+            crate::theme::Theme::Light => crate::theme::Theme::Dark,
+        };
+    }
+
+    pub fn palette(&self) -> crate::theme::Palette {
+        crate::theme::Palette::for_theme(self.theme)
     }
 
     pub fn toggle_files(&mut self) {
@@ -1259,6 +1272,29 @@ mod tests {
         assert!(app.show_help);
         app.toggle_help();
         assert!(!app.show_help);
+    }
+
+    #[test]
+    fn toggle_theme_flips_dark_light() {
+        let mut app = sample();
+        assert_eq!(app.theme, crate::theme::Theme::Dark);
+        app.toggle_theme();
+        assert_eq!(app.theme, crate::theme::Theme::Light);
+        app.toggle_theme();
+        assert_eq!(app.theme, crate::theme::Theme::Dark);
+    }
+
+    #[test]
+    fn palette_returns_matching_palette_for_theme() {
+        let mut app = sample();
+        // Dark theme
+        let dark_pal = app.palette();
+        assert_eq!(dark_pal.accent, crate::theme::Palette::for_theme(crate::theme::Theme::Dark).accent);
+        // Switch to light
+        app.toggle_theme();
+        let light_pal = app.palette();
+        assert_eq!(light_pal.accent, crate::theme::Palette::for_theme(crate::theme::Theme::Light).accent);
+        assert_ne!(dark_pal.accent, light_pal.accent);
     }
 
     // ── NEW: ViewMode / commit list state tests ──────────────────────────────

@@ -7,16 +7,16 @@ use ratatui::Frame;
 use crate::app::{App, CommentRow, InputState, LineKind, Pane, Section, Status, ViewMode};
 use crate::comments::CommentStatus;
 use crate::highlight::highlight_code;
-use crate::theme;
+use crate::theme::Palette;
 use crate::tree::RowKind;
 
-fn status_letter(status: Status) -> (&'static str, ratatui::style::Color) {
+fn status_letter(status: Status, pal: &Palette) -> (&'static str, ratatui::style::Color) {
     match status {
-        Status::Added => ("A", theme::TICK),
-        Status::Modified => ("M", theme::YELLOW),
-        Status::Deleted => ("D", theme::RED),
-        Status::Renamed => ("R", theme::BLUE),
-        Status::Other => (" ", theme::ACCENT_DIM),
+        Status::Added => ("A", pal.tick),
+        Status::Modified => ("M", pal.yellow),
+        Status::Deleted => ("D", pal.red),
+        Status::Renamed => ("R", pal.blue),
+        Status::Other => (" ", pal.accent_dim),
     }
 }
 
@@ -88,31 +88,33 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     render_status(frame, app, outer[1]);
     if let Some(input) = &app.input {
-        render_input_modal(frame, input);
+        render_input_modal(frame, app, input);
     }
     if app.show_help {
-        render_help_modal(frame);
+        render_help_modal(frame, app);
     }
 }
 
 fn focused_border(app: &App, pane: Pane) -> Style {
+    let pal = app.palette();
     if app.focus == pane {
-        Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
+        Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(theme::ACCENT_DIM)
+        Style::default().fg(pal.accent_dim)
     }
 }
 
-fn status_color(status: CommentStatus) -> ratatui::style::Color {
+fn status_color(status: CommentStatus, pal: &Palette) -> ratatui::style::Color {
     match status {
-        CommentStatus::Open => theme::ACCENT,
-        CommentStatus::NeedsInfo => theme::YELLOW,
-        CommentStatus::Wontfix => theme::RED,
-        CommentStatus::Resolved => theme::TICK,
+        CommentStatus::Open => pal.accent,
+        CommentStatus::NeedsInfo => pal.yellow,
+        CommentStatus::Wontfix => pal.red,
+        CommentStatus::Resolved => pal.tick,
     }
 }
 
 fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
+    let pal = app.palette();
     let count = app.comments.items.len();
     let title = format!(" Comments ({}) ", count);
 
@@ -123,7 +125,7 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
                 let label = format!("▌ {} ({})", status.label(), cnt);
                 let line = Line::from(Span::styled(
                     label,
-                    Style::default().fg(status_color(*status)).add_modifier(Modifier::BOLD),
+                    Style::default().fg(status_color(*status, &pal)).add_modifier(Modifier::BOLD),
                 ));
                 ListItem::new(line)
             }
@@ -142,7 +144,7 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
                 let line = Line::from(vec![
                     Span::styled(
                         format!("  {}:{} ", basename, c.line),
-                        Style::default().fg(theme::ACCENT_DIM),
+                        Style::default().fg(pal.accent_dim),
                     ),
                     Span::raw(text_display),
                 ]);
@@ -158,7 +160,7 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
                 .border_style(focused_border(app, Pane::Comments))
                 .title(title),
         )
-        .highlight_style(Style::default().bg(theme::SELECTED_BG).add_modifier(Modifier::BOLD));
+        .highlight_style(Style::default().bg(pal.selected_bg).add_modifier(Modifier::BOLD));
 
     let mut state = ListState::default();
     if !rows.is_empty() {
@@ -168,6 +170,7 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_files(frame: &mut Frame, app: &App, area: Rect) {
+    let pal = app.palette();
     let items: Vec<ListItem> = app
         .rows
         .iter()
@@ -185,7 +188,7 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
                     };
                     let line = Line::from(Span::styled(
                         label,
-                        Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                        Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
                     ));
                     ListItem::new(line)
                 }
@@ -199,11 +202,11 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
                     let fc = &files[*file_index];
                     let file_path = &fc.path;
                     let (mark, mark_style) = if app.is_reviewed_path(file_path) {
-                        ("✓ ", Style::default().fg(theme::TICK))
+                        ("✓ ", Style::default().fg(pal.tick))
                     } else {
-                        ("○ ", Style::default().fg(theme::ACCENT_DIM))
+                        ("○ ", Style::default().fg(pal.accent_dim))
                     };
-                    let (letter, letter_color) = status_letter(fc.status);
+                    let (letter, letter_color) = status_letter(fc.status, &pal);
                     let icon = crate::icons::icon_for(file_path);
                     let line = Line::from(vec![
                         Span::raw(indent),
@@ -231,13 +234,14 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
                 .border_style(focused_border(app, Pane::Files))
                 .title(title),
         )
-        .highlight_style(Style::default().bg(theme::SELECTED_BG).add_modifier(Modifier::BOLD));
+        .highlight_style(Style::default().bg(pal.selected_bg).add_modifier(Modifier::BOLD));
     let mut state = ListState::default();
     state.select(Some(app.selected));
     frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_commits(frame: &mut Frame, app: &App, area: Rect) {
+    let pal = app.palette();
     let items: Vec<ListItem> = app
         .commits
         .iter()
@@ -250,11 +254,11 @@ fn render_commits(frame: &mut Frame, app: &App, area: Rect) {
                 ci.summary.clone()
             };
             let line = Line::from(vec![
-                Span::styled(format!("{} ", ci.short), Style::default().fg(theme::YELLOW)),
+                Span::styled(format!("{} ", ci.short), Style::default().fg(pal.yellow)),
                 Span::raw(summary),
                 Span::styled(
                     format!("  — {} {}", ci.author, ci.time),
-                    Style::default().fg(theme::ACCENT_DIM),
+                    Style::default().fg(pal.accent_dim),
                 ),
             ]);
             ListItem::new(line)
@@ -269,13 +273,14 @@ fn render_commits(frame: &mut Frame, app: &App, area: Rect) {
                 .border_style(focused_border(app, Pane::Files))
                 .title(title),
         )
-        .highlight_style(Style::default().bg(theme::SELECTED_BG).add_modifier(Modifier::BOLD));
+        .highlight_style(Style::default().bg(pal.selected_bg).add_modifier(Modifier::BOLD));
     let mut state = ListState::default();
     state.select(if app.commits.is_empty() { None } else { Some(app.selected_commit) });
     frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
+    let pal = app.palette();
     let ext = app
         .selected_path()
         .and_then(|p| p.extension())
@@ -296,12 +301,12 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
     let lines: Vec<Line> = if app.view == ViewMode::Commits && app.open_commit.is_none() {
         vec![Line::from(Span::styled(
             "Press Enter to open commit  ·  [/] switch view",
-            Style::default().fg(theme::PLACEHOLDER),
+            Style::default().fg(pal.placeholder),
         ))]
     } else if app.diff.is_empty() {
         vec![Line::from(Span::styled(
             "No changes",
-            Style::default().fg(theme::PLACEHOLDER),
+            Style::default().fg(pal.placeholder),
         ))]
     } else {
         let page = area.height.saturating_sub(2) as usize;
@@ -347,15 +352,15 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             }
             let is_cursor = idx == app.diff_cursor;
             let bg = match dl.kind {
-                LineKind::Add => Some(theme::ADD_BG),
-                LineKind::Del => Some(theme::DEL_BG),
+                LineKind::Add => Some(pal.add_bg),
+                LineKind::Del => Some(pal.del_bg),
                 _ => None,
             };
             if dl.kind == LineKind::Hunk {
                 let shifted: String = dl.text.chars().skip(app.diff_hscroll).collect();
-                let mut span = Span::styled(shifted, Style::default().fg(theme::HUNK));
+                let mut span = Span::styled(shifted, Style::default().fg(pal.hunk));
                 if is_cursor {
-                    span.style = span.style.bg(theme::SELECTED_BG);
+                    span.style = span.style.bg(pal.selected_bg);
                 }
                 result.push(Line::from(span));
                 rendered_rows += 1;
@@ -364,21 +369,21 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             // Gutter: YELLOW for stale-commented lines, ACCENT for normal commented, ACCENT_DIM otherwise.
             let comment = app.comment_for(dl);
             let gutter_fg = match comment {
-                Some(c) if c.stale => theme::YELLOW,
-                Some(_) => theme::ACCENT,
-                None => theme::ACCENT_DIM,
+                Some(c) if c.stale => pal.yellow,
+                Some(_) => pal.accent,
+                None => pal.accent_dim,
             };
             let gutter_style = if is_cursor {
-                Style::default().fg(gutter_fg).bg(theme::SELECTED_BG)
+                Style::default().fg(gutter_fg).bg(pal.selected_bg)
             } else {
                 Style::default().fg(gutter_fg)
             };
             let gutter_span = Span::styled(gutter(dl), gutter_style);
             let shifted: String = dl.text.chars().skip(app.diff_hscroll).collect();
-            let mut spans: Vec<Span> = highlight_code(&shifted, &ext);
+            let mut spans: Vec<Span> = highlight_code(&shifted, &ext, app.theme);
             if is_cursor {
                 for s in spans.iter_mut() {
-                    s.style = s.style.bg(theme::SELECTED_BG);
+                    s.style = s.style.bg(pal.selected_bg);
                 }
             } else {
                 if let Some(bg) = bg {
@@ -407,17 +412,17 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             if let Some(c) = comment {
                 // Determine border color based on stale flag and status
                 let border_color = if c.stale {
-                    theme::YELLOW
+                    pal.yellow
                 } else {
                     match c.status {
-                        CommentStatus::Open => theme::ACCENT_DIM,
-                        CommentStatus::Resolved => theme::TICK,
-                        CommentStatus::Wontfix => theme::RED,
-                        CommentStatus::NeedsInfo => theme::YELLOW,
+                        CommentStatus::Open => pal.accent_dim,
+                        CommentStatus::Resolved => pal.tick,
+                        CommentStatus::Wontfix => pal.red,
+                        CommentStatus::NeedsInfo => pal.yellow,
                     }
                 };
                 let border_style = Style::default().fg(border_color).add_modifier(Modifier::ITALIC | Modifier::DIM);
-                let body_style = Style::default().fg(theme::ACCENT_DIM).add_modifier(Modifier::ITALIC);
+                let body_style = Style::default().fg(pal.accent_dim).add_modifier(Modifier::ITALIC);
 
                 // Top border line with status badge
                 if rendered_rows < page {
@@ -491,13 +496,14 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
+    let pal = app.palette();
     // Footer is just a help reminder plus any transient status message.
     let base = "? for help";
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
         None => base.to_string(),
     };
-    let para = Paragraph::new(text).style(Style::default().fg(theme::ACCENT_DIM));
+    let para = Paragraph::new(text).style(Style::default().fg(pal.accent_dim));
     frame.render_widget(para, area);
 }
 
@@ -524,7 +530,8 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     horizontal[1]
 }
 
-fn render_input_modal(frame: &mut Frame, input: &InputState) {
+fn render_input_modal(frame: &mut Frame, app: &App, input: &InputState) {
+    let pal = app.palette();
     let area = centered_rect(60, 40, frame.area());
     frame.render_widget(Clear, area);
     let title = format!(" Comment line {} (Ctrl-S save · Esc cancel) ", input.target_line);
@@ -536,7 +543,7 @@ fn render_input_modal(frame: &mut Frame, input: &InputState) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(theme::ACCENT))
+                .border_style(Style::default().fg(pal.accent))
                 .padding(Padding::horizontal(1))
                 .title(title),
         )
@@ -562,11 +569,13 @@ const HELP_LINES: &[(&str, &str)] = &[
     ("Space",     "toggle reviewed"),
     ("R",         "hide reviewed files"),
     ("r",         "refresh"),
+    ("T",         "toggle light / dark theme"),
     ("?",         "this help"),
     ("q / Ctrl-C","quit"),
 ];
 
-fn render_help_modal(frame: &mut Frame) {
+fn render_help_modal(frame: &mut Frame, app: &App) {
+    let pal = app.palette();
     let area = centered_rect(60, 70, frame.area());
     frame.render_widget(Clear, area);
     let lines: Vec<Line> = HELP_LINES
@@ -575,9 +584,9 @@ fn render_help_modal(frame: &mut Frame) {
             Line::from(vec![
                 Span::styled(
                     format!("  {:14}", key),
-                    Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                    Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(desc.to_string(), Style::default().fg(theme::ACCENT_DIM)),
+                Span::styled(desc.to_string(), Style::default().fg(pal.accent_dim)),
             ])
         })
         .collect();
@@ -586,7 +595,7 @@ fn render_help_modal(frame: &mut Frame) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(theme::ACCENT))
+                .border_style(Style::default().fg(pal.accent))
                 .title(" Keybindings (? or Esc to close) "),
         );
     frame.render_widget(para, area);
@@ -1058,6 +1067,18 @@ mod tests {
     }
 
     #[test]
+    fn help_overlay_shows_theme_toggle_key() {
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.show_help = true;
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains("theme"), "help overlay must mention theme toggle");
+    }
+
+    #[test]
     fn empty_response_does_not_break_layout() {
         // A comment with an empty-string response must render without a phantom line
         // (regression: rendered-height overcounted, clipping the box bottom).
@@ -1089,5 +1110,20 @@ mod tests {
         // the comment text renders; no panic; "response:" label NOT shown for empty response
         assert!(dump.contains("please fix"));
         assert!(!dump.contains("response:"));
+    }
+
+    #[test]
+    fn light_theme_renders_without_panic() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Add, text: "let x = 1;".into(), old_lineno: None, new_lineno: Some(1) },
+        ]);
+        app.theme = crate::theme::Theme::Light;
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains("a.rs"), "file must appear in light theme");
     }
 }

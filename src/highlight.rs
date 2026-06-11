@@ -3,12 +3,13 @@ use std::sync::OnceLock;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{FontStyle, Theme, ThemeSet};
+use syntect::highlighting::{FontStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
 struct Assets {
     syntaxes: SyntaxSet,
-    theme: Theme,
+    dark: syntect::highlighting::Theme,
+    light: syntect::highlighting::Theme,
 }
 
 fn assets() -> &'static Assets {
@@ -17,12 +18,18 @@ fn assets() -> &'static Assets {
         let syntaxes = SyntaxSet::load_defaults_newlines();
         let mut themes = ThemeSet::load_defaults();
         // Try base16-mocha.dark (closest bundled to Catppuccin Mocha), fall back to base16-ocean.dark.
-        let theme = themes
+        let dark = themes
             .themes
             .remove("base16-mocha.dark")
             .or_else(|| themes.themes.remove("base16-ocean.dark"))
             .expect("a bundled dark theme present");
-        Assets { syntaxes, theme }
+        // Light syntax theme: prefer base16-ocean.light; fall back to InspiredGitHub.
+        let light = themes
+            .themes
+            .remove("base16-ocean.light")
+            .or_else(|| themes.themes.remove("InspiredGitHub"))
+            .expect("a bundled light theme present");
+        Assets { syntaxes, dark, light }
     })
 }
 
@@ -67,15 +74,20 @@ fn segment_to_span(style: syntect::highlighting::Style, content: &str) -> Span<'
     Span::styled(content.to_owned(), ratatui_style)
 }
 
-/// Highlight one line of code, choosing the grammar by file extension.
+/// Highlight one line of code, choosing the grammar by file extension and the
+/// color theme (dark = Mocha-style, light = ocean.light / InspiredGitHub).
 /// Falls back to a single plain span if the extension is unknown or highlighting fails.
-pub fn highlight_code(text: &str, extension: &str) -> Vec<Span<'static>> {
+pub fn highlight_code(text: &str, extension: &str, theme: crate::theme::Theme) -> Vec<Span<'static>> {
     let assets = assets();
     let syntax = assets
         .syntaxes
         .find_syntax_by_extension(extension)
         .unwrap_or_else(|| assets.syntaxes.find_syntax_plain_text());
-    let mut hl = HighlightLines::new(syntax, &assets.theme);
+    let syntect_theme = match theme {
+        crate::theme::Theme::Dark => &assets.dark,
+        crate::theme::Theme::Light => &assets.light,
+    };
+    let mut hl = HighlightLines::new(syntax, syntect_theme);
     match hl.highlight_line(text, &assets.syntaxes) {
         Ok(ranges) => ranges
             .into_iter()
@@ -88,10 +100,11 @@ pub fn highlight_code(text: &str, extension: &str) -> Vec<Span<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
 
     #[test]
     fn known_extension_produces_spans() {
-        let spans = highlight_code("let x = 42;", "rs");
+        let spans = highlight_code("let x = 42;", "rs", Theme::Dark);
         assert!(!spans.is_empty());
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(joined.contains("let"));
@@ -99,7 +112,22 @@ mod tests {
 
     #[test]
     fn unknown_extension_falls_back_without_panic() {
-        let spans = highlight_code("anything goes", "zzz-unknown");
+        let spans = highlight_code("anything goes", "zzz-unknown", Theme::Dark);
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(joined.contains("anything goes"));
+    }
+
+    #[test]
+    fn light_theme_produces_spans_without_panic() {
+        let spans = highlight_code("let x = 42;", "rs", Theme::Light);
+        assert!(!spans.is_empty());
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(joined.contains("let"));
+    }
+
+    #[test]
+    fn light_theme_unknown_extension_falls_back() {
+        let spans = highlight_code("anything goes", "zzz-unknown", Theme::Light);
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(joined.contains("anything goes"));
     }

@@ -36,6 +36,8 @@ fn main() -> Result<()> {
     app.reviewed = review::load(&wt_dir).unwrap_or_default();
     app.comments = comments::Comments::load(&wt_dir).unwrap_or_default();
     app.commits = repo.log(200).unwrap_or_default();
+    // Load persisted theme preference
+    app.theme = storage::load_theme(&root);
     refresh_diff(&repo, &mut app);
 
     let mut terminal = setup_terminal()?;
@@ -395,6 +397,11 @@ fn run(
                     (KeyCode::Char('<'), _) | (KeyCode::Char(','), _) => app.narrow_files(),
                     // r (lowercase) refreshes everything from disk/git; R (uppercase) hides reviewed.
                     (KeyCode::Char('r'), KeyModifiers::NONE) => reload_everything(repo, app),
+                    // T toggles light / dark theme and persists the choice
+                    (KeyCode::Char('T'), _) => {
+                        app.toggle_theme();
+                        let _ = storage::save_theme(&app.repo_root, app.theme);
+                    }
                     // ? toggles the help overlay
                     (KeyCode::Char('?'), _) => app.toggle_help(),
                     // c (no modifier) opens comment modal; Ctrl-C is already handled above.

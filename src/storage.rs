@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::app::CommentScope;
 
@@ -30,6 +30,40 @@ struct LogEntry<'a> {
     scope: &'a str,
     date: String,
     action: &'a str,
+}
+
+/// Persisted configuration (theme preference).
+#[derive(Serialize, Deserialize, Default)]
+struct Config {
+    theme: String, // "dark" | "light"
+}
+
+/// Load the persisted theme from `<repo_root>/.turboreview/config.json`.
+/// Returns `Theme::Dark` if the file is missing or cannot be parsed.
+pub fn load_theme(repo_root: &Path) -> crate::theme::Theme {
+    let path = worktree_dir(repo_root).join("config.json");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return crate::theme::Theme::Dark;
+    };
+    let cfg: Config = serde_json::from_slice(&bytes).unwrap_or_default();
+    match cfg.theme.as_str() {
+        "light" => crate::theme::Theme::Light,
+        _ => crate::theme::Theme::Dark,
+    }
+}
+
+/// Persist the current theme to `<repo_root>/.turboreview/config.json`.
+pub fn save_theme(repo_root: &Path, theme: crate::theme::Theme) -> Result<()> {
+    let dir = worktree_dir(repo_root);
+    std::fs::create_dir_all(&dir)?;
+    let cfg = Config {
+        theme: match theme {
+            crate::theme::Theme::Light => "light".into(),
+            _ => "dark".into(),
+        },
+    };
+    std::fs::write(dir.join("config.json"), serde_json::to_vec_pretty(&cfg)?)?;
+    Ok(())
 }
 
 /// Append one line to `<repo_root>/.turboreview/comment-log.jsonl`.
@@ -90,6 +124,33 @@ mod tests {
     }
 
     #[test]
+    fn save_then_load_theme_round_trips_light() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        save_theme(root, crate::theme::Theme::Light).unwrap();
+        let loaded = load_theme(root);
+        assert_eq!(loaded, crate::theme::Theme::Light);
+    }
+
+    #[test]
+    fn save_then_load_theme_round_trips_dark() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        save_theme(root, crate::theme::Theme::Dark).unwrap();
+        let loaded = load_theme(root);
+        assert_eq!(loaded, crate::theme::Theme::Dark);
+    }
+
+    #[test]
+    fn load_theme_missing_file_returns_dark() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // No config.json created — should default to Dark
+        let loaded = load_theme(root);
+        assert_eq!(loaded, crate::theme::Theme::Dark);
+    }
+
+    #[test]
     fn append_comment_log_writes_two_valid_json_lines() {
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -119,9 +180,21 @@ mod tests {
         assert_eq!(entry1["action"], "set");
         let date_str = entry1["date"].as_str().expect("date should be a string");
         // date now holds YYYY-MM-DD HH:MM:SS (19 chars)
-        assert_eq!(date_str.len(), 19, "date field must be YYYY-MM-DD HH:MM:SS (19 chars): {}", date_str);
-        assert!(date_str.contains(' '), "date field must contain a space separating date and time");
-        assert_eq!(date_str.chars().filter(|&c| c == ':').count(), 2, "date field must have two colons for HH:MM:SS");
+        assert_eq!(
+            date_str.len(),
+            19,
+            "date field must be YYYY-MM-DD HH:MM:SS (19 chars): {}",
+            date_str
+        );
+        assert!(
+            date_str.contains(' '),
+            "date field must contain a space separating date and time"
+        );
+        assert_eq!(
+            date_str.chars().filter(|&c| c == ':').count(),
+            2,
+            "date field must have two colons for HH:MM:SS"
+        );
 
         let entry2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(entry2["path"], "src/lib.rs");
