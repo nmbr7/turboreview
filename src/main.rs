@@ -225,6 +225,8 @@ fn run(
                     if pending_g {
                         if app.view == ViewMode::Commits && app.open_commit.is_none() && app.focus == Pane::Files {
                             app.selected_commit = 0;
+                        } else if app.focus == Pane::Comments {
+                            app.comment_selected = 0;
                         } else {
                             app.to_top();
                         }
@@ -281,10 +283,14 @@ fn run(
                     (KeyCode::Char('G'), _) => {
                         if app.view == ViewMode::Commits && app.open_commit.is_none() && app.focus == Pane::Files {
                             app.selected_commit = app.commits.len().saturating_sub(1);
+                        } else if app.focus == Pane::Comments {
+                            let len = app.comment_rows().len();
+                            app.comment_selected = len.saturating_sub(1);
                         } else {
                             app.to_bottom();
                         }
                     }
+                    (KeyCode::Char('C'), _) => app.toggle_comment_pane(),
                     (KeyCode::Char('R'), _) => {
                         app.toggle_hide_reviewed();
                         refresh_diff(repo, app);
@@ -292,7 +298,18 @@ fn run(
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => move_in_focus(repo, app, -1),
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => move_in_focus(repo, app, 1),
                     (KeyCode::Enter, _) => {
-                        if app.focus == Pane::Files {
+                        if app.focus == Pane::Comments {
+                            // Jump to the selected comment's file and line in the diff.
+                            if let Some(c) = app.selected_comment().cloned() {
+                                if app.select_row_for_path(&c.file) {
+                                    refresh_diff(repo, app);
+                                    app.move_cursor_to_line(c.line);
+                                    app.focus = Pane::Diff;
+                                } else {
+                                    app.status_msg = Some("comment's file not in current view".into());
+                                }
+                            }
+                        } else if app.focus == Pane::Files {
                             if app.view == ViewMode::Commits && !app.in_commit_detail() {
                                 // Commit list: Enter drills into the selected commit.
                                 if let Some(ci) = app.selected_commit_info() {
@@ -410,6 +427,7 @@ fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
             }
         }
         Pane::Diff => app.move_diff_cursor(delta),
+        Pane::Comments => app.move_comment_selection(delta),
     }
 }
 

@@ -48,7 +48,7 @@ pub fn append_comment_log(
         path: &path_str,
         line,
         scope,
-        date: crate::git::format_date(now_secs()),
+        date: crate::git::format_datetime(now_secs()),
         action,
     };
     let mut line_json = serde_json::to_string(&entry)?;
@@ -117,10 +117,11 @@ mod tests {
         assert_eq!(entry1["line"], 42);
         assert_eq!(entry1["scope"], "worktree");
         assert_eq!(entry1["action"], "set");
-        assert!(
-            entry1["date"].as_str().is_some(),
-            "date should be a string"
-        );
+        let date_str = entry1["date"].as_str().expect("date should be a string");
+        // date now holds YYYY-MM-DD HH:MM:SS (19 chars)
+        assert_eq!(date_str.len(), 19, "date field must be YYYY-MM-DD HH:MM:SS (19 chars): {}", date_str);
+        assert!(date_str.contains(' '), "date field must contain a space separating date and time");
+        assert_eq!(date_str.chars().filter(|&c| c == ':').count(), 2, "date field must have two colons for HH:MM:SS");
 
         let entry2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(entry2["path"], "src/lib.rs");

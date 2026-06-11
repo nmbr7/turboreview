@@ -31,15 +31,15 @@ An append-only JSON-lines file. Each line is a JSON object written whenever a
 comment is added or edited (not on relocation or load):
 
 ```json
-{"path":"src/main.rs","line":42,"scope":"worktree","date":"2024-01-15","action":"set"}
-{"path":"src/lib.rs","line":10,"scope":"commit:deadbeef1234...","date":"2024-01-15","action":"remove"}
+{"path":"src/main.rs","line":42,"scope":"worktree","date":"2024-01-15 14:30:00","action":"set"}
+{"path":"src/lib.rs","line":10,"scope":"commit:deadbeef1234...","date":"2024-01-15 14:30:05","action":"remove"}
 ```
 
 Fields:
 - `path` — repo-relative file path
 - `line` — line number of the comment
 - `scope` — `"worktree"` or `"commit:<sha>"` (full sha)
-- `date` — date in `YYYY-MM-DD` format
+- `date` — date and time in `YYYY-MM-DD HH:MM:SS` format (UTC)
 - `action` — `"set"` (added/edited) or `"remove"` (deleted)
 
 **To find the latest review activity**, read `comment-log.jsonl` from the end

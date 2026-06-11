@@ -242,6 +242,15 @@ pub fn format_date(secs: i64) -> String {
     format!("{:04}-{:02}-{:02}", y, m, d)
 }
 
+/// Convert epoch seconds to "YYYY-MM-DD HH:MM:SS" (UTC).
+/// Reuses `format_date` for the date part; time-of-day derived from `secs.rem_euclid(86400)`.
+pub fn format_datetime(secs: i64) -> String {
+    let date = format_date(secs);
+    let tod = secs.rem_euclid(86400);
+    let (h, m, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+    format!("{} {:02}:{:02}:{:02}", date, h, m, s)
+}
+
 fn map_status(s: git2::Delta) -> Status {
     use git2::Delta::*;
     match s {
@@ -267,6 +276,23 @@ mod tests {
         assert_eq!(format_date(0), "1970-01-01");
         // 1700000000 seconds from epoch = 2023-11-14
         assert_eq!(format_date(1_700_000_000), "2023-11-14");
+    }
+
+    #[test]
+    fn format_datetime_known_value() {
+        // 1700000000 = 2023-11-14 (date part)
+        // time-of-day: 1700000000 % 86400 = 79400 => 22h 13m 20s => "22:13:20"
+        let dt = format_datetime(1_700_000_000);
+        // Length should be 19 ("YYYY-MM-DD HH:MM:SS")
+        assert_eq!(dt.len(), 19, "datetime must be 19 chars: {}", dt);
+        // Date part must match format_date
+        let date_part = &dt[..10];
+        assert_eq!(date_part, format_date(1_700_000_000), "date part mismatch");
+        // Must contain a space and two colons (time part HH:MM:SS)
+        assert!(dt.contains(' '), "datetime must contain a space");
+        assert_eq!(dt.chars().filter(|&c| c == ':').count(), 2, "datetime must have two colons");
+        // Verify exact time
+        assert_eq!(&dt[11..], "22:13:20", "time part mismatch");
     }
 
     #[test]

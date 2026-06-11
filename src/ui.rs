@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, InputState, LineKind, Pane, Section, Status, ViewMode};
+use crate::app::{App, CommentRow, InputState, LineKind, Pane, Section, Status, ViewMode};
 use crate::comments::CommentStatus;
 use crate::highlight::highlight_code;
 use crate::theme;
@@ -35,7 +35,41 @@ pub fn render(frame: &mut Frame, app: &App) {
         .split(frame.area());
 
     let main_area = outer[0];
-    if app.show_files {
+    let comment_pct: u16 = 28;
+
+    if app.show_files && app.show_comments {
+        // Three columns: [Files | Diff | Comments]
+        // Ensure middle (diff) is at least 20%
+        let diff_pct = 100u16.saturating_sub(app.file_pane_pct).saturating_sub(comment_pct).max(20);
+        let actual_files_pct = 100u16.saturating_sub(diff_pct).saturating_sub(comment_pct);
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(actual_files_pct),
+                Constraint::Percentage(diff_pct),
+                Constraint::Percentage(comment_pct),
+            ])
+            .split(main_area);
+        match app.view {
+            ViewMode::Changes => render_files(frame, app, panes[0]),
+            ViewMode::Commits if app.open_commit.is_none() => render_commits(frame, app, panes[0]),
+            ViewMode::Commits => render_files(frame, app, panes[0]),
+        }
+        render_diff(frame, app, panes[1]);
+        render_comment_list(frame, app, panes[2]);
+    } else if !app.show_files && app.show_comments {
+        // Two columns: [Diff | Comments]
+        let diff_pct = 100u16.saturating_sub(comment_pct).max(20);
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(diff_pct),
+                Constraint::Percentage(comment_pct),
+            ])
+            .split(main_area);
+        render_diff(frame, app, panes[0]);
+        render_comment_list(frame, app, panes[1]);
+    } else if app.show_files {
         let panes = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -67,6 +101,70 @@ fn focused_border(app: &App, pane: Pane) -> Style {
     } else {
         Style::default().fg(theme::ACCENT_DIM)
     }
+}
+
+fn status_color(status: CommentStatus) -> ratatui::style::Color {
+    match status {
+        CommentStatus::Open => theme::ACCENT,
+        CommentStatus::NeedsInfo => theme::YELLOW,
+        CommentStatus::Wontfix => theme::RED,
+        CommentStatus::Resolved => theme::TICK,
+    }
+}
+
+fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
+    let count = app.comments.items.len();
+    let title = format!(" Comments ({}) ", count);
+
+    let rows = app.comment_rows();
+    let items: Vec<ListItem> = rows.iter().map(|row| {
+        match row {
+            CommentRow::Header(status, cnt) => {
+                let label = format!("▌ {} ({})", status.label(), cnt);
+                let line = Line::from(Span::styled(
+                    label,
+                    Style::default().fg(status_color(*status)).add_modifier(Modifier::BOLD),
+                ));
+                ListItem::new(line)
+            }
+            CommentRow::Item(i) => {
+                let c = &app.comments.items[*i];
+                let basename = c.file.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                let first_line = c.text.lines().next().unwrap_or("");
+                let max_text = area.width.saturating_sub(20) as usize;
+                let text_display = if first_line.chars().count() > max_text && max_text > 3 {
+                    format!("{}…", first_line.chars().take(max_text.saturating_sub(1)).collect::<String>())
+                } else {
+                    first_line.to_string()
+                };
+                let line = Line::from(vec![
+                    Span::styled(
+                        format!("  {}:{} ", basename, c.line),
+                        Style::default().fg(theme::ACCENT_DIM),
+                    ),
+                    Span::raw(text_display),
+                ]);
+                ListItem::new(line)
+            }
+        }
+    }).collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(focused_border(app, Pane::Comments))
+                .title(title),
+        )
+        .highlight_style(Style::default().bg(theme::SELECTED_BG).add_modifier(Modifier::BOLD));
+
+    let mut state = ListState::default();
+    if !rows.is_empty() {
+        state.select(Some(app.comment_selected));
+    }
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_files(frame: &mut Frame, app: &App, area: Rect) {
@@ -447,15 +545,16 @@ fn render_input_modal(frame: &mut Frame, input: &InputState) {
 }
 
 const HELP_LINES: &[(&str, &str)] = &[
-    ("Tab",       "switch focus (Files/Diff)"),
+    ("Tab",       "switch focus (Files/Diff/Comments)"),
     ("j/k, ↑/↓",  "move selection / cursor"),
     ("gg / G",    "top / bottom"),
-    ("Enter",     "open file diff / open commit / fold dir"),
+    ("Enter",     "open file diff / open commit / fold dir / jump to comment"),
     ("Esc",       "back / focus files"),
     ("h/l, ←/→",  "scroll diff horizontally"),
     ("+/-",       "context lines (±5)"),
     ("F",         "full-file diff toggle"),
     ("z",         "hide/show file pane"),
+    ("C",         "toggle comment-list pane"),
     ("< / >",     "resize file pane"),
     ("[ / ]",     "switch Changes/Commits view"),
     ("c",         "comment on line"),
@@ -894,6 +993,56 @@ mod tests {
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains("outdated"), "stale comment must show '(outdated)' prefix");
         assert!(dump.contains("stale note"), "stale comment text must still appear");
+    }
+
+    #[test]
+    fn comment_pane_shows_status_header_and_item() {
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        // Enable comment pane
+        app.show_comments = true;
+        // Add an Open comment
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            5,
+            "@@ -3,4 @@".to_string(),
+            "look at this".to_string(),
+            "fn foo()".to_string(),
+            vec![],
+            vec![],
+        );
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        // The comment pane title must appear
+        assert!(dump.contains("Comments"), "comment pane title must appear");
+        // The Open status header must appear
+        assert!(dump.contains("Open") || dump.contains("open"), "Open status header must appear");
+        // The file basename must appear
+        assert!(dump.contains("a.rs"), "file basename must appear in comment list");
+    }
+
+    #[test]
+    fn comment_pane_hidden_by_default() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        // show_comments is false by default
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            1,
+            "@@".to_string(),
+            "hidden comment".to_string(),
+            "fn x()".to_string(),
+            vec![],
+            vec![],
+        );
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        // Comment pane title must NOT appear when show_comments is false
+        assert!(!dump.contains("hidden comment"), "comment text must not appear when pane hidden");
     }
 
     #[test]

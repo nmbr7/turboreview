@@ -32,6 +32,16 @@ pub enum Mode {
 pub enum Pane {
     Files,
     Diff,
+    Comments,
+}
+
+/// A row in the comment-list pane.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommentRow {
+    /// A status group header: (status, count)
+    Header(crate::comments::CommentStatus, usize),
+    /// An item: index into app.comments.items
+    Item(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,6 +137,8 @@ pub struct App {
     pub commit_files: Vec<FileChange>,
     pub show_help: bool,
     pub comment_scope: CommentScope,
+    pub show_comments: bool,
+    pub comment_selected: usize,
 }
 
 enum RowId {
@@ -163,6 +175,8 @@ impl App {
             commit_files: Vec::new(),
             show_help: false,
             comment_scope: CommentScope::Worktree,
+            show_comments: false,
+            comment_selected: 0,
         };
         app.rebuild_rows();
         app
@@ -306,6 +320,7 @@ impl App {
         match self.focus {
             Pane::Files => self.selected = 0,
             Pane::Diff => self.diff_cursor = 0,
+            Pane::Comments => self.comment_selected = 0,
         }
     }
 
@@ -313,14 +328,106 @@ impl App {
         match self.focus {
             Pane::Files => self.selected = self.rows.len().saturating_sub(1),
             Pane::Diff => self.diff_cursor = self.diff.len().saturating_sub(1),
+            Pane::Comments => {
+                let len = self.comment_rows().len();
+                self.comment_selected = len.saturating_sub(1);
+            }
         }
     }
 
+    /// Cycle focus through the VISIBLE panes in order: Files -> Diff -> Comments -> Files.
+    /// Skips Files when !show_files, skips Comments when !show_comments.
     pub fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
-            Pane::Files => Pane::Diff,
-            Pane::Diff => Pane::Files,
-        };
+        let panes: Vec<Pane> = [Pane::Files, Pane::Diff, Pane::Comments]
+            .iter()
+            .copied()
+            .filter(|&p| match p {
+                Pane::Files => self.show_files,
+                Pane::Diff => true,
+                Pane::Comments => self.show_comments,
+            })
+            .collect();
+        if panes.len() <= 1 {
+            return; // nothing to cycle
+        }
+        let current = panes.iter().position(|&p| p == self.focus).unwrap_or(0);
+        self.focus = panes[(current + 1) % panes.len()];
+    }
+
+    /// Toggle the comment pane. If hiding while Comments has focus, move focus to Diff.
+    pub fn toggle_comment_pane(&mut self) {
+        self.show_comments = !self.show_comments;
+        if !self.show_comments && self.focus == Pane::Comments {
+            self.focus = Pane::Diff;
+        }
+    }
+
+    /// Build the displayable rows for the comment-list pane.
+    /// Groups items by status in order: Open, NeedsInfo, Wontfix, Resolved.
+    /// Each non-empty group gets a Header(status, count) followed by Item(i) for each match.
+    pub fn comment_rows(&self) -> Vec<CommentRow> {
+        use crate::comments::CommentStatus;
+        let order = [CommentStatus::Open, CommentStatus::NeedsInfo, CommentStatus::Wontfix, CommentStatus::Resolved];
+        let mut rows = Vec::new();
+        for status in &order {
+            let indices: Vec<usize> = self.comments.items.iter().enumerate()
+                .filter(|(_, c)| &c.status == status)
+                .map(|(i, _)| i)
+                .collect();
+            if !indices.is_empty() {
+                rows.push(CommentRow::Header(*status, indices.len()));
+                for i in indices {
+                    rows.push(CommentRow::Item(i));
+                }
+            }
+        }
+        rows
+    }
+
+    /// Move the comment pane selection by `delta`, clamping to valid range.
+    pub fn move_comment_selection(&mut self, delta: isize) {
+        let len = self.comment_rows().len();
+        if len == 0 {
+            self.comment_selected = 0;
+            return;
+        }
+        let max = len as isize - 1;
+        self.comment_selected = (self.comment_selected as isize + delta).clamp(0, max) as usize;
+    }
+
+    /// Returns the Comment at the current comment_selected index, or None if it's a header.
+    pub fn selected_comment(&self) -> Option<&crate::comments::Comment> {
+        match self.comment_rows().get(self.comment_selected) {
+            Some(CommentRow::Item(i)) => self.comments.items.get(*i),
+            _ => None,
+        }
+    }
+
+    /// Scan rows for a File row whose path matches `path`. If found, set self.selected and return true.
+    pub fn select_row_for_path(&mut self, path: &Path) -> bool {
+        for (i, row) in self.rows.iter().enumerate() {
+            if let RowKind::File { section, file_index } = &row.kind {
+                if let Some(fc) = self.section_files(*section).get(*file_index) {
+                    if fc.path == path {
+                        self.selected = i;
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Scan self.diff for the first line whose new_lineno == new_lineno; set diff_cursor to it.
+    /// If not found, reset diff_cursor to 0.
+    pub fn move_cursor_to_line(&mut self, new_lineno: u32) {
+        for (i, dl) in self.diff.iter().enumerate() {
+            if dl.new_lineno == Some(new_lineno) {
+                self.diff_cursor = i;
+                return;
+            }
+        }
+        self.diff_cursor = 0;
     }
 
     pub fn toggle_reviewed(&mut self) {
@@ -1317,6 +1424,169 @@ mod tests {
         assert_eq!(result[0].path, PathBuf::from("x.rs"));
         assert_eq!(result[1].path, PathBuf::from("y.rs"));
         assert_eq!(result[2].path, PathBuf::from("z.rs"));
+    }
+
+    // ── Part 2 TDD: comment pane state, Pane::Comments, comment_rows, jump ─────
+
+    fn sample_with_comments() -> App {
+        let files = vec![
+            FileChange { path: PathBuf::from("a.rs"), status: Status::Modified },
+            FileChange { path: PathBuf::from("b.rs"), status: Status::Added },
+        ];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        // Add comments of various statuses
+        app.comments.set(PathBuf::from("a.rs"), 1, "@@".to_string(), "open note".to_string(), "fn a()".to_string(), vec![], vec![]);
+        // items[0] is Open by default
+        app.comments.set(PathBuf::from("a.rs"), 5, "@@".to_string(), "resolved note".to_string(), "fn b()".to_string(), vec![], vec![]);
+        app.comments.items[1].status = crate::comments::CommentStatus::Resolved;
+        app.comments.set(PathBuf::from("b.rs"), 3, "@@".to_string(), "wontfix note".to_string(), "fn c()".to_string(), vec![], vec![]);
+        app.comments.items[2].status = crate::comments::CommentStatus::Wontfix;
+        app.comments.set(PathBuf::from("b.rs"), 7, "@@".to_string(), "needs info note".to_string(), "fn d()".to_string(), vec![], vec![]);
+        app.comments.items[3].status = crate::comments::CommentStatus::NeedsInfo;
+        app
+    }
+
+    #[test]
+    fn comment_rows_groups_by_status_open_first() {
+        let app = sample_with_comments();
+        let rows = app.comment_rows();
+        // Expected: Header(Open,1) Item(0) Header(NeedsInfo,1) Item(3) Header(Wontfix,1) Item(2) Header(Resolved,1) Item(1)
+        // Order: Open, NeedsInfo, Wontfix, Resolved
+        assert!(!rows.is_empty(), "comment_rows must not be empty");
+        // First row is Header(Open)
+        assert!(matches!(rows[0], CommentRow::Header(crate::comments::CommentStatus::Open, 1)));
+        // Second row is Item pointing to index 0 (the Open comment)
+        assert!(matches!(rows[1], CommentRow::Item(0)));
+        // Find Header(NeedsInfo)
+        let ni_pos = rows.iter().position(|r| matches!(r, CommentRow::Header(crate::comments::CommentStatus::NeedsInfo, 1)));
+        assert!(ni_pos.is_some(), "NeedsInfo header must be present");
+        // Find Header(Wontfix)
+        let wf_pos = rows.iter().position(|r| matches!(r, CommentRow::Header(crate::comments::CommentStatus::Wontfix, 1)));
+        assert!(wf_pos.is_some(), "Wontfix header must be present");
+        // Find Header(Resolved)
+        let res_pos = rows.iter().position(|r| matches!(r, CommentRow::Header(crate::comments::CommentStatus::Resolved, 1)));
+        assert!(res_pos.is_some(), "Resolved header must be present");
+        // Order: Open < NeedsInfo < Wontfix < Resolved
+        let open_pos = rows.iter().position(|r| matches!(r, CommentRow::Header(crate::comments::CommentStatus::Open, _))).unwrap();
+        assert!(open_pos < ni_pos.unwrap(), "Open must come before NeedsInfo");
+        assert!(ni_pos.unwrap() < wf_pos.unwrap(), "NeedsInfo must come before Wontfix");
+        assert!(wf_pos.unwrap() < res_pos.unwrap(), "Wontfix must come before Resolved");
+    }
+
+    #[test]
+    fn comment_rows_skips_empty_groups() {
+        let mut app = sample();
+        // Only add an Open comment — other groups should be absent
+        app.comments.set(PathBuf::from("a.rs"), 1, "@@".to_string(), "only open".to_string(), "fn a()".to_string(), vec![], vec![]);
+        let rows = app.comment_rows();
+        // No Resolved header
+        let has_resolved = rows.iter().any(|r| matches!(r, CommentRow::Header(crate::comments::CommentStatus::Resolved, _)));
+        assert!(!has_resolved, "Resolved header should not appear when no resolved comments");
+        // Total: Header(Open) + Item(0) = 2
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn move_comment_selection_clamps() {
+        let mut app = sample_with_comments();
+        // 4 comments, 4 groups => 8 rows (4 headers + 4 items)
+        let row_count = app.comment_rows().len();
+        assert_eq!(row_count, 8);
+        // Move beyond end clamps
+        app.move_comment_selection(100);
+        assert_eq!(app.comment_selected, row_count - 1);
+        // Move below 0 clamps
+        app.move_comment_selection(-100);
+        assert_eq!(app.comment_selected, 0);
+        // Normal step
+        app.move_comment_selection(1);
+        assert_eq!(app.comment_selected, 1);
+    }
+
+    #[test]
+    fn selected_comment_returns_none_on_header_some_on_item() {
+        let mut app = sample_with_comments();
+        // Row 0 is a Header
+        app.comment_selected = 0;
+        assert!(app.selected_comment().is_none(), "selected_comment must be None for a header row");
+        // Row 1 is an Item
+        app.comment_selected = 1;
+        assert!(app.selected_comment().is_some(), "selected_comment must be Some for an item row");
+    }
+
+    #[test]
+    fn select_row_for_path_finds_file_row() {
+        let mut app = sample();
+        // rows: Header(U)(0), a.rs(1), b.rs(2), c.rs(3), Header(S)(4)
+        let found = app.select_row_for_path(Path::new("b.rs"));
+        assert!(found, "select_row_for_path must return true for an existing file path");
+        assert_eq!(app.selected_path(), Some(&PathBuf::from("b.rs")));
+    }
+
+    #[test]
+    fn select_row_for_path_returns_false_for_missing() {
+        let mut app = sample();
+        let found = app.select_row_for_path(Path::new("nonexistent.rs"));
+        assert!(!found, "select_row_for_path must return false for a path not in rows");
+    }
+
+    #[test]
+    fn move_cursor_to_line_positions_diff_cursor() {
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Context, text: "x".into(), old_lineno: Some(1), new_lineno: Some(1) },
+            DiffLine { kind: LineKind::Context, text: "y".into(), old_lineno: Some(2), new_lineno: Some(2) },
+            DiffLine { kind: LineKind::Add, text: "z".into(), old_lineno: None, new_lineno: Some(5) },
+        ]);
+        app.move_cursor_to_line(5);
+        assert_eq!(app.diff_cursor, 2, "diff_cursor must point to the line with new_lineno==5");
+        // Non-existent line: cursor stays unchanged
+        app.move_cursor_to_line(99);
+        assert_eq!(app.diff_cursor, 0, "cursor should reset to 0 when line not found");
+    }
+
+    #[test]
+    fn toggle_focus_cycles_through_visible_panes() {
+        let mut app = sample();
+        // Default: show_files=true, show_comments=false
+        // Cycle: Files -> Diff -> Files (Comments skipped since show_comments=false)
+        assert_eq!(app.focus, Pane::Files);
+        app.toggle_focus();
+        assert_eq!(app.focus, Pane::Diff);
+        app.toggle_focus();
+        assert_eq!(app.focus, Pane::Files);
+
+        // Enable comments pane
+        app.show_comments = true;
+        // Cycle: Files -> Diff -> Comments -> Files
+        app.toggle_focus();
+        assert_eq!(app.focus, Pane::Diff);
+        app.toggle_focus();
+        assert_eq!(app.focus, Pane::Comments);
+        app.toggle_focus();
+        assert_eq!(app.focus, Pane::Files);
+    }
+
+    #[test]
+    fn toggle_comment_pane_flips_show_comments() {
+        let mut app = sample();
+        assert!(!app.show_comments);
+        app.toggle_comment_pane();
+        assert!(app.show_comments);
+        app.toggle_comment_pane();
+        assert!(!app.show_comments);
+    }
+
+    #[test]
+    fn toggle_comment_pane_moves_focus_when_hiding_comments() {
+        let mut app = sample();
+        app.show_comments = true;
+        app.focus = Pane::Comments;
+        // Hiding comments while focused on Comments -> focus moves to Diff
+        app.toggle_comment_pane();
+        assert!(!app.show_comments);
+        assert_eq!(app.focus, Pane::Diff);
     }
 
     // ── CommentScope tests ─────────────────────────────────────────────────────
