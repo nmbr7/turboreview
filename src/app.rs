@@ -404,6 +404,43 @@ impl App {
         Some((s.target_file, s.target_line, s.target_hunk, s.buffer))
     }
 
+    /// Build the anchor (line_text, context_before, context_after) for the current cursor line.
+    /// Returns trimmed text of the cursor line plus up to 2 non-Hunk lines before and after.
+    pub fn comment_anchor(&self) -> (String, Vec<String>, Vec<String>) {
+        let line_text = self.diff.get(self.diff_cursor)
+            .map(|l| l.text.trim().to_string())
+            .unwrap_or_default();
+
+        let cursor = self.diff_cursor.min(self.diff.len());
+        let before: Vec<String> = self.diff[..cursor]
+            .iter()
+            .rev()
+            .filter(|l| l.kind != LineKind::Hunk)
+            .take(2)
+            .map(|l| l.text.trim().to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+
+        let after: Vec<String> = self.diff.get(self.diff_cursor + 1..)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|l| l.kind != LineKind::Hunk)
+            .take(2)
+            .map(|l| l.text.trim().to_string())
+            .collect();
+
+        (line_text, before, after)
+    }
+
+    /// Return the Comment for `line` if one exists, for the currently selected file.
+    pub fn comment_for<'a>(&'a self, line: &DiffLine) -> Option<&'a crate::comments::Comment> {
+        let n = line.new_lineno?;
+        let file = self.selected_path()?;
+        self.comments.get(file, n)
+    }
+
     /// Whether `line` has a comment attached.
     pub fn has_comment(&self, line: &DiffLine) -> bool {
         if let Some(n) = line.new_lineno {
@@ -805,6 +842,9 @@ mod tests {
             2,
             "@@ -1,4 +1,8 @@".to_string(),
             "existing note".to_string(),
+            "let x = 1;".to_string(),
+            vec![],
+            vec![],
         );
         app.start_comment();
         let input = app.input.as_ref().unwrap();
@@ -880,5 +920,49 @@ mod tests {
         ]);
         app.diff_cursor = 0;
         assert_eq!(app.current_hunk_header(), "");
+    }
+
+    #[test]
+    fn comment_anchor_captures_line_text_and_context() {
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.focus = Pane::Diff;
+        app.selected = 1;
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Hunk, text: "@@ -1 +1 @@".into(), old_lineno: None, new_lineno: None },
+            DiffLine { kind: LineKind::Context, text: "  let a = 1;  ".into(), old_lineno: Some(1), new_lineno: Some(1) },
+            DiffLine { kind: LineKind::Add, text: "  fn target()  ".into(), old_lineno: None, new_lineno: Some(2) },
+            DiffLine { kind: LineKind::Context, text: "  let b = 2;  ".into(), old_lineno: Some(3), new_lineno: Some(3) },
+        ]);
+        app.diff_cursor = 2; // cursor on the Add line
+
+        let (line_text, before, after) = app.comment_anchor();
+        assert_eq!(line_text, "fn target()"); // trimmed
+        // context_before: last non-hunk line before index 2 = index 1 (Context)
+        assert_eq!(before, vec!["let a = 1;"]);
+        // context_after: next non-hunk line after index 2 = index 3 (Context)
+        assert_eq!(after, vec!["let b = 2;"]);
+    }
+
+    #[test]
+    fn comment_anchor_skips_hunk_lines_in_context() {
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.focus = Pane::Diff;
+        app.selected = 1;
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Hunk, text: "@@ -1 +1 @@".into(), old_lineno: None, new_lineno: None },
+            DiffLine { kind: LineKind::Add, text: "first".into(), old_lineno: None, new_lineno: Some(1) },
+            DiffLine { kind: LineKind::Hunk, text: "@@ -5 +5 @@".into(), old_lineno: None, new_lineno: None },
+            DiffLine { kind: LineKind::Add, text: "target".into(), old_lineno: None, new_lineno: Some(5) },
+            DiffLine { kind: LineKind::Context, text: "after".into(), old_lineno: Some(6), new_lineno: Some(6) },
+        ]);
+        app.diff_cursor = 3; // cursor on "target" Add line
+
+        let (line_text, before, after) = app.comment_anchor();
+        assert_eq!(line_text, "target");
+        // Hunk line at index 2 is skipped; next non-hunk before is "first" at index 1
+        assert_eq!(before, vec!["first"]);
+        assert_eq!(after, vec!["after"]);
     }
 }

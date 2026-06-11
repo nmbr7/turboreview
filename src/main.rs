@@ -48,6 +48,11 @@ fn refresh_diff(repo: &Repo, app: &mut App) {
                 Ok(lines) => {
                     app.status_msg = None;
                     app.set_diff(lines);
+                    // Relocate comments for this file against the fresh diff.
+                    let candidates: Vec<(u32, String)> = app.diff.iter()
+                        .filter_map(|l| l.new_lineno.map(|n| (n, l.text.trim().to_string())))
+                        .collect();
+                    app.comments.relocate_file(&path, &candidates);
                 }
                 Err(e) => {
                     app.status_msg = Some(format!("diff error: {e}"));
@@ -106,7 +111,8 @@ fn run(
                                 if trimmed.is_empty() {
                                     app.comments.remove(&file, line);
                                 } else {
-                                    app.comments.set(file, line, hunk, trimmed);
+                                    let (line_text, ctx_before, ctx_after) = app.comment_anchor();
+                                    app.comments.set(file, line, hunk, trimmed, line_text, ctx_before, ctx_after);
                                 }
                                 if let Err(e) = app.comments.save(&app.repo_root) {
                                     app.status_msg = Some(format!("comment save error: {e}"));

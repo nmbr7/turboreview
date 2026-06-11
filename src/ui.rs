@@ -156,8 +156,8 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
         let rendered_height = |i: usize| -> usize {
             let dl = &app.diff[i];
             let comment_lines = app
-                .comment_text_for(dl)
-                .map(|t| t.lines().count().max(1))
+                .comment_for(dl)
+                .map(|c| c.text.lines().count().max(1))
                 .unwrap_or(0);
             1 + comment_lines
         };
@@ -197,9 +197,13 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                 rendered_rows += 1;
                 continue;
             }
-            // Gutter: use ACCENT (bright) for commented lines, ACCENT_DIM otherwise.
-            let has_comment = app.has_comment(dl);
-            let gutter_fg = if has_comment { theme::ACCENT } else { theme::ACCENT_DIM };
+            // Gutter: YELLOW for stale-commented lines, ACCENT for normal commented, ACCENT_DIM otherwise.
+            let comment = app.comment_for(dl);
+            let gutter_fg = match comment {
+                Some(c) if c.stale => theme::YELLOW,
+                Some(_) => theme::ACCENT,
+                None => theme::ACCENT_DIM,
+            };
             let gutter_style = if is_cursor {
                 Style::default().fg(gutter_fg).bg(theme::SELECTED_BG)
             } else {
@@ -231,17 +235,26 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             rendered_rows += 1;
 
             // Inline comment: emit one Line per comment line directly below.
+            // Stale comments get a yellow warning prefix; normal comments use accent-dim italic.
             // Count each emitted comment line toward the rendered-row budget so we
             // never over-render past the viewport.
-            if let Some(comment_text) = app.comment_text_for(dl) {
-                let comment_style = Style::default()
-                    .fg(theme::ACCENT_DIM)
-                    .add_modifier(Modifier::ITALIC);
-                for comment_line in comment_text.lines() {
+            if let Some(c) = comment {
+                let (comment_style, prefix_text) = if c.stale {
+                    (
+                        Style::default().fg(theme::YELLOW).add_modifier(Modifier::ITALIC | Modifier::DIM),
+                        "    ⚠ (outdated) ",
+                    )
+                } else {
+                    (
+                        Style::default().fg(theme::ACCENT_DIM).add_modifier(Modifier::ITALIC),
+                        "    ▏ ",
+                    )
+                };
+                for comment_line in c.text.lines() {
                     if rendered_rows >= page {
                         break;
                     }
-                    let prefix = Span::styled("    ▏ ", comment_style);
+                    let prefix = Span::styled(prefix_text, comment_style);
                     let body = Span::styled(comment_line.to_string(), comment_style);
                     result.push(Line::from(vec![prefix, body]));
                     rendered_rows += 1;
@@ -540,6 +553,9 @@ mod tests {
             5,
             "@@ -3,4 @@".to_string(),
             "review note here".to_string(),
+            "let x = 1;".to_string(),
+            vec![],
+            vec![],
         );
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
@@ -588,6 +604,9 @@ mod tests {
             31,
             "".to_string(),
             "clipping_test_comment".to_string(),
+            "added_line".to_string(),
+            vec![],
+            vec![],
         );
 
         terminal.draw(|f| render(f, &app)).unwrap();
@@ -616,7 +635,7 @@ mod tests {
         // Simulate what main.rs does after Fix 1: store the trimmed text.
         let raw = "   trimmed_note   ";
         let trimmed = raw.trim().to_string();
-        app.comments.set(PathBuf::from("a.rs"), 1, "".to_string(), trimmed);
+        app.comments.set(PathBuf::from("a.rs"), 1, "".to_string(), trimmed, "fn main() {}".to_string(), vec![], vec![]);
 
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
@@ -638,5 +657,36 @@ mod tests {
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains('A'), "Added file should show 'A' status letter");
         assert!(dump.contains('D'), "Deleted file should show 'D' status letter");
+    }
+
+    #[test]
+    fn stale_comment_shows_outdated_prefix() {
+        use crate::app::LineKind;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.selected = 1;
+        app.focus = Pane::Diff;
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Add, text: "let y = 2;".into(), old_lineno: None, new_lineno: Some(7) },
+        ]);
+        // Insert a stale comment directly
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            7,
+            "@@".to_string(),
+            "stale note".to_string(),
+            "let y = 2;".to_string(),
+            vec![],
+            vec![],
+        );
+        // Mark it stale manually (simulating relocation failure)
+        app.comments.items[0].stale = true;
+
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains("outdated"), "stale comment must show '(outdated)' prefix");
+        assert!(dump.contains("stale note"), "stale comment text must still appear");
     }
 }
