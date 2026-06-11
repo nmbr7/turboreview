@@ -1,11 +1,21 @@
-# turboreview
+<h1 align="center">TurboReview</h1>
 
-Terminal code-review tool for git working trees. The left pane lists changed
+[![Rust](https://img.shields.io/badge/Rust-stable-orange)](https://www.rust-lang.org/)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue)](#)
+[![UI](https://img.shields.io/badge/UI-Terminal%20TUI-6f42c1)](#)
+
+`turboreview` is a terminal code-review tool for git working trees. The left pane lists changed
 files in a directory tree, split into **Unstaged** and **Staged** sections; the
 right pane shows the selected file's diff with syntax highlighting, a line-number
 gutter, and adjustable context. Stage or unstage whole files, mark files
-reviewed, and leave line comments — and let an AI coding agent read those
-comments, fix the code, and respond.
+reviewed, and read diffs full-file or hunk-only.
+
+<p align="center">
+  <img width="800" alt="turbohex screenshot" src="https://github.com/user-attachments/assets/5fad1538-43b3-4a15-99ae-6b376a6224fc" />
+  <br>
+  <em>TurboReview diff</em>
+</p>
+
 
 ## Usage
 
