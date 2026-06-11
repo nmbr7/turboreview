@@ -161,9 +161,10 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                 .comment_for(dl)
                 .map(|c| {
                     let text_lines = c.text.lines().count().max(1);
-                    let response_lines = c.response.as_deref().map(|r| {
-                        1 + r.lines().count().max(1) // 1 blank + response lines
-                    }).unwrap_or(0);
+                    let response_lines = match c.response.as_deref() {
+                        Some(r) if !r.trim().is_empty() => 1 + r.lines().count(), // 1 blank separator + response text lines
+                        _ => 0,
+                    };
                     1 + text_lines + response_lines + 1 // top + text + [blank+response] + bottom
                 })
                 .unwrap_or(0);
@@ -288,8 +289,9 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                     result.push(Line::from(vec![prefix, body]));
                     rendered_rows += 1;
                 }
-                // Response block (if present)
-                if let Some(resp) = &c.response {
+                // Response block (only when response is present AND non-empty after trim)
+                if c.response.as_deref().map_or(false, |r| !r.trim().is_empty()) {
+                    let resp = c.response.as_deref().unwrap();
                     let response_label_style = Style::default()
                         .fg(border_color)
                         .add_modifier(Modifier::ITALIC | Modifier::DIM);
@@ -785,5 +787,39 @@ mod tests {
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains("outdated"), "stale comment must show '(outdated)' prefix");
         assert!(dump.contains("stale note"), "stale comment text must still appear");
+    }
+
+    #[test]
+    fn empty_response_does_not_break_layout() {
+        // A comment with an empty-string response must render without a phantom line
+        // (regression: rendered-height overcounted, clipping the box bottom).
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.selected = 1; // select a.rs row (row 0=Unstaged header, row 1=File a.rs)
+        app.focus = Pane::Diff;
+        // place a comment with empty response on a line in the diff
+        app.comments.items.push(crate::comments::Comment {
+            file: PathBuf::from("a.rs"),
+            line: 1,
+            hunk: String::new(),
+            text: "please fix".into(),
+            line_text: "let x = 1;".into(),
+            context_before: vec![],
+            context_after: vec![],
+            orig_line: 1,
+            stale: false,
+            status: crate::comments::CommentStatus::Open,
+            response: Some(String::new()),
+        });
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Add, text: "let x = 1;".into(), old_lineno: None, new_lineno: Some(1) },
+        ]);
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        // the comment text renders; no panic; "response:" label NOT shown for empty response
+        assert!(dump.contains("please fix"));
+        assert!(!dump.contains("response:"));
     }
 }
