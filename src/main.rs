@@ -13,7 +13,7 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::Terminal;
 
-use turboreview::app::{App, CommentScope, Mode, Pane, Section, ViewMode};
+use turboreview::app::{App, Mode, Pane, Section, ViewMode};
 use turboreview::comments;
 use turboreview::git::Repo;
 use turboreview::{review, storage, ui};
@@ -46,10 +46,7 @@ fn main() -> Result<()> {
 
 /// Load the comments and reviewed set for the current scope into `app`.
 fn load_scope(repo_root: &Path, app: &mut App) {
-    let dir = match &app.comment_scope {
-        CommentScope::Worktree => storage::worktree_dir(repo_root),
-        CommentScope::Commit(sha) => storage::commit_dir(repo_root, sha),
-    };
+    let dir = storage::scope_dir(repo_root, &app.comment_scope);
     app.comments = comments::Comments::load(&dir).unwrap_or_default();
     app.reviewed = review::load(&dir).unwrap_or_default();
 }
@@ -124,6 +121,7 @@ fn reload_all(repo: &Repo, app: &mut App) {
     };
     app.unstaged = unstaged;
     app.staged = staged;
+    load_scope(&app.repo_root.clone(), app);
     app.rebuild_rows();
     refresh_diff(repo, app);
 }
@@ -194,10 +192,7 @@ fn run(
                                     );
                                 }
                                 // Save to the current scope directory
-                                let scope_dir = match &app.comment_scope {
-                                    CommentScope::Worktree => storage::worktree_dir(&app.repo_root),
-                                    CommentScope::Commit(sha) => storage::commit_dir(&app.repo_root, sha),
-                                };
+                                let scope_dir = storage::scope_dir(&app.repo_root, &app.comment_scope);
                                 if let Err(e) = app.comments.save(&scope_dir) {
                                     app.status_msg = Some(format!("comment save error: {e}"));
                                 }
@@ -276,10 +271,7 @@ fn run(
                         if !(app.view == ViewMode::Commits && !app.in_commit_detail()) {
                             app.toggle_reviewed();
                             // Save reviewed to the current scope directory
-                            let scope_dir = match &app.comment_scope {
-                                CommentScope::Worktree => storage::worktree_dir(&app.repo_root),
-                                CommentScope::Commit(sha) => storage::commit_dir(&app.repo_root, sha),
-                            };
+                            let scope_dir = storage::scope_dir(&app.repo_root, &app.comment_scope);
                             if let Err(e) = review::save(&scope_dir, &app.reviewed) {
                                 app.status_msg = Some(format!("save error: {e}"));
                             }

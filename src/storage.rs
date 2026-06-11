@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::Serialize;
 
+use crate::app::CommentScope;
+
 /// Returns the worktree-scope directory: `<repo_root>/.turboreview`.
 pub fn worktree_dir(repo_root: &Path) -> PathBuf {
     repo_root.join(".turboreview")
@@ -11,6 +13,14 @@ pub fn worktree_dir(repo_root: &Path) -> PathBuf {
 /// Returns the commit-scope directory: `<repo_root>/.turboreview/commits/<sha>`.
 pub fn commit_dir(repo_root: &Path, sha: &str) -> PathBuf {
     repo_root.join(".turboreview").join("commits").join(sha)
+}
+
+/// The directory holding comments.json / reviewed.json for the given scope.
+pub fn scope_dir(repo_root: &Path, scope: &CommentScope) -> PathBuf {
+    match scope {
+        CommentScope::Worktree => worktree_dir(repo_root),
+        CommentScope::Commit(sha) => commit_dir(repo_root, sha),
+    }
 }
 
 #[derive(Serialize)]
@@ -33,8 +43,9 @@ pub fn append_comment_log(
 ) -> Result<()> {
     let dir = repo_root.join(".turboreview");
     std::fs::create_dir_all(&dir)?;
+    let path_str = path.to_string_lossy();
     let entry = LogEntry {
-        path: &path.to_string_lossy(),
+        path: &path_str,
         line,
         scope,
         date: crate::git::format_date(now_secs()),
