@@ -106,7 +106,7 @@ fn run(
                                 if trimmed.is_empty() {
                                     app.comments.remove(&file, line);
                                 } else {
-                                    app.comments.set(file, line, hunk, text.clone());
+                                    app.comments.set(file, line, hunk, trimmed);
                                 }
                                 if let Err(e) = app.comments.save(&app.repo_root) {
                                     app.status_msg = Some(format!("comment save error: {e}"));

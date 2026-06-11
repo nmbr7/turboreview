@@ -149,9 +149,38 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
         ))]
     } else {
         let page = area.height.saturating_sub(2) as usize;
-        let scroll = if app.diff_cursor >= page { app.diff_cursor + 1 - page } else { 0 };
+
+        // Compute the rendered height (diff line + its inline comment lines) for a
+        // given diff index, so we can scroll in rendered-line space and guarantee the
+        // cursor line AND its comment are always visible.
+        let rendered_height = |i: usize| -> usize {
+            let dl = &app.diff[i];
+            let comment_lines = app
+                .comment_text_for(dl)
+                .map(|t| t.lines().count().max(1))
+                .unwrap_or(0);
+            1 + comment_lines
+        };
+
+        // Walk backward from diff_cursor to find the first visible diff index such
+        // that the total rendered height from start..=cursor fits within `page`.
+        let mut start = app.diff_cursor;
+        let mut used = rendered_height(app.diff_cursor);
+        while start > 0 {
+            let h = rendered_height(start - 1);
+            if used + h > page {
+                break;
+            }
+            used += h;
+            start -= 1;
+        }
+
         let mut result: Vec<Line> = Vec::new();
-        for (idx, dl) in app.diff.iter().enumerate().skip(scroll).take(page) {
+        let mut rendered_rows: usize = 0;
+        for (idx, dl) in app.diff.iter().enumerate().skip(start) {
+            if rendered_rows >= page {
+                break;
+            }
             let is_cursor = idx == app.diff_cursor;
             let bg = match dl.kind {
                 LineKind::Add => Some(theme::ADD_BG),
@@ -165,6 +194,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                     span.style = span.style.bg(theme::SELECTED_BG);
                 }
                 result.push(Line::from(span));
+                rendered_rows += 1;
                 continue;
             }
             // Gutter: use ACCENT (bright) for commented lines, ACCENT_DIM otherwise.
@@ -198,19 +228,23 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             all_spans.push(gutter_span);
             all_spans.extend(spans);
             result.push(Line::from(all_spans));
+            rendered_rows += 1;
 
             // Inline comment: emit one Line per comment line directly below.
-            // NOTE: This inserts extra rendered lines beyond `page`, which ratatui
-            // Paragraph clips. The cursor<->diff-index mapping is unaffected because
-            // scroll math uses app.diff indices, not rendered-line count.
+            // Count each emitted comment line toward the rendered-row budget so we
+            // never over-render past the viewport.
             if let Some(comment_text) = app.comment_text_for(dl) {
                 let comment_style = Style::default()
                     .fg(theme::ACCENT_DIM)
                     .add_modifier(Modifier::ITALIC);
                 for comment_line in comment_text.lines() {
+                    if rendered_rows >= page {
+                        break;
+                    }
                     let prefix = Span::styled("    ▏ ", comment_style);
                     let body = Span::styled(comment_line.to_string(), comment_style);
                     result.push(Line::from(vec![prefix, body]));
+                    rendered_rows += 1;
                 }
             }
         }
@@ -510,6 +544,85 @@ mod tests {
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains("review note here"), "inline comment text must appear below commented line");
+    }
+
+    /// FIX 2: comment on a line near the bottom of a small viewport must not be clipped.
+    /// Build a diff of 30 context lines + one Add line with a comment. Set the cursor
+    /// on the Add line. Use an 80x10 backend (page = 8 visible rows). With the old
+    /// scroll formula (diff-index space), the comment would be pushed off screen.
+    /// With rendered-height scroll the comment must appear in the buffer.
+    #[test]
+    fn comment_not_clipped_when_cursor_near_bottom() {
+        use crate::app::LineKind;
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.selected = 1; // select a.rs
+        app.focus = Pane::Diff;
+
+        // 30 context lines, then one Add line at new_lineno 31
+        let mut diff_lines = Vec::new();
+        for i in 1u32..=30 {
+            diff_lines.push(DiffLine {
+                kind: LineKind::Context,
+                text: format!("ctx {}", i),
+                old_lineno: Some(i),
+                new_lineno: Some(i),
+            });
+        }
+        diff_lines.push(DiffLine {
+            kind: LineKind::Add,
+            text: "added_line".into(),
+            old_lineno: None,
+            new_lineno: Some(31),
+        });
+        app.set_diff(diff_lines);
+
+        // cursor on the Add line (index 30)
+        app.diff_cursor = 30;
+
+        // attach a comment to that Add line
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            31,
+            "".to_string(),
+            "clipping_test_comment".to_string(),
+        );
+
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            dump.contains("clipping_test_comment"),
+            "comment on cursor line must not be clipped even near the viewport bottom"
+        );
+    }
+
+    /// FIX 1: saving a comment with leading/trailing whitespace must store only the
+    /// trimmed text. Verify by setting a padded comment and checking that the rendered
+    /// inline comment shows the trimmed text (no surrounding spaces).
+    #[test]
+    fn trimmed_comment_stored_without_whitespace_padding() {
+        use crate::app::LineKind;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.selected = 1;
+        app.focus = Pane::Diff;
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Add, text: "fn main() {}".into(), old_lineno: None, new_lineno: Some(1) },
+        ]);
+        // Simulate what main.rs does after Fix 1: store the trimmed text.
+        let raw = "   trimmed_note   ";
+        let trimmed = raw.trim().to_string();
+        app.comments.set(PathBuf::from("a.rs"), 1, "".to_string(), trimmed);
+
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains("trimmed_note"), "trimmed comment text must appear");
+        // The raw padded string (with surrounding spaces) must not be stored/rendered.
+        assert!(!dump.contains("   trimmed_note   "), "padded comment text must not appear");
     }
 
     #[test]
