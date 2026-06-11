@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, InputState, LineKind, Pane, Section, Status};
+use crate::app::{App, InputState, LineKind, Pane, Section, Status, ViewMode};
 use crate::comments::CommentStatus;
 use crate::highlight::highlight_code;
 use crate::theme;
@@ -43,7 +43,10 @@ pub fn render(frame: &mut Frame, app: &App) {
                 Constraint::Percentage(100 - app.file_pane_pct),
             ])
             .split(main_area);
-        render_files(frame, app, panes[0]);
+        match app.view {
+            ViewMode::Changes => render_files(frame, app, panes[0]),
+            ViewMode::Commits => render_commits(frame, app, panes[0]),
+        }
         render_diff(frame, app, panes[1]);
     } else {
         render_diff(frame, app, main_area);
@@ -108,9 +111,9 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let title = if app.hide_reviewed {
-        " Files (hiding reviewed) ".to_string()
+        " [Changes] Commits  (hiding reviewed) ".to_string()
     } else {
-        " Files ".to_string()
+        " [Changes] Commits ".to_string()
     };
     let list = List::new(items)
         .block(
@@ -122,6 +125,44 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
         .highlight_style(Style::default().bg(theme::SELECTED_BG).add_modifier(Modifier::BOLD));
     let mut state = ListState::default();
     state.select(Some(app.selected));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn render_commits(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .commits
+        .iter()
+        .map(|ci| {
+            // Truncate summary to avoid overflow
+            let max_summary = area.width.saturating_sub(30) as usize;
+            let summary = if ci.summary.chars().count() > max_summary && max_summary > 3 {
+                format!("{}…", ci.summary.chars().take(max_summary - 1).collect::<String>())
+            } else {
+                ci.summary.clone()
+            };
+            let line = Line::from(vec![
+                Span::styled(format!("{} ", ci.short), Style::default().fg(theme::YELLOW)),
+                Span::raw(summary),
+                Span::styled(
+                    format!("  — {} {}", ci.author, ci.time),
+                    Style::default().fg(theme::ACCENT_DIM),
+                ),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let title = " Changes [Commits] ";
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(focused_border(app, Pane::Files))
+                .title(title),
+        )
+        .highlight_style(Style::default().bg(theme::SELECTED_BG).add_modifier(Modifier::BOLD));
+    let mut state = ListState::default();
+    state.select(if app.commits.is_empty() { None } else { Some(app.selected_commit) });
     frame.render_stateful_widget(list, area, &mut state);
 }
 
@@ -143,7 +184,12 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
         .map(|p| format!(" Diff: {} ({}) ", p.display(), ctx_label))
         .unwrap_or_else(|| " Diff ".to_string());
 
-    let lines: Vec<Line> = if app.diff.is_empty() {
+    let lines: Vec<Line> = if app.view == ViewMode::Commits {
+        vec![Line::from(Span::styled(
+            "Press Enter to view commit's changes",
+            Style::default().fg(theme::PLACEHOLDER),
+        ))]
+    } else if app.diff.is_empty() {
         vec![Line::from(Span::styled(
             "No changes",
             Style::default().fg(theme::PLACEHOLDER),
@@ -336,7 +382,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let base = "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:files  F:full-file  +/-:context  z:hide-files  <>:resize  c:comment  q:quit";
+    let base = "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:files  F:full-file  +/-:context  z:hide-files  <>:resize  c:comment  [/]:view  q:quit";
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
         None => base.to_string(),
@@ -550,8 +596,10 @@ mod tests {
         let app = App::new(files, vec![], PathBuf::from("/repo"));
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        // The block title should show " Files " but not the old [STAGED/UNSTAGED] mode string
-        assert!(dump.contains("Files"), "Files title missing");
+        // The block title shows the tab bar with Changes and Commits tabs.
+        // In Changes mode, Changes tab is active (in brackets).
+        assert!(dump.contains("Changes"), "Changes tab missing from title");
+        assert!(dump.contains("Commits"), "Commits tab missing from title");
         assert!(!dump.contains("STAGED"), "[STAGED] mode label should be gone");
         assert!(!dump.contains("UNSTAGED"), "[UNSTAGED] mode label should be gone");
     }

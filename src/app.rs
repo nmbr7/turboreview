@@ -25,6 +25,12 @@ pub enum Pane {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewMode {
+    Changes,
+    Commits,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Added,
     Modified,
@@ -87,6 +93,7 @@ pub struct CommittedComment {
 pub struct App {
     pub repo_root: PathBuf,
     pub focus: Pane,
+    pub view: ViewMode,
     pub unstaged: Vec<FileChange>,
     pub staged: Vec<FileChange>,
     pub selected: usize,
@@ -104,6 +111,8 @@ pub struct App {
     pub file_pane_pct: u16,
     pub comments: Comments,
     pub input: Option<InputState>,
+    pub commits: Vec<crate::git::CommitInfo>,
+    pub selected_commit: usize,
 }
 
 enum RowId {
@@ -116,6 +125,7 @@ impl App {
         let mut app = App {
             repo_root,
             focus: Pane::Files,
+            view: ViewMode::Changes,
             unstaged,
             staged,
             selected: 0,
@@ -133,6 +143,8 @@ impl App {
             file_pane_pct: 25,
             comments: Comments::default(),
             input: None,
+            commits: Vec::new(),
+            selected_commit: 0,
         };
         app.rebuild_rows();
         app
@@ -319,6 +331,31 @@ impl App {
                 self.rebuild_rows();
             }
         }
+    }
+
+    pub fn next_view(&mut self) {
+        self.view = match self.view {
+            ViewMode::Changes => ViewMode::Commits,
+            ViewMode::Commits => ViewMode::Changes,
+        };
+    }
+
+    pub fn prev_view(&mut self) {
+        // With only two modes, prev and next are equivalent toggles
+        self.next_view();
+    }
+
+    pub fn move_commit_selection(&mut self, delta: isize) {
+        if self.commits.is_empty() {
+            return;
+        }
+        let max = self.commits.len() as isize - 1;
+        let next = (self.selected_commit as isize + delta).clamp(0, max);
+        self.selected_commit = next as usize;
+    }
+
+    pub fn selected_commit_info(&self) -> Option<&crate::git::CommitInfo> {
+        self.commits.get(self.selected_commit)
     }
 
     pub fn inc_context(&mut self) {
@@ -1025,6 +1062,50 @@ mod tests {
         assert_eq!(input.anchor_line_text, "fn target()");
         assert_eq!(input.anchor_before, vec!["let a = 1;"]);
         assert_eq!(input.anchor_after, vec!["let b = 2;"]);
+    }
+
+    // ── NEW: ViewMode / commit list state tests ──────────────────────────────
+
+    fn make_commit_info(summary: &str) -> crate::git::CommitInfo {
+        crate::git::CommitInfo {
+            id: "abcdef1234567890".to_string(),
+            short: "abcdef12".to_string(),
+            summary: summary.to_string(),
+            author: "test".to_string(),
+            time: "2024-01-01".to_string(),
+        }
+    }
+
+    #[test]
+    fn view_mode_toggles_with_next_and_prev_view() {
+        let mut app = sample();
+        assert_eq!(app.view, ViewMode::Changes);
+        app.next_view();
+        assert_eq!(app.view, ViewMode::Commits);
+        app.next_view();
+        assert_eq!(app.view, ViewMode::Changes);
+        app.prev_view();
+        assert_eq!(app.view, ViewMode::Commits);
+        app.prev_view();
+        assert_eq!(app.view, ViewMode::Changes);
+    }
+
+    #[test]
+    fn move_commit_selection_clamps() {
+        let mut app = sample();
+        app.commits = vec![
+            make_commit_info("first"),
+            make_commit_info("second"),
+            make_commit_info("third"),
+        ];
+        // start at 0
+        assert_eq!(app.selected_commit, 0);
+        app.move_commit_selection(1);
+        assert_eq!(app.selected_commit, 1);
+        app.move_commit_selection(99);
+        assert_eq!(app.selected_commit, 2); // clamped to max index
+        app.move_commit_selection(-99);
+        assert_eq!(app.selected_commit, 0); // clamped to 0
     }
 
     #[test]

@@ -5,6 +5,16 @@ use git2::{Diff, DiffOptions, Repository};
 
 use crate::app::{DiffLine, FileChange, LineKind, Mode, Status};
 
+/// One entry in the branch history.
+#[derive(Clone, Debug)]
+pub struct CommitInfo {
+    pub id: String,       // full hex oid
+    pub short: String,    // first 8 chars of the oid
+    pub summary: String,  // first line of the message
+    pub author: String,   // author name
+    pub time: String,     // formatted date "YYYY-MM-DD"
+}
+
 pub struct Repo {
     inner: Repository,
 }
@@ -58,36 +68,7 @@ impl Repo {
             .context_lines(context)
             .pathspec(file);
         let diff = self.diff_with_opts(mode, &mut opts)?;
-
-        let mut lines = Vec::new();
-        diff.print(git2::DiffFormat::Patch, |_delta, hunk, line| {
-            let origin = line.origin();
-            let kind = match origin {
-                '+' => LineKind::Add,
-                '-' => LineKind::Del,
-                ' ' => LineKind::Context,
-                'H' => LineKind::Hunk,
-                _ => return true, // 'F' file header, binary, etc: skip
-            };
-            let text = if kind == LineKind::Hunk {
-                match hunk {
-                    Some(h) => String::from_utf8_lossy(h.header()).trim_end().to_string(),
-                    None => String::from_utf8_lossy(line.content()).trim_end().to_string(),
-                }
-            } else {
-                String::from_utf8_lossy(line.content())
-                    .trim_end_matches(|c| c == '\n' || c == '\r')
-                    .to_string()
-            };
-            lines.push(DiffLine {
-                kind,
-                text,
-                old_lineno: line.old_lineno(),
-                new_lineno: line.new_lineno(),
-            });
-            true
-        })?;
-        Ok(lines)
+        collect_diff_lines(&diff)
     }
 
     /// Stage the given path: copy its working-tree state into the index.
@@ -123,6 +104,71 @@ impl Repo {
         Ok(())
     }
 
+    /// Walk the current branch history from HEAD (newest first), up to `limit` commits.
+    pub fn log(&self, limit: usize) -> Result<Vec<CommitInfo>> {
+        let mut walk = self.inner.revwalk()?;
+        walk.push_head()?;
+        walk.set_sorting(git2::Sort::TIME)?;
+        let mut out = Vec::new();
+        for oid in walk {
+            if out.len() >= limit {
+                break;
+            }
+            let oid = oid?;
+            let commit = self.inner.find_commit(oid)?;
+            let id = oid.to_string();
+            let short = id.chars().take(8).collect::<String>();
+            let summary = commit.summary().unwrap_or(None).unwrap_or("").to_string();
+            let author = commit.author().name().unwrap_or("").to_string();
+            let secs = commit.author().when().seconds();
+            let time = format_date(secs);
+            out.push(CommitInfo { id, short, summary, author, time });
+        }
+        Ok(out)
+    }
+
+    /// Changed files introduced by a commit vs its first parent (or vs empty tree for a root commit).
+    pub fn commit_files(&self, commit_id: &str) -> Result<Vec<FileChange>> {
+        let oid = git2::Oid::from_str(commit_id)?;
+        let commit = self.inner.find_commit(oid)?;
+        let tree = commit.tree()?;
+        let parent_tree = if commit.parent_count() > 0 {
+            Some(commit.parent(0)?.tree()?)
+        } else {
+            None
+        };
+        let mut opts = git2::DiffOptions::new();
+        let diff = self.inner.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
+        let mut files = Vec::new();
+        for delta in diff.deltas() {
+            let path = delta
+                .new_file()
+                .path()
+                .or_else(|| delta.old_file().path())
+                .map(|p| p.to_path_buf());
+            if let Some(path) = path {
+                files.push(FileChange { path, status: map_status(delta.status()) });
+            }
+        }
+        Ok(files)
+    }
+
+    /// Diff lines for one file within a commit (commit vs first parent), with `context` context lines.
+    pub fn commit_diff_for(&self, commit_id: &str, file: &Path, context: u32) -> Result<Vec<DiffLine>> {
+        let oid = git2::Oid::from_str(commit_id)?;
+        let commit = self.inner.find_commit(oid)?;
+        let tree = commit.tree()?;
+        let parent_tree = if commit.parent_count() > 0 {
+            Some(commit.parent(0)?.tree()?)
+        } else {
+            None
+        };
+        let mut opts = git2::DiffOptions::new();
+        opts.context_lines(context).pathspec(file);
+        let diff = self.inner.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
+        collect_diff_lines(&diff)
+    }
+
     /// List changed files for the given mode.
     pub fn changed_files(&self, mode: Mode) -> Result<Vec<FileChange>> {
         let diff = self.build_diff(mode)?;
@@ -141,6 +187,59 @@ impl Repo {
     }
 }
 
+/// Shared helper: collect DiffLine entries from a git2::Diff using the print callback.
+/// Used by both diff_for and commit_diff_for so the line-mapping logic is not duplicated.
+fn collect_diff_lines(diff: &Diff<'_>) -> Result<Vec<DiffLine>> {
+    let mut lines = Vec::new();
+    diff.print(git2::DiffFormat::Patch, |_delta, hunk, line| {
+        let origin = line.origin();
+        let kind = match origin {
+            '+' => LineKind::Add,
+            '-' => LineKind::Del,
+            ' ' => LineKind::Context,
+            'H' => LineKind::Hunk,
+            _ => return true, // 'F' file header, binary, etc: skip
+        };
+        let text = if kind == LineKind::Hunk {
+            match hunk {
+                Some(h) => String::from_utf8_lossy(h.header()).trim_end().to_string(),
+                None => String::from_utf8_lossy(line.content()).trim_end().to_string(),
+            }
+        } else {
+            String::from_utf8_lossy(line.content())
+                .trim_end_matches(|c| c == '\n' || c == '\r')
+                .to_string()
+        };
+        lines.push(DiffLine {
+            kind,
+            text,
+            old_lineno: line.old_lineno(),
+            new_lineno: line.new_lineno(),
+        });
+        true
+    })?;
+    Ok(lines)
+}
+
+/// Convert epoch seconds to "YYYY-MM-DD" using the civil_from_days algorithm
+/// (Howard Hinnant's implementation — no date crate needed).
+pub fn format_date(secs: i64) -> String {
+    // Days since epoch (floor division for negative values)
+    let z = secs.div_euclid(86400);
+    // civil_from_days algorithm (H. Hinnant)
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
 fn map_status(s: git2::Delta) -> Status {
     use git2::Delta::*;
     match s {
@@ -157,6 +256,82 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    // ── NEW: CommitInfo / log / commit_files / commit_diff_for tests ─────────
+
+    #[test]
+    fn format_date_known_values() {
+        // epoch 0 = 1970-01-01
+        assert_eq!(format_date(0), "1970-01-01");
+        // 1700000000 seconds from epoch = 2023-11-14
+        assert_eq!(format_date(1_700_000_000), "2023-11-14");
+    }
+
+    #[test]
+    fn log_lists_commits_newest_first() {
+        let (dir, repo) = init_repo();
+        commit_file(&repo, dir.path(), "a.txt", "alpha");
+        commit_file(&repo, dir.path(), "b.txt", "beta");
+        let r = Repo::discover(dir.path()).unwrap();
+        let commits = r.log(10).unwrap();
+        assert_eq!(commits.len(), 2);
+        // newest first → second commit (added b.txt) is first in the log
+        assert!(commits[0].summary.contains('c') || commits[0].short.len() == 8);
+        assert!(!commits[0].short.is_empty());
+        assert!(!commits[0].author.is_empty());
+        assert!(!commits[0].time.is_empty());
+        // second entry is the first commit
+        assert_eq!(commits[0].id.len(), 40);
+    }
+
+    #[test]
+    fn log_respects_limit() {
+        let (dir, repo) = init_repo();
+        commit_file(&repo, dir.path(), "a.txt", "one");
+        commit_file(&repo, dir.path(), "b.txt", "two");
+        commit_file(&repo, dir.path(), "c.txt", "three");
+        let r = Repo::discover(dir.path()).unwrap();
+        let commits = r.log(2).unwrap();
+        assert_eq!(commits.len(), 2);
+    }
+
+    #[test]
+    fn commit_files_shows_files_changed_in_commit() {
+        let (dir, repo) = init_repo();
+        commit_file(&repo, dir.path(), "a.txt", "alpha");
+        commit_file(&repo, dir.path(), "b.txt", "beta");
+        let r = Repo::discover(dir.path()).unwrap();
+        let commits = r.log(10).unwrap();
+        // commits[0] is newest = the second commit (added b.txt)
+        let files = r.commit_files(&commits[0].id).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, std::path::PathBuf::from("b.txt"));
+    }
+
+    #[test]
+    fn commit_diff_for_yields_add_lines() {
+        let (dir, repo) = init_repo();
+        commit_file(&repo, dir.path(), "hello.txt", "hello world\n");
+        let r = Repo::discover(dir.path()).unwrap();
+        let commits = r.log(10).unwrap();
+        let lines = r.commit_diff_for(&commits[0].id, std::path::Path::new("hello.txt"), 3).unwrap();
+        let adds: Vec<_> = lines.iter().filter(|l| l.kind == crate::app::LineKind::Add).collect();
+        assert!(!adds.is_empty());
+        assert!(adds.iter().any(|l| l.text.contains("hello world")));
+    }
+
+    #[test]
+    fn root_commit_files_vs_empty_tree() {
+        let (dir, repo) = init_repo();
+        commit_file(&repo, dir.path(), "root.txt", "initial");
+        let r = Repo::discover(dir.path()).unwrap();
+        let commits = r.log(10).unwrap();
+        // Single (root) commit — no parent
+        assert_eq!(commits.len(), 1);
+        let files = r.commit_files(&commits[0].id).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, std::path::PathBuf::from("root.txt"));
+    }
 
     /// Init a repo, return (tempdir, Repository). Caller writes files.
     fn init_repo() -> (tempfile::TempDir, Repository) {

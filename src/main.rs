@@ -13,7 +13,7 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::Terminal;
 
-use turboreview::app::{App, Mode, Pane, Section};
+use turboreview::app::{App, Mode, Pane, Section, ViewMode};
 use turboreview::comments;
 use turboreview::git::Repo;
 use turboreview::{review, ui};
@@ -33,6 +33,7 @@ fn main() -> Result<()> {
     let mut app = App::new(unstaged, staged, root.clone());
     app.reviewed = review::load(&root)?;
     app.comments = comments::Comments::load(&root).unwrap_or_default();
+    app.commits = repo.log(200).unwrap_or_default();
     refresh_diff(&repo, &mut app);
 
     let mut terminal = setup_terminal()?;
@@ -142,7 +143,11 @@ fn run(
 
                 if matches!(key.code, KeyCode::Char('g')) && key.modifiers.is_empty() {
                     if pending_g {
-                        app.to_top();
+                        if app.view == ViewMode::Commits && app.focus == Pane::Files {
+                            app.selected_commit = 0;
+                        } else {
+                            app.to_top();
+                        }
                         pending_g = false;
                     } else {
                         pending_g = true;
@@ -185,7 +190,13 @@ fn run(
                         }
                         refresh_diff(repo, app);
                     }
-                    (KeyCode::Char('G'), _) => app.to_bottom(),
+                    (KeyCode::Char('G'), _) => {
+                        if app.view == ViewMode::Commits && app.focus == Pane::Files {
+                            app.selected_commit = app.commits.len().saturating_sub(1);
+                        } else {
+                            app.to_bottom();
+                        }
+                    }
                     (KeyCode::Char('R'), _) => {
                         app.toggle_hide_reviewed();
                         refresh_diff(repo, app);
@@ -194,7 +205,10 @@ fn run(
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => move_in_focus(repo, app, 1),
                     (KeyCode::Enter, _) => {
                         if app.focus == Pane::Files {
-                            if app.selected_path().is_some() {
+                            if app.view == ViewMode::Commits {
+                                // Part 2 will drill into commit — no-op for now
+                                app.status_msg = Some("commit drill-down coming in Part 2".to_string());
+                            } else if app.selected_path().is_some() {
                                 app.focus = Pane::Diff; // jump into the diff to read this file
                             } else {
                                 app.toggle_collapse(); // dir row: fold/unfold (no-op on header)
@@ -223,6 +237,8 @@ fn run(
                         app.dec_context();
                         refresh_diff(repo, app);
                     }
+                    (KeyCode::Char(']'), _) => app.next_view(),
+                    (KeyCode::Char('['), _) => app.prev_view(),
                     (KeyCode::Char('z'), _) => app.toggle_files(),
                     (KeyCode::Char('>'), _) | (KeyCode::Char('.'), _) => app.widen_files(),
                     (KeyCode::Char('<'), _) | (KeyCode::Char(','), _) => app.narrow_files(),
@@ -244,8 +260,12 @@ fn run(
 fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
     match app.focus {
         Pane::Files => {
-            app.move_selection(delta);
-            refresh_diff(repo, app);
+            if app.view == ViewMode::Commits {
+                app.move_commit_selection(delta);
+            } else {
+                app.move_selection(delta);
+                refresh_diff(repo, app);
+            }
         }
         Pane::Diff => app.move_diff_cursor(delta),
     }
