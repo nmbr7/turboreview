@@ -147,6 +147,9 @@ fn reload_everything(repo: &Repo, app: &mut App) {
     }
     // Reload reviewed set and comments from the CURRENT scope
     load_scope(&app.repo_root.clone(), app);
+    // Clamp comment_selected so it can't dangle past a now-shorter comment list.
+    let clen = app.comment_rows().len();
+    app.comment_selected = app.comment_selected.min(clen.saturating_sub(1));
     // Rebuild rows and refresh diff
     app.rebuild_rows();
     refresh_diff(repo, app);

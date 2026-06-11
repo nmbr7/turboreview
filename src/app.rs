@@ -192,11 +192,9 @@ impl App {
 
     pub fn toggle_files(&mut self) {
         self.show_files = !self.show_files;
-        // Can't navigate a hidden file list — keep focus on the diff while hidden.
-        if !self.show_files {
+        // Only move focus if the hidden pane was the focused one.
+        if !self.show_files && self.focus == Pane::Files {
             self.focus = Pane::Diff;
-        } else {
-            self.focus = Pane::Files;
         }
     }
 
@@ -1042,14 +1040,14 @@ mod tests {
         let mut app = sample();
         assert_eq!(app.show_files, true);
         assert_eq!(app.focus, Pane::Files);
-        // toggle off: show_files false + focus Diff
+        // toggle off while focused on Files -> show_files false, focus moves to Diff
         app.toggle_files();
         assert_eq!(app.show_files, false);
         assert_eq!(app.focus, Pane::Diff);
-        // toggle on: show_files true + focus Files
+        // toggle on -> show_files true, but focus stays on Diff (no auto-steal back to Files)
         app.toggle_files();
         assert_eq!(app.show_files, true);
-        assert_eq!(app.focus, Pane::Files);
+        assert_eq!(app.focus, Pane::Diff);
     }
 
     // ── Comment input tests ───────────────────────────────────────────────
@@ -1566,6 +1564,16 @@ mod tests {
         assert_eq!(app.focus, Pane::Comments);
         app.toggle_focus();
         assert_eq!(app.focus, Pane::Files);
+    }
+
+    #[test]
+    fn toggle_focus_only_diff_visible_stays_diff() {
+        let mut app = sample();
+        app.show_files = false;
+        app.show_comments = false;
+        app.focus = Pane::Diff;
+        app.toggle_focus();
+        assert_eq!(app.focus, Pane::Diff);
     }
 
     #[test]
