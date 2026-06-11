@@ -298,7 +298,12 @@ fn run(
                         }
                     }
                     (KeyCode::Esc, _) => {
-                        if app.in_commit_detail() {
+                        if app.in_commit_detail() && app.focus == Pane::Diff {
+                            // Inside a commit's file diff: step back to that commit's
+                            // file list, not all the way out to the commit list.
+                            app.focus = Pane::Files;
+                        } else if app.in_commit_detail() {
+                            // On the commit's file list: back out to the commit list.
                             app.close_commit();
                         } else {
                             app.focus = Pane::Files;

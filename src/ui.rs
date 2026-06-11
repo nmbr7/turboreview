@@ -393,13 +393,8 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let base = if app.in_commit_detail() {
-        "Tab:focus  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:back  F:full-file  +/-:context  c:comment  [/]:view  r:refresh  ?:help  q:quit"
-    } else if app.view == ViewMode::Commits {
-        "up/down/jk:move  gg/G  Enter:open  [/]:view  r:refresh  ?:help  q:quit"
-    } else {
-        "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:files  F:full-file  +/-:context  z:hide-files  <>:resize  c:comment  [/]:view  r:refresh  ?:help  q:quit"
-    };
+    // Footer is just a help reminder plus any transient status message.
+    let base = "? for help";
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
         None => base.to_string(),

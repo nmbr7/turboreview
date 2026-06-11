@@ -360,6 +360,9 @@ impl App {
             self.open_commit = None;
             self.commit_files.clear();
         }
+        // Rows reference the previous view's file set; rebuild so they can't point
+        // into a now-cleared list (e.g. commit_files after leaving a commit detail).
+        self.rebuild_rows();
     }
 
     pub fn prev_view(&mut self) {
@@ -1253,6 +1256,30 @@ mod tests {
         // rows rebuilt (no open_commit means back to normal unstaged/staged rows from sample)
         // sample() has 3 unstaged files -> Header(U) + 3 files + Header(S) = 5 rows
         assert_eq!(app.rows.len(), 5);
+    }
+
+    #[test]
+    fn switching_view_from_commit_detail_rebuilds_rows() {
+        // Regression: leaving a commit detail via [ / ] cleared commit_files but
+        // left rows pointing into them, causing an out-of-bounds panic on next access.
+        let mut app = sample();
+        app.view = ViewMode::Commits;
+        let files = make_commit_files(&["a.rs", "b.rs"]);
+        app.open_commit("deadbeef12345678".to_string(), files);
+        assert!(app.in_commit_detail());
+
+        app.next_view(); // leave Commits -> Changes; must clear AND rebuild
+
+        assert_eq!(app.open_commit, None);
+        assert!(app.commit_files.is_empty());
+        // No row may reference Section::Commit anymore.
+        assert!(!app.rows.iter().any(|r| matches!(
+            &r.kind,
+            crate::tree::RowKind::File { section: Section::Commit, .. }
+                | crate::tree::RowKind::Header { section: Section::Commit, .. }
+        )));
+        // selected must be in bounds for the rebuilt rows.
+        assert!(app.selected < app.rows.len().max(1));
     }
 
     #[test]
