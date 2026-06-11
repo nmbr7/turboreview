@@ -116,6 +116,7 @@ pub struct App {
     pub selected_commit: usize,
     pub open_commit: Option<String>,
     pub commit_files: Vec<FileChange>,
+    pub show_help: bool,
 }
 
 enum RowId {
@@ -150,6 +151,7 @@ impl App {
             selected_commit: 0,
             open_commit: None,
             commit_files: Vec::new(),
+            show_help: false,
         };
         app.rebuild_rows();
         app
@@ -157,6 +159,10 @@ impl App {
 
     pub fn toggle_full_file(&mut self) {
         self.full_file = !self.full_file;
+    }
+
+    pub fn toggle_help(&mut self) {
+        self.show_help = !self.show_help;
     }
 
     pub fn toggle_files(&mut self) {
@@ -1105,6 +1111,18 @@ mod tests {
         assert_eq!(input.anchor_line_text, "fn target()");
         assert_eq!(input.anchor_before, vec!["let a = 1;"]);
         assert_eq!(input.anchor_after, vec!["let b = 2;"]);
+    }
+
+    // ── Help overlay tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn toggle_help_flips_show_help() {
+        let mut app = sample();
+        assert!(!app.show_help);
+        app.toggle_help();
+        assert!(app.show_help);
+        app.toggle_help();
+        assert!(!app.show_help);
     }
 
     // ── NEW: ViewMode / commit list state tests ──────────────────────────────

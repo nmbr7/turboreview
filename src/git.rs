@@ -107,7 +107,9 @@ impl Repo {
     /// Walk the current branch history from HEAD (newest first), up to `limit` commits.
     pub fn log(&self, limit: usize) -> Result<Vec<CommitInfo>> {
         let mut walk = self.inner.revwalk()?;
-        walk.push_head()?;
+        if walk.push_head().is_err() {
+            return Ok(Vec::new()); // unborn HEAD — no commits yet
+        }
         walk.set_sorting(git2::Sort::TIME)?;
         let mut out = Vec::new();
         for oid in walk {
@@ -118,7 +120,7 @@ impl Repo {
             let commit = self.inner.find_commit(oid)?;
             let id = oid.to_string();
             let short = id.chars().take(8).collect::<String>();
-            let summary = commit.summary().unwrap_or(None).unwrap_or("").to_string();
+            let summary = commit.summary().ok().flatten().unwrap_or("").to_string();
             let author = commit.author().name().unwrap_or("").to_string();
             let secs = commit.author().when().seconds();
             let time = format_date(secs);
@@ -465,6 +467,15 @@ mod tests {
         // full view should contain all 8 file lines as context/changed
         let ctx_and_changed = many.iter().filter(|l| l.kind != crate::app::LineKind::Hunk).count();
         assert!(ctx_and_changed >= 8);
+    }
+
+    #[test]
+    fn log_on_unborn_head_returns_empty() {
+        // init_repo() creates a repo with no commits (unborn HEAD)
+        let (dir, _repo) = init_repo();
+        let r = Repo::discover(dir.path()).unwrap();
+        let commits = r.log(10).unwrap();
+        assert!(commits.is_empty(), "log on unborn HEAD must return empty list, not error");
     }
 
     #[test]

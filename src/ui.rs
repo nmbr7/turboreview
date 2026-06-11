@@ -56,6 +56,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     if let Some(input) = &app.input {
         render_input_modal(frame, input);
     }
+    if app.show_help {
+        render_help_modal(frame);
+    }
 }
 
 fn focused_border(app: &App, pane: Pane) -> Style {
@@ -391,11 +394,11 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
     let base = if app.in_commit_detail() {
-        "Tab:focus  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:back  F:full-file  +/-:context  c:comment  [/]:view  q:quit"
+        "Tab:focus  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:back  F:full-file  +/-:context  c:comment  [/]:view  r:refresh  ?:help  q:quit"
     } else if app.view == ViewMode::Commits {
-        "up/down/jk:move  gg/G  Enter:open  [/]:view  q:quit"
+        "up/down/jk:move  gg/G  Enter:open  [/]:view  r:refresh  ?:help  q:quit"
     } else {
-        "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:files  F:full-file  +/-:context  z:hide-files  <>:resize  c:comment  [/]:view  q:quit"
+        "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:files  F:full-file  +/-:context  z:hide-files  <>:resize  c:comment  [/]:view  r:refresh  ?:help  q:quit"
     };
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
@@ -445,6 +448,53 @@ fn render_input_modal(frame: &mut Frame, input: &InputState) {
                 .title(title),
         )
         .wrap(Wrap { trim: false });
+    frame.render_widget(para, area);
+}
+
+const HELP_LINES: &[(&str, &str)] = &[
+    ("Tab",       "switch focus (Files/Diff)"),
+    ("j/k, ↑/↓",  "move selection / cursor"),
+    ("gg / G",    "top / bottom"),
+    ("Enter",     "open file diff / open commit / fold dir"),
+    ("Esc",       "back / focus files"),
+    ("h/l, ←/→",  "scroll diff horizontally"),
+    ("+/-",       "context lines (±5)"),
+    ("F",         "full-file diff toggle"),
+    ("z",         "hide/show file pane"),
+    ("< / >",     "resize file pane"),
+    ("[ / ]",     "switch Changes/Commits view"),
+    ("c",         "comment on line"),
+    ("s",         "stage / unstage file"),
+    ("Space",     "toggle reviewed"),
+    ("R",         "hide reviewed files"),
+    ("r",         "refresh"),
+    ("?",         "this help"),
+    ("q / Ctrl-C","quit"),
+];
+
+fn render_help_modal(frame: &mut Frame) {
+    let area = centered_rect(60, 70, frame.area());
+    frame.render_widget(Clear, area);
+    let lines: Vec<Line> = HELP_LINES
+        .iter()
+        .map(|(key, desc)| {
+            Line::from(vec![
+                Span::styled(
+                    format!("  {:14}", key),
+                    Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(desc.to_string(), Style::default().fg(theme::ACCENT_DIM)),
+            ])
+        })
+        .collect();
+    let para = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(theme::ACCENT))
+                .title(" Keybindings (? or Esc to close) "),
+        );
     frame.render_widget(para, area);
 }
 
@@ -849,6 +899,18 @@ mod tests {
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains("outdated"), "stale comment must show '(outdated)' prefix");
         assert!(dump.contains("stale note"), "stale comment text must still appear");
+    }
+
+    #[test]
+    fn help_overlay_shows_keybindings_title() {
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.show_help = true;
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains("Keybindings"), "help overlay must show 'Keybindings' title");
     }
 
     #[test]

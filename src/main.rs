@@ -116,6 +116,34 @@ fn reload_all(repo: &Repo, app: &mut App) {
     refresh_diff(repo, app);
 }
 
+/// Reload everything from disk/git so new external changes appear.
+fn reload_everything(repo: &Repo, app: &mut App) {
+    // Reload file lists (on error set status_msg but keep going)
+    match repo.changed_files(Mode::Unstaged) {
+        Ok(f) => app.unstaged = f,
+        Err(e) => app.status_msg = Some(format!("list error: {e}")),
+    }
+    match repo.changed_files(Mode::Staged) {
+        Ok(f) => app.staged = f,
+        Err(e) => app.status_msg = Some(format!("list error: {e}")),
+    }
+    // Reload commits
+    app.commits = repo.log(200).unwrap_or_default();
+    // If in a commit detail view, refresh that commit's files
+    if app.in_commit_detail() {
+        if let Some(id) = app.open_commit.clone() {
+            app.commit_files = repo.commit_files(&id).unwrap_or_default();
+        }
+    }
+    // Reload reviewed set and comments
+    app.reviewed = review::load(&app.repo_root).unwrap_or_default();
+    app.comments = comments::Comments::load(&app.repo_root).unwrap_or_default();
+    // Rebuild rows and refresh diff
+    app.rebuild_rows();
+    refresh_diff(repo, app);
+    app.status_msg = Some("refreshed".into());
+}
+
 fn run(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     repo: &Repo,
@@ -166,6 +194,12 @@ fn run(
                     continue;
                 }
 
+                // Help overlay: while open, any key closes it (swallow).
+                if app.show_help {
+                    app.show_help = false;
+                    continue;
+                }
+
                 if matches!(key.code, KeyCode::Char('g')) && key.modifiers.is_empty() {
                     if pending_g {
                         if app.view == ViewMode::Commits && app.open_commit.is_none() && app.focus == Pane::Files {
@@ -211,11 +245,15 @@ fn run(
                         // s in Diff pane is deferred (does nothing this phase)
                     }
                     (KeyCode::Char(' '), _) => {
-                        app.toggle_reviewed();
-                        if let Err(e) = review::save(&app.repo_root, &app.reviewed) {
-                            app.status_msg = Some(format!("save error: {e}"));
+                        // In Commits-list mode (not in detail), rows are stale working-tree rows;
+                        // toggle_reviewed would act on the wrong file, so ignore.
+                        if !(app.view == ViewMode::Commits && !app.in_commit_detail()) {
+                            app.toggle_reviewed();
+                            if let Err(e) = review::save(&app.repo_root, &app.reviewed) {
+                                app.status_msg = Some(format!("save error: {e}"));
+                            }
+                            refresh_diff(repo, app);
                         }
-                        refresh_diff(repo, app);
                     }
                     (KeyCode::Char('G'), _) => {
                         if app.view == ViewMode::Commits && app.open_commit.is_none() && app.focus == Pane::Files {
@@ -289,8 +327,17 @@ fn run(
                     (KeyCode::Char('z'), _) => app.toggle_files(),
                     (KeyCode::Char('>'), _) | (KeyCode::Char('.'), _) => app.widen_files(),
                     (KeyCode::Char('<'), _) | (KeyCode::Char(','), _) => app.narrow_files(),
-                    // c (no modifier) opens comment modal; Ctrl-C is already handled above
-                    (KeyCode::Char('c'), _) => app.start_comment(),
+                    // r (lowercase) refreshes everything from disk/git; R (uppercase) hides reviewed.
+                    (KeyCode::Char('r'), KeyModifiers::NONE) => reload_everything(repo, app),
+                    // ? toggles the help overlay
+                    (KeyCode::Char('?'), _) => app.toggle_help(),
+                    // c (no modifier) opens comment modal; Ctrl-C is already handled above.
+                    // In Commits-list mode (not in detail), rows are stale; ignore.
+                    (KeyCode::Char('c'), _) => {
+                        if !(app.view == ViewMode::Commits && !app.in_commit_detail()) {
+                            app.start_comment();
+                        }
+                    }
                     _ => {}
                 }
             }
