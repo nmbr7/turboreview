@@ -2,6 +2,27 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use anyhow::Result;
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CommentStatus {
+    #[default]
+    Open,
+    Resolved,
+    Wontfix,
+    NeedsInfo,
+}
+
+impl CommentStatus {
+    pub fn label(&self) -> &'static str {
+        match self {
+            CommentStatus::Open => "open",
+            CommentStatus::Resolved => "resolved",
+            CommentStatus::Wontfix => "wontfix",
+            CommentStatus::NeedsInfo => "needs-info",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Comment {
     pub file: PathBuf,
@@ -18,6 +39,10 @@ pub struct Comment {
     pub orig_line: u32,              // line number when the comment was created
     #[serde(default)]
     pub stale: bool,                 // true if relocation couldn't confidently place it
+    #[serde(default)]
+    pub status: CommentStatus,       // agent-facing: open | resolved | wontfix | needs_info
+    #[serde(default)]
+    pub response: Option<String>,    // agent's reply when addressing the comment
 }
 
 #[derive(Clone, Debug, Default)]
@@ -66,6 +91,8 @@ impl Comments {
                 context_after,
                 orig_line: line,
                 stale: false,
+                status: CommentStatus::Open,
+                response: None,
             });
         }
     }
@@ -224,6 +251,8 @@ mod tests {
             context_after: ctx_after.iter().map(|s| s.to_string()).collect(),
             orig_line,
             stale: false,
+            status: CommentStatus::Open,
+            response: None,
         }
     }
 
@@ -519,5 +548,55 @@ mod tests {
         assert!(comments.get(Path::new("src/lib.rs"), 100).is_none());
         // Wrong file
         assert!(comments.get(Path::new("src/other.rs"), 99).is_none());
+    }
+
+    // ─── TDD: status + response round-trip ───────────────────────────────────
+
+    #[test]
+    fn comment_status_response_round_trips_through_save_load() {
+        let dir = tempdir().unwrap();
+        let mut comments = Comments::default();
+        comments.set(
+            PathBuf::from("src/main.rs"),
+            10,
+            "@@ -8,4 @@".to_string(),
+            "refactor this".to_string(),
+            "fn foo()".to_string(),
+            vec![],
+            vec![],
+        );
+        // Manually set status and response on the created comment
+        comments.items[0].status = CommentStatus::Resolved;
+        comments.items[0].response = Some("Fixed in latest commit".to_string());
+        comments.save(dir.path()).unwrap();
+
+        let loaded = Comments::load(dir.path()).unwrap();
+        assert_eq!(loaded.items.len(), 1);
+        let c = &loaded.items[0];
+        assert_eq!(c.status, CommentStatus::Resolved);
+        assert_eq!(c.response, Some("Fixed in latest commit".to_string()));
+    }
+
+    #[test]
+    fn old_json_without_status_response_deserializes_with_defaults() {
+        // Simulate a JSON file written by an older version of turboreview
+        // that has no status or response fields.
+        let old_json = r#"[
+            {
+                "file": "src/lib.rs",
+                "line": 5,
+                "hunk": "@@ -3,4 +3,6 @@",
+                "text": "needs refactor",
+                "line_text": "fn bar()",
+                "context_before": [],
+                "context_after": [],
+                "orig_line": 5,
+                "stale": false
+            }
+        ]"#;
+        let items: Vec<Comment> = serde_json::from_str(old_json).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].status, CommentStatus::Open);
+        assert_eq!(items[0].response, None);
     }
 }

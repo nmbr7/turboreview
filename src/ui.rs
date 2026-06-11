@@ -5,6 +5,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListSt
 use ratatui::Frame;
 
 use crate::app::{App, InputState, LineKind, Pane, Section, Status};
+use crate::comments::CommentStatus;
 use crate::highlight::highlight_code;
 use crate::theme;
 use crate::tree::RowKind;
@@ -153,14 +154,17 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
         // Compute the rendered height (diff line + its inline comment box lines) for a
         // given diff index, so we can scroll in rendered-line space and guarantee the
         // cursor line AND its comment are always visible.
-        // Enhancement 5a: comment box adds top + body lines + bottom = body_count + 2 lines.
+        // comment box: 1 (top) + text_lines + (if response: 1 blank + response_lines) + 1 (bottom)
         let rendered_height = |i: usize| -> usize {
             let dl = &app.diff[i];
             let comment_lines = app
                 .comment_for(dl)
                 .map(|c| {
-                    let body = c.text.lines().count().max(1);
-                    body + 2 // +2 for box top (╭─) and bottom (╰─)
+                    let text_lines = c.text.lines().count().max(1);
+                    let response_lines = c.response.as_deref().map(|r| {
+                        1 + r.lines().count().max(1) // 1 blank + response lines
+                    }).unwrap_or(0);
+                    1 + text_lines + response_lines + 1 // top + text + [blank+response] + bottom
                 })
                 .unwrap_or(0);
             1 + comment_lines
@@ -240,33 +244,79 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 
             // Enhancement 5a: Inline comment box with box-drawing chars.
             // Normal:  ╭─ comment  /  │ <line>...  /  ╰─
-            // Stale:   ╭─ ⚠ outdated (yellow)  /  │ <line>...  /  ╰─
-            // The top + body lines + bottom are all counted toward the rendered-row budget.
+            // Stale:   ╭─ ⚠ outdated · <status> (yellow) / │ <line>... / ╰─
+            // Status badge colors: resolved=TICK, wontfix=RED, needs_info=YELLOW, open=ACCENT_DIM
+            // Response: blank line + ↳ response: <text> lines, shown below body
+            // The top + body lines + optional response + bottom are all counted toward budget.
             if let Some(c) = comment {
-                let comment_style = if c.stale {
-                    Style::default().fg(theme::YELLOW).add_modifier(Modifier::ITALIC | Modifier::DIM)
+                // Determine border color based on stale flag and status
+                let border_color = if c.stale {
+                    theme::YELLOW
                 } else {
-                    Style::default().fg(theme::ACCENT_DIM).add_modifier(Modifier::ITALIC)
+                    match c.status {
+                        CommentStatus::Open => theme::ACCENT_DIM,
+                        CommentStatus::Resolved => theme::TICK,
+                        CommentStatus::Wontfix => theme::RED,
+                        CommentStatus::NeedsInfo => theme::YELLOW,
+                    }
                 };
-                // Top border line
+                let border_style = Style::default().fg(border_color).add_modifier(Modifier::ITALIC | Modifier::DIM);
+                let body_style = Style::default().fg(theme::ACCENT_DIM).add_modifier(Modifier::ITALIC);
+
+                // Top border line with status badge
                 if rendered_rows < page {
-                    let top_label = if c.stale { "    ╭─ ⚠ outdated" } else { "    ╭─ comment" };
-                    result.push(Line::from(Span::styled(top_label, comment_style)));
+                    let top_label = if c.stale {
+                        format!("    ╭─ ⚠ outdated · {}", c.status.label())
+                    } else {
+                        match c.status {
+                            CommentStatus::Open => "    ╭─ comment".to_string(),
+                            CommentStatus::Resolved => "    ╭─ ✓ resolved".to_string(),
+                            CommentStatus::Wontfix => "    ╭─ ✗ wontfix".to_string(),
+                            CommentStatus::NeedsInfo => "    ╭─ ? needs-info".to_string(),
+                        }
+                    };
+                    result.push(Line::from(Span::styled(top_label, border_style)));
                     rendered_rows += 1;
                 }
-                // Body lines
+                // Body lines (reviewer's comment text)
                 for comment_line in c.text.lines() {
                     if rendered_rows >= page {
                         break;
                     }
-                    let prefix = Span::styled("    │ ", comment_style);
-                    let body = Span::styled(comment_line.to_string(), comment_style);
+                    let prefix = Span::styled("    │ ", body_style);
+                    let body = Span::styled(comment_line.to_string(), body_style);
                     result.push(Line::from(vec![prefix, body]));
                     rendered_rows += 1;
                 }
+                // Response block (if present)
+                if let Some(resp) = &c.response {
+                    let response_label_style = Style::default()
+                        .fg(border_color)
+                        .add_modifier(Modifier::ITALIC | Modifier::DIM);
+                    // Blank separator line
+                    if rendered_rows < page {
+                        result.push(Line::from(Span::styled("    │ ", body_style)));
+                        rendered_rows += 1;
+                    }
+                    // Response lines
+                    let mut first = true;
+                    for resp_line in resp.lines() {
+                        if rendered_rows >= page {
+                            break;
+                        }
+                        let line_content = if first {
+                            first = false;
+                            format!("    │ ↳ response: {}", resp_line)
+                        } else {
+                            format!("    │   {}", resp_line)
+                        };
+                        result.push(Line::from(Span::styled(line_content, response_label_style)));
+                        rendered_rows += 1;
+                    }
+                }
                 // Bottom border line
                 if rendered_rows < page {
-                    result.push(Line::from(Span::styled("    ╰─", comment_style)));
+                    result.push(Line::from(Span::styled("    ╰─", border_style)));
                     rendered_rows += 1;
                 }
             }
@@ -673,6 +723,37 @@ mod tests {
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains('A'), "Added file should show 'A' status letter");
         assert!(dump.contains('D'), "Deleted file should show 'D' status letter");
+    }
+
+    #[test]
+    fn resolved_comment_shows_status_and_response() {
+        use crate::app::LineKind;
+        use crate::comments::CommentStatus;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.selected = 1;
+        app.focus = Pane::Diff;
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Add, text: "fn foo() {}".into(), old_lineno: None, new_lineno: Some(3) },
+        ]);
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            3,
+            "@@".to_string(),
+            "please fix this".to_string(),
+            "fn foo() {}".to_string(),
+            vec![],
+            vec![],
+        );
+        app.comments.items[0].status = CommentStatus::Resolved;
+        app.comments.items[0].response = Some("Fixed it".to_string());
+
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains("resolved"), "resolved status must appear in comment box");
+        assert!(dump.contains("Fixed it"), "agent response must appear in comment box");
     }
 
     #[test]

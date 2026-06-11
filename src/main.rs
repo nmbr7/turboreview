@@ -19,7 +19,12 @@ use turboreview::git::Repo;
 use turboreview::{review, ui};
 
 fn main() -> Result<()> {
-    let repo_arg = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--skill") {
+        print!("{}", turboreview::skill::SKILL_DOC);
+        return Ok(());
+    }
+    let repo_arg = args.iter().skip(1).find(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| ".".to_string());
     let repo = Repo::discover(&PathBuf::from(&repo_arg))?;
     let root = repo.workdir()?;
 
