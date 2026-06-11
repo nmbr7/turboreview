@@ -13,7 +13,7 @@ reviewed, leave line comments — and let an AI coding agent read those comments
 fix the code, and respond.
 
 <p align="center">
-  <img width="800" alt="turbohex screenshot" src="https://github.com/user-attachments/assets/5fad1538-43b3-4a15-99ae-6b376a6224fc" />
+  <img width="800" alt="turboreview screenshot" src="https://github.com/user-attachments/assets/69ca499b-052b-47e0-b567-72e123ac4568" />
   <br>
   <em>TurboReview diff</em>
 </p>
