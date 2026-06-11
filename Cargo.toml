@@ -2,6 +2,15 @@
 name = "turboreview"
 version = "0.1.0"
 edition = "2021"
+description = "A terminal code-review tool for git: review working-tree changes and commits, stage files, leave line comments, and hand off to an AI agent."
+license = "BSD-3-Clause"
+repository = "https://github.com/nmbr7/turboreview"
+homepage = "https://github.com/nmbr7/turboreview"
+documentation = "https://docs.rs/turboreview"
+readme = "README.md"
+keywords = ["git", "code-review", "tui", "diff", "terminal"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = [".turboreview/", ".github/", "docs/"]
 
 [lib]
 name = "turboreview"
