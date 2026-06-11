@@ -24,7 +24,12 @@ fn main() -> Result<()> {
         print!("{}", turboreview::skill::SKILL_DOC);
         return Ok(());
     }
-    let repo_arg = args.iter().skip(1).find(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| ".".to_string());
+    let repo_arg = args
+        .iter()
+        .skip(1)
+        .find(|a| !a.starts_with("--"))
+        .cloned()
+        .unwrap_or_else(|| ".".to_string());
     let repo = Repo::discover(&PathBuf::from(&repo_arg))?;
     let root = repo.workdir()?;
 
@@ -61,7 +66,9 @@ fn refresh_diff(repo: &Repo, app: &mut App) {
                 Ok(lines) => {
                     app.status_msg = None;
                     app.set_diff(lines);
-                    let candidates: Vec<(u32, String)> = app.diff.iter()
+                    let candidates: Vec<(u32, String)> = app
+                        .diff
+                        .iter()
                         .filter_map(|l| l.new_lineno.map(|n| (n, l.text.trim().to_string())))
                         .collect();
                     app.comments.relocate_file(&path, &candidates);
@@ -91,7 +98,9 @@ fn refresh_diff(repo: &Repo, app: &mut App) {
                     app.status_msg = None;
                     app.set_diff(lines);
                     // Relocate comments for this file against the fresh diff.
-                    let candidates: Vec<(u32, String)> = app.diff.iter()
+                    let candidates: Vec<(u32, String)> = app
+                        .diff
+                        .iter()
                         .filter_map(|l| l.new_lineno.map(|n| (n, l.text.trim().to_string())))
                         .collect();
                     app.comments.relocate_file(&path, &candidates);
@@ -197,7 +206,8 @@ fn run(
                                     );
                                 }
                                 // Save to the current scope directory
-                                let scope_dir = storage::scope_dir(&app.repo_root, &app.comment_scope);
+                                let scope_dir =
+                                    storage::scope_dir(&app.repo_root, &app.comment_scope);
                                 if let Err(e) = app.comments.save(&scope_dir) {
                                     app.status_msg = Some(format!("comment save error: {e}"));
                                 }
@@ -228,7 +238,10 @@ fn run(
 
                 if matches!(key.code, KeyCode::Char('g')) && key.modifiers.is_empty() {
                     if pending_g {
-                        if app.view == ViewMode::Commits && app.open_commit.is_none() && app.focus == Pane::Files {
+                        if app.view == ViewMode::Commits
+                            && app.open_commit.is_none()
+                            && app.focus == Pane::Files
+                        {
                             app.selected_commit = 0;
                         } else if app.focus == Pane::Comments {
                             app.comment_selected = 0;
@@ -286,7 +299,10 @@ fn run(
                         }
                     }
                     (KeyCode::Char('G'), _) => {
-                        if app.view == ViewMode::Commits && app.open_commit.is_none() && app.focus == Pane::Files {
+                        if app.view == ViewMode::Commits
+                            && app.open_commit.is_none()
+                            && app.focus == Pane::Files
+                        {
                             app.selected_commit = app.commits.len().saturating_sub(1);
                         } else if app.focus == Pane::Comments {
                             let len = app.comment_rows().len();
@@ -311,7 +327,8 @@ fn run(
                                     app.move_cursor_to_line(c.line);
                                     app.focus = Pane::Diff;
                                 } else {
-                                    app.status_msg = Some("comment's file not in current view".into());
+                                    app.status_msg =
+                                        Some("comment's file not in current view".into());
                                 }
                             }
                         } else if app.focus == Pane::Files {
@@ -328,7 +345,8 @@ fn run(
                                             refresh_diff(repo, app);
                                         }
                                         Err(e) => {
-                                            app.status_msg = Some(format!("commit files error: {e}"));
+                                            app.status_msg =
+                                                Some(format!("commit files error: {e}"));
                                         }
                                     }
                                 }
@@ -363,10 +381,14 @@ fn run(
                         refresh_diff(repo, app);
                     }
                     (KeyCode::Char('l'), _) | (KeyCode::Right, _) => {
-                        if app.focus == Pane::Diff { app.scroll_h(1); }
+                        if app.focus == Pane::Diff {
+                            app.scroll_h(1);
+                        }
                     }
                     (KeyCode::Char('h'), _) | (KeyCode::Left, _) => {
-                        if app.focus == Pane::Diff { app.scroll_h(-1); }
+                        if app.focus == Pane::Diff {
+                            app.scroll_h(-1);
+                        }
                     }
                     (KeyCode::Char('+'), _) | (KeyCode::Char('='), _) => {
                         app.inc_context();
@@ -457,7 +479,11 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }

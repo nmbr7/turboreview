@@ -1,7 +1,9 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
+};
 use ratatui::Frame;
 
 use crate::app::{App, CommentRow, InputState, LineKind, Pane, Section, Status, ViewMode};
@@ -40,7 +42,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.show_files && app.show_comments {
         // Three columns: [Files | Diff | Comments]
         // Ensure middle (diff) is at least 20%
-        let diff_pct = 100u16.saturating_sub(app.file_pane_pct).saturating_sub(comment_pct).max(20);
+        let diff_pct = 100u16
+            .saturating_sub(app.file_pane_pct)
+            .saturating_sub(comment_pct)
+            .max(20);
         let actual_files_pct = 100u16.saturating_sub(diff_pct).saturating_sub(comment_pct);
         let panes = Layout::default()
             .direction(Direction::Horizontal)
@@ -119,25 +124,32 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
     let title = format!(" Comments ({}) ", count);
 
     let rows = app.comment_rows();
-    let items: Vec<ListItem> = rows.iter().map(|row| {
-        match row {
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| match row {
             CommentRow::Header(status, cnt) => {
                 let label = format!("▌ {} ({})", status.label(), cnt);
                 let line = Line::from(Span::styled(
                     label,
-                    Style::default().fg(status_color(*status, &pal)).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(status_color(*status, &pal))
+                        .add_modifier(Modifier::BOLD),
                 ));
                 ListItem::new(line)
             }
             CommentRow::Item(i) => {
                 let c = &app.comments.items[*i];
-                let basename = c.file.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
+                let basename = c.file.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 let first_line = c.text.lines().next().unwrap_or("");
                 let max_text = area.width.saturating_sub(20) as usize;
                 let text_display = if first_line.chars().count() > max_text && max_text > 3 {
-                    format!("{}…", first_line.chars().take(max_text.saturating_sub(1)).collect::<String>())
+                    format!(
+                        "{}…",
+                        first_line
+                            .chars()
+                            .take(max_text.saturating_sub(1))
+                            .collect::<String>()
+                    )
                 } else {
                     first_line.to_string()
                 };
@@ -150,8 +162,8 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
                 ]);
                 ListItem::new(line)
             }
-        }
-    }).collect();
+        })
+        .collect();
 
     let list = List::new(items)
         .block(
@@ -160,7 +172,11 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
                 .border_style(focused_border(app, Pane::Comments))
                 .title(title),
         )
-        .highlight_style(Style::default().bg(pal.selected_bg).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .bg(pal.selected_bg)
+                .add_modifier(Modifier::BOLD),
+        );
 
     let mut state = ListState::default();
     if !rows.is_empty() {
@@ -197,7 +213,10 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
                     let text = format!("{}{} {}", indent, glyph, row.name);
                     ListItem::new(Line::from(text))
                 }
-                RowKind::File { section, file_index } => {
+                RowKind::File {
+                    section,
+                    file_index,
+                } => {
                     let files = app.section_files(*section);
                     let fc = &files[*file_index];
                     let file_path = &fc.path;
@@ -234,7 +253,11 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
                 .border_style(focused_border(app, Pane::Files))
                 .title(title),
         )
-        .highlight_style(Style::default().bg(pal.selected_bg).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .bg(pal.selected_bg)
+                .add_modifier(Modifier::BOLD),
+        );
     let mut state = ListState::default();
     state.select(Some(app.selected));
     frame.render_stateful_widget(list, area, &mut state);
@@ -249,7 +272,10 @@ fn render_commits(frame: &mut Frame, app: &App, area: Rect) {
             // Truncate summary to avoid overflow
             let max_summary = area.width.saturating_sub(30) as usize;
             let summary = if ci.summary.chars().count() > max_summary && max_summary > 3 {
-                format!("{}…", ci.summary.chars().take(max_summary - 1).collect::<String>())
+                format!(
+                    "{}…",
+                    ci.summary.chars().take(max_summary - 1).collect::<String>()
+                )
             } else {
                 ci.summary.clone()
             };
@@ -273,9 +299,17 @@ fn render_commits(frame: &mut Frame, app: &App, area: Rect) {
                 .border_style(focused_border(app, Pane::Files))
                 .title(title),
         )
-        .highlight_style(Style::default().bg(pal.selected_bg).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .bg(pal.selected_bg)
+                .add_modifier(Modifier::BOLD),
+        );
     let mut state = ListState::default();
-    state.select(if app.commits.is_empty() { None } else { Some(app.selected_commit) });
+    state.select(if app.commits.is_empty() {
+        None
+    } else {
+        Some(app.selected_commit)
+    });
     frame.render_stateful_widget(list, area, &mut state);
 }
 
@@ -421,8 +455,12 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                         CommentStatus::NeedsInfo => pal.yellow,
                     }
                 };
-                let border_style = Style::default().fg(border_color).add_modifier(Modifier::ITALIC | Modifier::DIM);
-                let body_style = Style::default().fg(pal.accent_dim).add_modifier(Modifier::ITALIC);
+                let border_style = Style::default()
+                    .fg(border_color)
+                    .add_modifier(Modifier::ITALIC | Modifier::DIM);
+                let body_style = Style::default()
+                    .fg(pal.accent_dim)
+                    .add_modifier(Modifier::ITALIC);
 
                 // Top border line with status badge
                 if rendered_rows < page {
@@ -450,7 +488,10 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                     rendered_rows += 1;
                 }
                 // Response block (only when response is present AND non-empty after trim)
-                if c.response.as_deref().map_or(false, |r| !r.trim().is_empty()) {
+                if c.response
+                    .as_deref()
+                    .map_or(false, |r| !r.trim().is_empty())
+                {
                     let resp = c.response.as_deref().unwrap();
                     let response_label_style = Style::default()
                         .fg(border_color)
@@ -534,7 +575,10 @@ fn render_input_modal(frame: &mut Frame, app: &App, input: &InputState) {
     let pal = app.palette();
     let area = centered_rect(60, 40, frame.area());
     frame.render_widget(Clear, area);
-    let title = format!(" Comment line {} (Ctrl-S save · Esc cancel) ", input.target_line);
+    let title = format!(
+        " Comment line {} (Ctrl-S save · Esc cancel) ",
+        input.target_line
+    );
     // Append a cursor block indicator to the buffer text.
     let display_text = format!("{}▏", input.buffer);
     // Enhancement 5b: rounded border, accent color, horizontal padding for clearer text field.
@@ -552,26 +596,29 @@ fn render_input_modal(frame: &mut Frame, app: &App, input: &InputState) {
 }
 
 const HELP_LINES: &[(&str, &str)] = &[
-    ("Tab",       "switch focus (Files/Diff/Comments)"),
-    ("j/k, ↑/↓",  "move selection / cursor"),
-    ("gg / G",    "top / bottom"),
-    ("Enter",     "open file diff / open commit / fold dir / jump to comment"),
-    ("Esc",       "back / focus files"),
-    ("h/l, ←/→",  "scroll diff horizontally"),
-    ("+/-",       "context lines (±5)"),
-    ("F",         "full-file diff toggle"),
-    ("z",         "hide/show file pane"),
-    ("C",         "toggle comment-list pane"),
-    ("< / >",     "resize file pane"),
-    ("[ / ]",     "switch Changes/Commits view"),
-    ("c",         "comment on line"),
-    ("s",         "stage / unstage file"),
-    ("Space",     "toggle reviewed"),
-    ("R",         "hide reviewed files"),
-    ("r",         "refresh"),
-    ("T",         "toggle light / dark theme"),
-    ("?",         "this help"),
-    ("q / Ctrl-C","quit"),
+    ("Tab", "switch focus (Files/Diff/Comments)"),
+    ("j/k, ↑/↓", "move selection / cursor"),
+    ("gg / G", "top / bottom"),
+    (
+        "Enter",
+        "open file diff / open commit / fold dir / jump to comment",
+    ),
+    ("Esc", "back / focus files"),
+    ("h/l, ←/→", "scroll diff horizontally"),
+    ("+/-", "context lines (±5)"),
+    ("F", "full-file diff toggle"),
+    ("z", "hide/show file pane"),
+    ("C", "toggle comment-list pane"),
+    ("< / >", "resize file pane"),
+    ("[ / ]", "switch Changes/Commits view"),
+    ("c", "comment on line"),
+    ("s", "stage / unstage file"),
+    ("Space", "toggle reviewed"),
+    ("R", "hide reviewed files"),
+    ("r", "refresh"),
+    ("T", "toggle light / dark theme"),
+    ("?", "this help"),
+    ("q / Ctrl-C", "quit"),
 ];
 
 fn render_help_modal(frame: &mut Frame, app: &App) {
@@ -590,14 +637,13 @@ fn render_help_modal(frame: &mut Frame, app: &App) {
             ])
         })
         .collect();
-    let para = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(pal.accent))
-                .title(" Keybindings (? or Esc to close) "),
-        );
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(pal.accent))
+            .title(" Keybindings (? or Esc to close) "),
+    );
     frame.render_widget(para, area);
 }
 
@@ -610,11 +656,24 @@ mod tests {
     use std::path::PathBuf;
 
     fn app_with_diff() -> App {
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.set_diff(vec![
-            DiffLine { kind: LineKind::Hunk, text: "@@ -1 +1 @@".into(), old_lineno: None, new_lineno: None },
-            DiffLine { kind: LineKind::Add, text: "let x = 1;".into(), old_lineno: None, new_lineno: Some(1) },
+            DiffLine {
+                kind: LineKind::Hunk,
+                text: "@@ -1 +1 @@".into(),
+                old_lineno: None,
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "let x = 1;".into(),
+                old_lineno: None,
+                new_lineno: Some(1),
+            },
         ]);
         app
     }
@@ -638,19 +697,33 @@ mod tests {
         let mut app = app_with_diff();
         // With the cursor near the end, the viewport scrolls so earlier lines are not rendered.
         app.set_diff({
-            let mut lines = vec![
-                crate::app::DiffLine { kind: LineKind::Hunk, text: "@@ -1 +1 @@".into(), old_lineno: None, new_lineno: None },
-            ];
+            let mut lines = vec![crate::app::DiffLine {
+                kind: LineKind::Hunk,
+                text: "@@ -1 +1 @@".into(),
+                old_lineno: None,
+                new_lineno: None,
+            }];
             // Add 18 context lines after hunk so page=18 and cursor=18 scrolls past the hunk.
             for i in 1..=18u32 {
-                lines.push(crate::app::DiffLine { kind: LineKind::Add, text: "let x = 1;".into(), old_lineno: None, new_lineno: Some(i) });
+                lines.push(crate::app::DiffLine {
+                    kind: LineKind::Add,
+                    text: "let x = 1;".into(),
+                    old_lineno: None,
+                    new_lineno: Some(i),
+                });
             }
             lines
         });
         // With page=18, cursor=18 -> scroll = 18+1-18 = 1, so hunk at index 0 is hidden.
         app.diff_cursor = 18;
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         assert!(!dump.contains("@@ -1 +1 @@"));
         assert!(dump.contains("let x = 1;"));
     }
@@ -659,10 +732,19 @@ mod tests {
     fn empty_diff_shows_placeholder() {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let app = App::new(files, vec![], PathBuf::from("/repo"));
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         assert!(dump.contains("No changes"));
     }
 
@@ -670,19 +752,37 @@ mod tests {
     fn hscroll_offsets_diff_text() {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
-        app.set_diff(vec![
-            DiffLine { kind: LineKind::Context, text: "ABCDEFGHIJ".into(), old_lineno: Some(1), new_lineno: Some(1) },
-        ]);
+        app.set_diff(vec![DiffLine {
+            kind: LineKind::Context,
+            text: "ABCDEFGHIJ".into(),
+            old_lineno: Some(1),
+            new_lineno: Some(1),
+        }]);
         // no scroll: "ABCDEF..." visible
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump0: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump0: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         assert!(dump0.contains("ABCDEFGHIJ"));
         // scroll right 4: leading "ABCD" gone, "EFGHIJ" remains
         app.diff_hscroll = 4;
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump1: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump1: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         assert!(dump1.contains("EFGHIJ"));
         assert!(!dump1.contains("ABCDEFGHIJ"));
     }
@@ -692,15 +792,39 @@ mod tests {
         use crate::app::LineKind;
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.set_diff(vec![
-            DiffLine { kind: LineKind::Context, text: "ctx".into(), old_lineno: Some(7), new_lineno: Some(7) },
-            DiffLine { kind: LineKind::Add, text: "added".into(), old_lineno: None, new_lineno: Some(8) },
-            DiffLine { kind: LineKind::Del, text: "removed".into(), old_lineno: Some(5), new_lineno: None },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "ctx".into(),
+                old_lineno: Some(7),
+                new_lineno: Some(7),
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "added".into(),
+                old_lineno: None,
+                new_lineno: Some(8),
+            },
+            DiffLine {
+                kind: LineKind::Del,
+                text: "removed".into(),
+                old_lineno: Some(5),
+                new_lineno: None,
+            },
         ]);
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         assert!(dump.contains('7'), "context line number 7 missing");
         assert!(dump.contains('8'), "add line number 8 missing");
         assert!(dump.contains('5'), "del line number 5 missing");
@@ -714,29 +838,62 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let files = vec![
-            FileChange { path: PathBuf::from("src/main.rs"), status: Status::Modified },
-            FileChange { path: PathBuf::from("top.rs"), status: Status::Modified },
+            FileChange {
+                path: PathBuf::from("src/main.rs"),
+                status: Status::Modified,
+            },
+            FileChange {
+                path: PathBuf::from("top.rs"),
+                status: Status::Modified,
+            },
         ];
         let app = App::new(files, vec![], PathBuf::from("/repo"));
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        assert!(dump.contains("src"), "directory name 'src' missing from tree view");
-        assert!(dump.contains("main.rs"), "file basename 'main.rs' missing from tree view");
-        assert!(dump.contains("top.rs"), "file basename 'top.rs' missing from tree view");
-        assert!(!dump.contains("src/main.rs"), "full path 'src/main.rs' should not appear; tree view shows basenames");
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            dump.contains("src"),
+            "directory name 'src' missing from tree view"
+        );
+        assert!(
+            dump.contains("main.rs"),
+            "file basename 'main.rs' missing from tree view"
+        );
+        assert!(
+            dump.contains("top.rs"),
+            "file basename 'top.rs' missing from tree view"
+        );
+        assert!(
+            !dump.contains("src/main.rs"),
+            "full path 'src/main.rs' should not appear; tree view shows basenames"
+        );
     }
 
     #[test]
     fn reviewed_file_shows_tick() {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         // select a.rs row (row 1) and review it
         app.selected = 1;
         app.toggle_reviewed(); // review a.rs
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         assert!(dump.contains("✓"));
     }
 
@@ -744,11 +901,23 @@ mod tests {
     fn both_sections_headers_render_when_both_non_empty() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let unstaged = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
-        let staged = vec![FileChange { path: PathBuf::from("b.rs"), status: Status::Added }];
+        let unstaged = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let staged = vec![FileChange {
+            path: PathBuf::from("b.rs"),
+            status: Status::Added,
+        }];
         let app = App::new(unstaged, staged, PathBuf::from("/repo"));
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         assert!(dump.contains("Unstaged"), "Unstaged header missing");
         assert!(dump.contains("Staged"), "Staged header missing");
         assert!(dump.contains("a.rs"), "a.rs missing");
@@ -759,27 +928,51 @@ mod tests {
     fn files_title_has_no_mode_label() {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let app = App::new(files, vec![], PathBuf::from("/repo"));
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         // The block title shows the tab bar with Changes and Commits tabs.
         // In Changes mode, Changes tab is active (in brackets).
         assert!(dump.contains("Changes"), "Changes tab missing from title");
         assert!(dump.contains("Commits"), "Commits tab missing from title");
-        assert!(!dump.contains("STAGED"), "[STAGED] mode label should be gone");
-        assert!(!dump.contains("UNSTAGED"), "[UNSTAGED] mode label should be gone");
+        assert!(
+            !dump.contains("STAGED"),
+            "[STAGED] mode label should be gone"
+        );
+        assert!(
+            !dump.contains("UNSTAGED"),
+            "[UNSTAGED] mode label should be gone"
+        );
     }
 
     #[test]
     fn hidden_file_pane_shows_only_diff() {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("zzz.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("zzz.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.show_files = false;
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         assert!(!dump.contains("zzz.rs")); // file pane hidden
         assert!(dump.contains("No changes") || dump.contains("Diff")); // diff pane present
     }
@@ -788,11 +981,23 @@ mod tests {
     fn modified_file_shows_m_status_letter() {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let app = App::new(files, vec![], PathBuf::from("/repo"));
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        assert!(dump.contains('M'), "Modified file should show 'M' status letter");
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            dump.contains('M'),
+            "Modified file should show 'M' status letter"
+        );
         assert!(dump.contains("a.rs"), "filename should still appear");
     }
 
@@ -813,9 +1018,21 @@ mod tests {
             anchor_after: vec![],
         });
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        assert!(dump.contains("hello world"), "modal buffer text must appear");
-        assert!(dump.contains("Comment"), "modal title must contain 'Comment'");
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            dump.contains("hello world"),
+            "modal buffer text must appear"
+        );
+        assert!(
+            dump.contains("Comment"),
+            "modal title must contain 'Comment'"
+        );
     }
 
     #[test]
@@ -823,13 +1040,19 @@ mod tests {
         use crate::app::LineKind;
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.selected = 1; // select a.rs row
         app.focus = Pane::Diff;
-        app.set_diff(vec![
-            DiffLine { kind: LineKind::Add, text: "let x = 1;".into(), old_lineno: None, new_lineno: Some(5) },
-        ]);
+        app.set_diff(vec![DiffLine {
+            kind: LineKind::Add,
+            text: "let x = 1;".into(),
+            old_lineno: None,
+            new_lineno: Some(5),
+        }]);
         // attach a comment for a.rs line 5
         app.comments.set(
             PathBuf::from("a.rs"),
@@ -841,8 +1064,17 @@ mod tests {
             vec![],
         );
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        assert!(dump.contains("review note here"), "inline comment text must appear below commented line");
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            dump.contains("review note here"),
+            "inline comment text must appear below commented line"
+        );
     }
 
     /// FIX 2: comment on a line near the bottom of a small viewport must not be clipped.
@@ -855,7 +1087,10 @@ mod tests {
         use crate::app::LineKind;
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.selected = 1; // select a.rs
         app.focus = Pane::Diff;
@@ -893,7 +1128,13 @@ mod tests {
         );
 
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         assert!(
             dump.contains("clipping_test_comment"),
             "comment on cursor line must not be clipped even near the viewport bottom"
@@ -908,23 +1149,49 @@ mod tests {
         use crate::app::LineKind;
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.selected = 1;
         app.focus = Pane::Diff;
-        app.set_diff(vec![
-            DiffLine { kind: LineKind::Add, text: "fn main() {}".into(), old_lineno: None, new_lineno: Some(1) },
-        ]);
+        app.set_diff(vec![DiffLine {
+            kind: LineKind::Add,
+            text: "fn main() {}".into(),
+            old_lineno: None,
+            new_lineno: Some(1),
+        }]);
         // Simulate what main.rs does after Fix 1: store the trimmed text.
         let raw = "   trimmed_note   ";
         let trimmed = raw.trim().to_string();
-        app.comments.set(PathBuf::from("a.rs"), 1, "".to_string(), trimmed, "fn main() {}".to_string(), vec![], vec![]);
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            1,
+            "".to_string(),
+            trimmed,
+            "fn main() {}".to_string(),
+            vec![],
+            vec![],
+        );
 
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        assert!(dump.contains("trimmed_note"), "trimmed comment text must appear");
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            dump.contains("trimmed_note"),
+            "trimmed comment text must appear"
+        );
         // The raw padded string (with surrounding spaces) must not be stored/rendered.
-        assert!(!dump.contains("   trimmed_note   "), "padded comment text must not appear");
+        assert!(
+            !dump.contains("   trimmed_note   "),
+            "padded comment text must not appear"
+        );
     }
 
     #[test]
@@ -932,14 +1199,32 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let files = vec![
-            FileChange { path: PathBuf::from("new.rs"), status: Status::Added },
-            FileChange { path: PathBuf::from("old.rs"), status: Status::Deleted },
+            FileChange {
+                path: PathBuf::from("new.rs"),
+                status: Status::Added,
+            },
+            FileChange {
+                path: PathBuf::from("old.rs"),
+                status: Status::Deleted,
+            },
         ];
         let app = App::new(files, vec![], PathBuf::from("/repo"));
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        assert!(dump.contains('A'), "Added file should show 'A' status letter");
-        assert!(dump.contains('D'), "Deleted file should show 'D' status letter");
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            dump.contains('A'),
+            "Added file should show 'A' status letter"
+        );
+        assert!(
+            dump.contains('D'),
+            "Deleted file should show 'D' status letter"
+        );
     }
 
     #[test]
@@ -948,13 +1233,19 @@ mod tests {
         use crate::comments::CommentStatus;
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.selected = 1;
         app.focus = Pane::Diff;
-        app.set_diff(vec![
-            DiffLine { kind: LineKind::Add, text: "fn foo() {}".into(), old_lineno: None, new_lineno: Some(3) },
-        ]);
+        app.set_diff(vec![DiffLine {
+            kind: LineKind::Add,
+            text: "fn foo() {}".into(),
+            old_lineno: None,
+            new_lineno: Some(3),
+        }]);
         app.comments.set(
             PathBuf::from("a.rs"),
             3,
@@ -968,9 +1259,21 @@ mod tests {
         app.comments.items[0].response = Some("Fixed it".to_string());
 
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        assert!(dump.contains("resolved"), "resolved status must appear in comment box");
-        assert!(dump.contains("Fixed it"), "agent response must appear in comment box");
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            dump.contains("resolved"),
+            "resolved status must appear in comment box"
+        );
+        assert!(
+            dump.contains("Fixed it"),
+            "agent response must appear in comment box"
+        );
     }
 
     #[test]
@@ -978,13 +1281,19 @@ mod tests {
         use crate::app::LineKind;
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.selected = 1;
         app.focus = Pane::Diff;
-        app.set_diff(vec![
-            DiffLine { kind: LineKind::Add, text: "let y = 2;".into(), old_lineno: None, new_lineno: Some(7) },
-        ]);
+        app.set_diff(vec![DiffLine {
+            kind: LineKind::Add,
+            text: "let y = 2;".into(),
+            old_lineno: None,
+            new_lineno: Some(7),
+        }]);
         // Insert a stale comment directly
         app.comments.set(
             PathBuf::from("a.rs"),
@@ -999,16 +1308,31 @@ mod tests {
         app.comments.items[0].stale = true;
 
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        assert!(dump.contains("outdated"), "stale comment must show '(outdated)' prefix");
-        assert!(dump.contains("stale note"), "stale comment text must still appear");
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            dump.contains("outdated"),
+            "stale comment must show '(outdated)' prefix"
+        );
+        assert!(
+            dump.contains("stale note"),
+            "stale comment text must still appear"
+        );
     }
 
     #[test]
     fn comment_pane_shows_status_header_and_item() {
         let backend = TestBackend::new(160, 30);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         // Enable comment pane
         app.show_comments = true;
@@ -1023,20 +1347,35 @@ mod tests {
             vec![],
         );
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         // The comment pane title must appear
         assert!(dump.contains("Comments"), "comment pane title must appear");
         // The Open status header must appear
-        assert!(dump.contains("Open") || dump.contains("open"), "Open status header must appear");
+        assert!(
+            dump.contains("Open") || dump.contains("open"),
+            "Open status header must appear"
+        );
         // The file basename must appear
-        assert!(dump.contains("a.rs"), "file basename must appear in comment list");
+        assert!(
+            dump.contains("a.rs"),
+            "file basename must appear in comment list"
+        );
     }
 
     #[test]
     fn comment_pane_hidden_by_default() {
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         // show_comments is false by default
         app.comments.set(
@@ -1049,33 +1388,66 @@ mod tests {
             vec![],
         );
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         // Comment pane title must NOT appear when show_comments is false
-        assert!(!dump.contains("hidden comment"), "comment text must not appear when pane hidden");
+        assert!(
+            !dump.contains("hidden comment"),
+            "comment text must not appear when pane hidden"
+        );
     }
 
     #[test]
     fn help_overlay_shows_keybindings_title() {
         let backend = TestBackend::new(80, 30);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.show_help = true;
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        assert!(dump.contains("Keybindings"), "help overlay must show 'Keybindings' title");
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            dump.contains("Keybindings"),
+            "help overlay must show 'Keybindings' title"
+        );
     }
 
     #[test]
     fn help_overlay_shows_theme_toggle_key() {
         let backend = TestBackend::new(80, 30);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.show_help = true;
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        assert!(dump.contains("theme"), "help overlay must mention theme toggle");
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            dump.contains("theme"),
+            "help overlay must mention theme toggle"
+        );
     }
 
     #[test]
@@ -1084,7 +1456,10 @@ mod tests {
         // (regression: rendered-height overcounted, clipping the box bottom).
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.selected = 1; // select a.rs row (row 0=Unstaged header, row 1=File a.rs)
         app.focus = Pane::Diff;
@@ -1102,11 +1477,20 @@ mod tests {
             status: crate::comments::CommentStatus::Open,
             response: Some(String::new()),
         });
-        app.set_diff(vec![
-            DiffLine { kind: LineKind::Add, text: "let x = 1;".into(), old_lineno: None, new_lineno: Some(1) },
-        ]);
+        app.set_diff(vec![DiffLine {
+            kind: LineKind::Add,
+            text: "let x = 1;".into(),
+            old_lineno: None,
+            new_lineno: Some(1),
+        }]);
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         // the comment text renders; no panic; "response:" label NOT shown for empty response
         assert!(dump.contains("please fix"));
         assert!(!dump.contains("response:"));
@@ -1116,14 +1500,26 @@ mod tests {
     fn light_theme_renders_without_panic() {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
-        app.set_diff(vec![
-            DiffLine { kind: LineKind::Add, text: "let x = 1;".into(), old_lineno: None, new_lineno: Some(1) },
-        ]);
+        app.set_diff(vec![DiffLine {
+            kind: LineKind::Add,
+            text: "let x = 1;".into(),
+            old_lineno: None,
+            new_lineno: Some(1),
+        }]);
         app.theme = crate::theme::Theme::Light;
         terminal.draw(|f| render(f, &app)).unwrap();
-        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
         assert!(dump.contains("a.rs"), "file must appear in light theme");
     }
 }

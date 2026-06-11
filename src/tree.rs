@@ -5,9 +5,19 @@ use crate::app::{FileChange, Section};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowKind {
-    Header { section: Section, count: usize },
-    Dir { section: Section, path: PathBuf, collapsed: bool },
-    File { section: Section, file_index: usize },
+    Header {
+        section: Section,
+        count: usize,
+    },
+    Dir {
+        section: Section,
+        path: PathBuf,
+        collapsed: bool,
+    },
+    File {
+        section: Section,
+        file_index: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -32,14 +42,20 @@ pub fn build_rows(
     rows.push(Row {
         depth: 0,
         name: "Unstaged".to_string(),
-        kind: RowKind::Header { section: Section::Unstaged, count: unstaged.len() },
+        kind: RowKind::Header {
+            section: Section::Unstaged,
+            count: unstaged.len(),
+        },
     });
     build_section_rows(unstaged, Section::Unstaged, collapsed, hidden, &mut rows);
 
     rows.push(Row {
         depth: 0,
         name: "Staged".to_string(),
-        kind: RowKind::Header { section: Section::Staged, count: staged.len() },
+        kind: RowKind::Header {
+            section: Section::Staged,
+            count: staged.len(),
+        },
     });
     build_section_rows(staged, Section::Staged, collapsed, hidden, &mut rows);
 
@@ -57,7 +73,10 @@ pub fn build_commit_rows(
     rows.push(Row {
         depth: 0,
         name: "Commit".to_string(),
-        kind: RowKind::Header { section: Section::Commit, count: files.len() },
+        kind: RowKind::Header {
+            section: Section::Commit,
+            count: files.len(),
+        },
     });
     build_section_rows(files, Section::Commit, collapsed, hidden, &mut rows);
     rows
@@ -95,12 +114,7 @@ fn build_section_rows(
         }
     }
 
-    fn insert(
-        children: &mut Vec<Node>,
-        components: &[&str],
-        file_index: usize,
-        path_prefix: &str,
-    ) {
+    fn insert(children: &mut Vec<Node>, components: &[&str], file_index: usize, path_prefix: &str) {
         if components.is_empty() {
             return;
         }
@@ -154,7 +168,11 @@ fn build_section_rows(
     ) {
         for node in nodes {
             match node {
-                Node::Dir { name, full_path, children } => {
+                Node::Dir {
+                    name,
+                    full_path,
+                    children,
+                } => {
                     let is_collapsed = collapsed.contains(&(section, full_path.clone()));
                     rows.push(Row {
                         depth,
@@ -227,17 +245,41 @@ mod tests {
         // Header(Unstaged) + a.rs + b.rs + Header(Staged)
         assert_eq!(rows.len(), 4);
 
-        assert!(matches!(rows[0].kind, RowKind::Header { section: Section::Unstaged, count: 2 }));
+        assert!(matches!(
+            rows[0].kind,
+            RowKind::Header {
+                section: Section::Unstaged,
+                count: 2
+            }
+        ));
 
         assert_eq!(rows[1].depth, 1);
         assert_eq!(rows[1].name, "a.rs");
-        assert_eq!(rows[1].kind, RowKind::File { section: Section::Unstaged, file_index: 0 });
+        assert_eq!(
+            rows[1].kind,
+            RowKind::File {
+                section: Section::Unstaged,
+                file_index: 0
+            }
+        );
 
         assert_eq!(rows[2].depth, 1);
         assert_eq!(rows[2].name, "b.rs");
-        assert_eq!(rows[2].kind, RowKind::File { section: Section::Unstaged, file_index: 1 });
+        assert_eq!(
+            rows[2].kind,
+            RowKind::File {
+                section: Section::Unstaged,
+                file_index: 1
+            }
+        );
 
-        assert!(matches!(rows[3].kind, RowKind::Header { section: Section::Staged, count: 0 }));
+        assert!(matches!(
+            rows[3].kind,
+            RowKind::Header {
+                section: Section::Staged,
+                count: 0
+            }
+        ));
     }
 
     #[test]
@@ -252,25 +294,62 @@ mod tests {
         // Header + Dir(src) + main.rs + ui.rs + README.md + Header(Staged)
         assert_eq!(rows.len(), 6);
 
-        assert!(matches!(rows[0].kind, RowKind::Header { section: Section::Unstaged, .. }));
+        assert!(matches!(
+            rows[0].kind,
+            RowKind::Header {
+                section: Section::Unstaged,
+                ..
+            }
+        ));
 
         assert_eq!(rows[1].depth, 1);
         assert_eq!(rows[1].name, "src");
-        assert!(matches!(rows[1].kind, RowKind::Dir { section: Section::Unstaged, collapsed: false, .. }));
+        assert!(matches!(
+            rows[1].kind,
+            RowKind::Dir {
+                section: Section::Unstaged,
+                collapsed: false,
+                ..
+            }
+        ));
 
         assert_eq!(rows[2].depth, 2);
         assert_eq!(rows[2].name, "main.rs");
-        assert_eq!(rows[2].kind, RowKind::File { section: Section::Unstaged, file_index: 0 });
+        assert_eq!(
+            rows[2].kind,
+            RowKind::File {
+                section: Section::Unstaged,
+                file_index: 0
+            }
+        );
 
         assert_eq!(rows[3].depth, 2);
         assert_eq!(rows[3].name, "ui.rs");
-        assert_eq!(rows[3].kind, RowKind::File { section: Section::Unstaged, file_index: 1 });
+        assert_eq!(
+            rows[3].kind,
+            RowKind::File {
+                section: Section::Unstaged,
+                file_index: 1
+            }
+        );
 
         assert_eq!(rows[4].depth, 1);
         assert_eq!(rows[4].name, "README.md");
-        assert_eq!(rows[4].kind, RowKind::File { section: Section::Unstaged, file_index: 2 });
+        assert_eq!(
+            rows[4].kind,
+            RowKind::File {
+                section: Section::Unstaged,
+                file_index: 2
+            }
+        );
 
-        assert!(matches!(rows[5].kind, RowKind::Header { section: Section::Staged, count: 0 }));
+        assert!(matches!(
+            rows[5].kind,
+            RowKind::Header {
+                section: Section::Staged,
+                count: 0
+            }
+        ));
     }
 
     #[test]
@@ -285,20 +364,42 @@ mod tests {
         // Header(Unstaged) + Dir(src,collapsed) + README.md + Header(Staged)
         assert_eq!(rows.len(), 4);
 
-        assert!(matches!(rows[0].kind, RowKind::Header { section: Section::Unstaged, .. }));
+        assert!(matches!(
+            rows[0].kind,
+            RowKind::Header {
+                section: Section::Unstaged,
+                ..
+            }
+        ));
 
         assert_eq!(rows[1].depth, 1);
         assert_eq!(rows[1].name, "src");
         assert!(matches!(
             rows[1].kind,
-            RowKind::Dir { section: Section::Unstaged, collapsed: true, .. }
+            RowKind::Dir {
+                section: Section::Unstaged,
+                collapsed: true,
+                ..
+            }
         ));
 
         assert_eq!(rows[2].depth, 1);
         assert_eq!(rows[2].name, "README.md");
-        assert_eq!(rows[2].kind, RowKind::File { section: Section::Unstaged, file_index: 2 });
+        assert_eq!(
+            rows[2].kind,
+            RowKind::File {
+                section: Section::Unstaged,
+                file_index: 2
+            }
+        );
 
-        assert!(matches!(rows[3].kind, RowKind::Header { section: Section::Staged, count: 0 }));
+        assert!(matches!(
+            rows[3].kind,
+            RowKind::Header {
+                section: Section::Staged,
+                count: 0
+            }
+        ));
     }
 
     #[test]
@@ -329,10 +430,28 @@ mod tests {
         assert_eq!(rows[1].name, "src");
         assert!(matches!(rows[1].kind, RowKind::Dir { .. }));
         assert_eq!(rows[2].depth, 2);
-        assert_eq!(rows[2].kind, RowKind::File { section: Section::Unstaged, file_index: 1 });
+        assert_eq!(
+            rows[2].kind,
+            RowKind::File {
+                section: Section::Unstaged,
+                file_index: 1
+            }
+        );
         assert_eq!(rows[3].depth, 1);
-        assert_eq!(rows[3].kind, RowKind::File { section: Section::Unstaged, file_index: 0 });
-        assert!(matches!(rows[4].kind, RowKind::Header { section: Section::Staged, .. }));
+        assert_eq!(
+            rows[3].kind,
+            RowKind::File {
+                section: Section::Unstaged,
+                file_index: 0
+            }
+        );
+        assert!(matches!(
+            rows[4].kind,
+            RowKind::Header {
+                section: Section::Staged,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -344,10 +463,34 @@ mod tests {
 
         // Header(Unstaged) + a.rs + Header(Staged) + b.rs
         assert_eq!(rows.len(), 4);
-        assert!(matches!(rows[0].kind, RowKind::Header { section: Section::Unstaged, count: 1 }));
-        assert_eq!(rows[1].kind, RowKind::File { section: Section::Unstaged, file_index: 0 });
-        assert!(matches!(rows[2].kind, RowKind::Header { section: Section::Staged, count: 1 }));
-        assert_eq!(rows[3].kind, RowKind::File { section: Section::Staged, file_index: 0 });
+        assert!(matches!(
+            rows[0].kind,
+            RowKind::Header {
+                section: Section::Unstaged,
+                count: 1
+            }
+        ));
+        assert_eq!(
+            rows[1].kind,
+            RowKind::File {
+                section: Section::Unstaged,
+                file_index: 0
+            }
+        );
+        assert!(matches!(
+            rows[2].kind,
+            RowKind::Header {
+                section: Section::Staged,
+                count: 1
+            }
+        ));
+        assert_eq!(
+            rows[3].kind,
+            RowKind::File {
+                section: Section::Staged,
+                file_index: 0
+            }
+        );
     }
 
     #[test]
@@ -358,7 +501,13 @@ mod tests {
 
         // Header(Commit) + Dir(src) + main.rs + lib.rs = 4 rows
         assert_eq!(rows.len(), 4);
-        assert!(matches!(rows[0].kind, RowKind::Header { section: Section::Commit, count: 2 }));
+        assert!(matches!(
+            rows[0].kind,
+            RowKind::Header {
+                section: Section::Commit,
+                count: 2
+            }
+        ));
         // All non-header rows should have Section::Commit
         for row in &rows[1..] {
             match &row.kind {
@@ -380,8 +529,28 @@ mod tests {
 
         // Header(Unstaged) + Dir(src,collapsed,Unstaged) + Header(Staged) + Dir(src,NOT-collapsed,Staged) + b.rs
         assert_eq!(rows.len(), 5);
-        assert!(matches!(rows[1].kind, RowKind::Dir { section: Section::Unstaged, collapsed: true, .. }));
-        assert!(matches!(rows[3].kind, RowKind::Dir { section: Section::Staged, collapsed: false, .. }));
-        assert_eq!(rows[4].kind, RowKind::File { section: Section::Staged, file_index: 0 });
+        assert!(matches!(
+            rows[1].kind,
+            RowKind::Dir {
+                section: Section::Unstaged,
+                collapsed: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            rows[3].kind,
+            RowKind::Dir {
+                section: Section::Staged,
+                collapsed: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            rows[4].kind,
+            RowKind::File {
+                section: Section::Staged,
+                file_index: 0
+            }
+        );
     }
 }

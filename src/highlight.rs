@@ -29,7 +29,11 @@ fn assets() -> &'static Assets {
             .remove("base16-ocean.light")
             .or_else(|| themes.themes.remove("InspiredGitHub"))
             .expect("a bundled light theme present");
-        Assets { syntaxes, dark, light }
+        Assets {
+            syntaxes,
+            dark,
+            light,
+        }
     })
 }
 
@@ -77,7 +81,11 @@ fn segment_to_span(style: syntect::highlighting::Style, content: &str) -> Span<'
 /// Highlight one line of code, choosing the grammar by file extension and the
 /// color theme (dark = Mocha-style, light = ocean.light / InspiredGitHub).
 /// Falls back to a single plain span if the extension is unknown or highlighting fails.
-pub fn highlight_code(text: &str, extension: &str, theme: crate::theme::Theme) -> Vec<Span<'static>> {
+pub fn highlight_code(
+    text: &str,
+    extension: &str,
+    theme: crate::theme::Theme,
+) -> Vec<Span<'static>> {
     let assets = assets();
     let syntax = assets
         .syntaxes
@@ -131,5 +139,4 @@ mod tests {
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(joined.contains("anything goes"));
     }
-
 }

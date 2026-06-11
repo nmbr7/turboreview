@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -26,23 +26,23 @@ impl CommentStatus {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Comment {
     pub file: PathBuf,
-    pub line: u32,        // current best line (post-relocation)
-    pub hunk: String,     // hunk header for context (e.g. "@@ -1,4 +1,8 @@")
+    pub line: u32,    // current best line (post-relocation)
+    pub hunk: String, // hunk header for context (e.g. "@@ -1,4 +1,8 @@")
     pub text: String,
     #[serde(default)]
-    pub line_text: String,           // the commented line's content (trimmed of trailing ws)
+    pub line_text: String, // the commented line's content (trimmed of trailing ws)
     #[serde(default)]
     pub context_before: Vec<String>, // up to 2 lines before (content)
     #[serde(default)]
-    pub context_after: Vec<String>,  // up to 2 lines after (content)
+    pub context_after: Vec<String>, // up to 2 lines after (content)
     #[serde(default)]
-    pub orig_line: u32,              // line number when the comment was created
+    pub orig_line: u32, // line number when the comment was created
     #[serde(default)]
-    pub stale: bool,                 // true if relocation couldn't confidently place it
+    pub stale: bool, // true if relocation couldn't confidently place it
     #[serde(default)]
-    pub status: CommentStatus,       // agent-facing: open | resolved | wontfix | needs_info
+    pub status: CommentStatus, // agent-facing: open | resolved | wontfix | needs_info
     #[serde(default)]
-    pub response: Option<String>,    // agent's reply when addressing the comment
+    pub response: Option<String>, // agent's reply when addressing the comment
 }
 
 #[derive(Clone, Debug, Default)]
@@ -73,9 +73,21 @@ impl Comments {
     }
 
     /// Add or replace the comment for (file, line).
-    pub fn set(&mut self, file: PathBuf, line: u32, hunk: String, text: String,
-               line_text: String, context_before: Vec<String>, context_after: Vec<String>) {
-        if let Some(c) = self.items.iter_mut().find(|c| c.file == file && c.line == line) {
+    pub fn set(
+        &mut self,
+        file: PathBuf,
+        line: u32,
+        hunk: String,
+        text: String,
+        line_text: String,
+        context_before: Vec<String>,
+        context_after: Vec<String>,
+    ) {
+        if let Some(c) = self
+            .items
+            .iter_mut()
+            .find(|c| c.file == file && c.line == line)
+        {
             c.text = text;
             c.hunk = hunk;
             c.line_text = line_text;
@@ -125,7 +137,10 @@ pub struct Relocation {
 pub fn relocate(comment: &Comment, candidates: &[(u32, String)]) -> Relocation {
     // Legacy: truly empty line_text (old comments without anchor) — treat as non-stale, unchanged.
     if comment.line_text.is_empty() {
-        return Relocation { line: comment.line, stale: false };
+        return Relocation {
+            line: comment.line,
+            stale: false,
+        };
     }
 
     // FIX 2: NUL (\u{0}) is the blank-line marker sentinel. A blank-line anchor matches
@@ -150,11 +165,17 @@ pub fn relocate(comment: &Comment, candidates: &[(u32, String)]) -> Relocation {
     match matches.len() {
         0 => {
             // No match — stale, keep stored line.
-            Relocation { line: comment.line, stale: true }
+            Relocation {
+                line: comment.line,
+                stale: true,
+            }
         }
         1 => {
             // Exactly one — unambiguous.
-            Relocation { line: candidates[matches[0]].0, stale: false }
+            Relocation {
+                line: candidates[matches[0]].0,
+                stale: false,
+            }
         }
         _ => {
             // Multiple matches: score by context + proximity.
@@ -213,15 +234,22 @@ pub fn relocate(comment: &Comment, candidates: &[(u32, String)]) -> Relocation {
                 ctx
             };
 
-            let best_idx = matches.iter().copied().max_by_key(|&idx| {
-                let cand_line = candidates[idx].0 as i64;
-                let distance = (cand_line - comment.orig_line as i64).unsigned_abs();
-                let ctx = context_match_count(idx);
-                // FIX 1: tuple so context dominates distance unconditionally
-                (ctx, std::cmp::Reverse(distance))
-            }).expect("matches non-empty");
+            let best_idx = matches
+                .iter()
+                .copied()
+                .max_by_key(|&idx| {
+                    let cand_line = candidates[idx].0 as i64;
+                    let distance = (cand_line - comment.orig_line as i64).unsigned_abs();
+                    let ctx = context_match_count(idx);
+                    // FIX 1: tuple so context dominates distance unconditionally
+                    (ctx, std::cmp::Reverse(distance))
+                })
+                .expect("matches non-empty");
 
-            Relocation { line: candidates[best_idx].0, stale: false }
+            Relocation {
+                line: candidates[best_idx].0,
+                stale: false,
+            }
         }
     }
 }
@@ -243,7 +271,13 @@ mod tests {
 
     // ─── Relocation tests (TDD - written first) ───────────────────────────────
 
-    fn make_comment(line: u32, line_text: &str, ctx_before: Vec<&str>, ctx_after: Vec<&str>, orig_line: u32) -> Comment {
+    fn make_comment(
+        line: u32,
+        line_text: &str,
+        ctx_before: Vec<&str>,
+        ctx_after: Vec<&str>,
+        orig_line: u32,
+    ) -> Comment {
         Comment {
             file: PathBuf::from("a.rs"),
             line,
@@ -320,29 +354,26 @@ mod tests {
         // Wrong candidate: very close to orig_line (distance=5), NO context match
         // Correct candidate: far from orig_line (distance=120), WITH one matching context_before line
         // The comment was at line 100
-        let comment = make_comment(
-            100,
-            "fn process()",
-            vec!["// header comment"],
-            vec![],
-            100,
-        );
+        let comment = make_comment(100, "fn process()", vec!["// header comment"], vec![], 100);
         // Build candidates: same line_text "fn process()" appears at line 105 and line 220
         let candidates = cands(&[
             // Wrong: very close, line 105 (distance=5), unrelated neighbor
             (104, "completely_unrelated"),
-            (105, "fn process()"),          // distance=5 from orig 100, but NO context match
+            (105, "fn process()"), // distance=5 from orig 100, but NO context match
             (106, "other_stuff"),
             // Correct: far, line 220 (distance=120), with exact context_before neighbor
-            (219, "// header comment"),     // matches context_before last entry
-            (220, "fn process()"),          // distance=120 from orig 100, but HAS context match
+            (219, "// header comment"), // matches context_before last entry
+            (220, "fn process()"),      // distance=120 from orig 100, but HAS context match
             (221, "something_after"),
         ]);
         let r = relocate(&comment, &candidates);
         // Should pick line 220 (context match), NOT line 105 (mere proximity)
         // Old formula: (1*100)-120 = -20 vs (0*100)-5 = -5  =>  old picks 105 (WRONG)
         // Tuple fix: (1, Reverse(120)) > (0, Reverse(5))    =>  new picks 220 (CORRECT)
-        assert_eq!(r.line, 220, "context match must win over pure proximity even when far");
+        assert_eq!(
+            r.line, 220,
+            "context match must win over pure proximity even when far"
+        );
         assert!(!r.stale);
     }
 
@@ -370,26 +401,32 @@ mod tests {
         // Subcase A: blank-line comment with a blank candidate near orig with matching context -> relocates
         let comment = make_comment(
             10,
-            "\u{0}",                        // NUL = blank-line marker
+            "\u{0}", // NUL = blank-line marker
             vec!["fn foo() {"],
             vec!["let x = 1;"],
             10,
         );
         // Candidates: blank line at 11 with correct context neighbors
         let candidates = cands(&[
-            (9,  "fn foo() {"),
-            (11, ""),                        // blank line candidate (trimmed text is empty)
+            (9, "fn foo() {"),
+            (11, ""), // blank line candidate (trimmed text is empty)
             (12, "let x = 1;"),
         ]);
         let r = relocate(&comment, &candidates);
-        assert_eq!(r.line, 11, "blank-line anchor should relocate to the blank candidate");
+        assert_eq!(
+            r.line, 11,
+            "blank-line anchor should relocate to the blank candidate"
+        );
         assert!(!r.stale);
 
         // Subcase B: no blank candidate anywhere -> stale
         let comment2 = make_comment(10, "\u{0}", vec![], vec![], 10);
         let candidates2 = cands(&[(9, "fn foo() {"), (11, "let x = 1;")]);
         let r2 = relocate(&comment2, &candidates2);
-        assert!(r2.stale, "blank-line anchor with no blank candidates must be stale");
+        assert!(
+            r2.stale,
+            "blank-line anchor with no blank candidates must be stale"
+        );
     }
 
     // FIX 3 TDD: context adjacency by new_lineno arithmetic, not slice index
@@ -445,21 +482,24 @@ mod tests {
         //   Correct wins regardless of distance.
         let comment = make_comment(200, "}", vec!["let x = 1;"], vec![], 200);
         let candidates = cands(&[
-            (99,  "let x = 1;"),   // new_lineno 99, truly adjacent to line 100
-            (100, "}"),             // correct: new_lineno-1=99 has "let x=1;"; slice[idx-1]=(99,"let x=1;")
+            (99, "let x = 1;"), // new_lineno 99, truly adjacent to line 100
+            (100, "}"), // correct: new_lineno-1=99 has "let x=1;"; slice[idx-1]=(99,"let x=1;")
             (101, "other_stuff"),
             // Gap here: linenos 102..149 absent
-            (150, "let x = 1;"),   // present in slice; new_lineno 150 (adjacent to nothing meaningful)
+            (150, "let x = 1;"), // present in slice; new_lineno 150 (adjacent to nothing meaningful)
             // Gap here: linenos 151..204 absent (line 204 is a Del line, not in candidates)
-            (205, "}"),             // wrong: distance=5 from orig 200;
-                                    // slice[idx-1]=(150,"let x=1;") -> matches by slice!
-                                    // but new_lineno 205-1=204 is ABSENT -> no match by new_lineno
+            (205, "}"), // wrong: distance=5 from orig 200;
+            // slice[idx-1]=(150,"let x=1;") -> matches by slice!
+            // but new_lineno 205-1=204 is ABSENT -> no match by new_lineno
             (206, "other"),
         ]);
         let r = relocate(&comment, &candidates);
         // new_lineno-based: correct candidate (100) gets ctx=1, wrong (205) gets ctx=0
         // => must pick line 100 even though distance=100 (far) vs distance=5 (close)
-        assert_eq!(r.line, 100, "new_lineno adjacency must pick the truly-adjacent context match");
+        assert_eq!(
+            r.line, 100,
+            "new_lineno adjacency must pick the truly-adjacent context match"
+        );
         assert!(!r.stale);
     }
 
@@ -530,8 +570,24 @@ mod tests {
     #[test]
     fn remove_deletes_comment() {
         let mut comments = Comments::default();
-        comments.set(PathBuf::from("a.rs"), 5, "@@".to_string(), "note".to_string(), String::new(), vec![], vec![]);
-        comments.set(PathBuf::from("b.rs"), 7, "@@".to_string(), "other".to_string(), String::new(), vec![], vec![]);
+        comments.set(
+            PathBuf::from("a.rs"),
+            5,
+            "@@".to_string(),
+            "note".to_string(),
+            String::new(),
+            vec![],
+            vec![],
+        );
+        comments.set(
+            PathBuf::from("b.rs"),
+            7,
+            "@@".to_string(),
+            "other".to_string(),
+            String::new(),
+            vec![],
+            vec![],
+        );
         assert_eq!(comments.items.len(), 2);
 
         comments.remove(Path::new("a.rs"), 5);
@@ -542,8 +598,24 @@ mod tests {
     #[test]
     fn get_finds_comment_by_file_and_line() {
         let mut comments = Comments::default();
-        comments.set(PathBuf::from("src/lib.rs"), 99, "@@ -95,4 @@".to_string(), "look here".to_string(), String::new(), vec![], vec![]);
-        comments.set(PathBuf::from("src/main.rs"), 5, "@@ -3,4 @@".to_string(), "other".to_string(), String::new(), vec![], vec![]);
+        comments.set(
+            PathBuf::from("src/lib.rs"),
+            99,
+            "@@ -95,4 @@".to_string(),
+            "look here".to_string(),
+            String::new(),
+            vec![],
+            vec![],
+        );
+        comments.set(
+            PathBuf::from("src/main.rs"),
+            5,
+            "@@ -3,4 @@".to_string(),
+            "other".to_string(),
+            String::new(),
+            vec![],
+            vec![],
+        );
 
         let found = comments.get(Path::new("src/lib.rs"), 99);
         assert!(found.is_some());

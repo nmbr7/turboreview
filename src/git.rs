@@ -8,11 +8,11 @@ use crate::app::{DiffLine, FileChange, LineKind, Mode, Status};
 /// One entry in the branch history.
 #[derive(Clone, Debug)]
 pub struct CommitInfo {
-    pub id: String,       // full hex oid
-    pub short: String,    // first 8 chars of the oid
-    pub summary: String,  // first line of the message
-    pub author: String,   // author name
-    pub time: String,     // formatted date "YYYY-MM-DD"
+    pub id: String,      // full hex oid
+    pub short: String,   // first 8 chars of the oid
+    pub summary: String, // first line of the message
+    pub author: String,  // author name
+    pub time: String,    // formatted date "YYYY-MM-DD"
 }
 
 pub struct Repo {
@@ -92,7 +92,8 @@ impl Repo {
         match self.inner.head() {
             Ok(head) => {
                 let obj = head.peel(git2::ObjectType::Commit)?;
-                self.inner.reset_default(Some(&obj), std::iter::once(path))?;
+                self.inner
+                    .reset_default(Some(&obj), std::iter::once(path))?;
             }
             Err(_) => {
                 // unborn HEAD: no commit to reset to -> remove the entry from the index
@@ -124,7 +125,13 @@ impl Repo {
             let author = commit.author().name().unwrap_or("").to_string();
             let secs = commit.author().when().seconds();
             let time = format_date(secs);
-            out.push(CommitInfo { id, short, summary, author, time });
+            out.push(CommitInfo {
+                id,
+                short,
+                summary,
+                author,
+                time,
+            });
         }
         Ok(out)
     }
@@ -140,7 +147,9 @@ impl Repo {
             None
         };
         let mut opts = git2::DiffOptions::new();
-        let diff = self.inner.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
+        let diff =
+            self.inner
+                .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
         let mut files = Vec::new();
         for delta in diff.deltas() {
             let path = delta
@@ -149,14 +158,22 @@ impl Repo {
                 .or_else(|| delta.old_file().path())
                 .map(|p| p.to_path_buf());
             if let Some(path) = path {
-                files.push(FileChange { path, status: map_status(delta.status()) });
+                files.push(FileChange {
+                    path,
+                    status: map_status(delta.status()),
+                });
             }
         }
         Ok(files)
     }
 
     /// Diff lines for one file within a commit (commit vs first parent), with `context` context lines.
-    pub fn commit_diff_for(&self, commit_id: &str, file: &Path, context: u32) -> Result<Vec<DiffLine>> {
+    pub fn commit_diff_for(
+        &self,
+        commit_id: &str,
+        file: &Path,
+        context: u32,
+    ) -> Result<Vec<DiffLine>> {
         let oid = git2::Oid::from_str(commit_id)?;
         let commit = self.inner.find_commit(oid)?;
         let tree = commit.tree()?;
@@ -167,7 +184,9 @@ impl Repo {
         };
         let mut opts = git2::DiffOptions::new();
         opts.context_lines(context).pathspec(file);
-        let diff = self.inner.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
+        let diff =
+            self.inner
+                .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
         collect_diff_lines(&diff)
     }
 
@@ -182,7 +201,10 @@ impl Repo {
                 .or_else(|| delta.old_file().path())
                 .map(|p| p.to_path_buf());
             if let Some(path) = path {
-                files.push(FileChange { path, status: map_status(delta.status()) });
+                files.push(FileChange {
+                    path,
+                    status: map_status(delta.status()),
+                });
             }
         }
         Ok(files)
@@ -205,7 +227,9 @@ fn collect_diff_lines(diff: &Diff<'_>) -> Result<Vec<DiffLine>> {
         let text = if kind == LineKind::Hunk {
             match hunk {
                 Some(h) => String::from_utf8_lossy(h.header()).trim_end().to_string(),
-                None => String::from_utf8_lossy(line.content()).trim_end().to_string(),
+                None => String::from_utf8_lossy(line.content())
+                    .trim_end()
+                    .to_string(),
             }
         } else {
             String::from_utf8_lossy(line.content())
@@ -290,7 +314,11 @@ mod tests {
         assert_eq!(date_part, format_date(1_700_000_000), "date part mismatch");
         // Must contain a space and two colons (time part HH:MM:SS)
         assert!(dt.contains(' '), "datetime must contain a space");
-        assert_eq!(dt.chars().filter(|&c| c == ':').count(), 2, "datetime must have two colons");
+        assert_eq!(
+            dt.chars().filter(|&c| c == ':').count(),
+            2,
+            "datetime must have two colons"
+        );
         // Verify exact time
         assert_eq!(&dt[11..], "22:13:20", "time part mismatch");
     }
@@ -342,8 +370,13 @@ mod tests {
         commit_file(&repo, dir.path(), "hello.txt", "hello world\n");
         let r = Repo::discover(dir.path()).unwrap();
         let commits = r.log(10).unwrap();
-        let lines = r.commit_diff_for(&commits[0].id, std::path::Path::new("hello.txt"), 3).unwrap();
-        let adds: Vec<_> = lines.iter().filter(|l| l.kind == crate::app::LineKind::Add).collect();
+        let lines = r
+            .commit_diff_for(&commits[0].id, std::path::Path::new("hello.txt"), 3)
+            .unwrap();
+        let adds: Vec<_> = lines
+            .iter()
+            .filter(|l| l.kind == crate::app::LineKind::Add)
+            .collect();
         assert!(!adds.is_empty());
         assert!(adds.iter().any(|l| l.text.contains("hello world")));
     }
@@ -381,7 +414,8 @@ mod tests {
         let sig = git2::Signature::now("t", "t@t").unwrap();
         let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
         let parents: Vec<&git2::Commit> = parent.iter().collect();
-        repo.commit(Some("HEAD"), &sig, &sig, "c", &tree, &parents).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "c", &tree, &parents)
+            .unwrap();
     }
 
     #[test]
@@ -414,7 +448,9 @@ mod tests {
         let (dir, _repo) = init_repo();
         fs::write(dir.path().join("new.txt"), "line1\nline2\n").unwrap();
         let repo = Repo::discover(dir.path()).unwrap();
-        let lines = repo.diff_for(Path::new("new.txt"), Mode::Unstaged, 3).unwrap();
+        let lines = repo
+            .diff_for(Path::new("new.txt"), Mode::Unstaged, 3)
+            .unwrap();
         let added: Vec<_> = lines.iter().filter(|l| l.kind == LineKind::Add).collect();
         assert_eq!(added.len(), 2);
         assert!(added.iter().any(|l| l.text.contains("line1")));
@@ -424,7 +460,9 @@ mod tests {
     fn diff_for_missing_path_is_empty() {
         let (dir, _repo) = init_repo();
         let repo = Repo::discover(dir.path()).unwrap();
-        let lines = repo.diff_for(Path::new("missing.txt"), Mode::Unstaged, 3).unwrap();
+        let lines = repo
+            .diff_for(Path::new("missing.txt"), Mode::Unstaged, 3)
+            .unwrap();
         assert!(lines.is_empty());
     }
 
@@ -435,9 +473,15 @@ mod tests {
         fs::write(dir.path().join("f.txt"), "alpha\nGAMMA\n").unwrap();
         let r = Repo::discover(dir.path()).unwrap();
         let lines = r.diff_for(Path::new("f.txt"), Mode::Unstaged, 3).unwrap();
-        assert!(lines.iter().any(|l| l.kind == LineKind::Add && l.text.contains("GAMMA")));
-        assert!(lines.iter().any(|l| l.kind == LineKind::Del && l.text.contains("beta")));
-        assert!(lines.iter().any(|l| l.kind == LineKind::Context && l.text.contains("alpha")));
+        assert!(lines
+            .iter()
+            .any(|l| l.kind == LineKind::Add && l.text.contains("GAMMA")));
+        assert!(lines
+            .iter()
+            .any(|l| l.kind == LineKind::Del && l.text.contains("beta")));
+        assert!(lines
+            .iter()
+            .any(|l| l.kind == LineKind::Context && l.text.contains("alpha")));
     }
 
     #[test]
@@ -477,7 +521,10 @@ mod tests {
         assert_eq!(r.changed_files(Mode::Staged).unwrap().len(), 0);
         assert_eq!(r.changed_files(Mode::Unstaged).unwrap().len(), 1);
         // working-tree content preserved
-        assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "one\ntwo\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "one\ntwo\n"
+        );
     }
 
     #[test]
@@ -487,11 +534,16 @@ mod tests {
         std::fs::write(dir.path().join("f.txt"), "a\nb\nc\nd\nE\nf\ng\nh\n").unwrap();
         let r = Repo::discover(dir.path()).unwrap();
         let few = r.diff_for(Path::new("f.txt"), Mode::Unstaged, 0).unwrap();
-        let many = r.diff_for(Path::new("f.txt"), Mode::Unstaged, 1_000_000).unwrap();
+        let many = r
+            .diff_for(Path::new("f.txt"), Mode::Unstaged, 1_000_000)
+            .unwrap();
         // full-file view shows every line; zero-context shows only the changed lines (+ hunk header)
         assert!(many.len() > few.len());
         // full view should contain all 8 file lines as context/changed
-        let ctx_and_changed = many.iter().filter(|l| l.kind != crate::app::LineKind::Hunk).count();
+        let ctx_and_changed = many
+            .iter()
+            .filter(|l| l.kind != crate::app::LineKind::Hunk)
+            .count();
         assert!(ctx_and_changed >= 8);
     }
 
@@ -501,7 +553,10 @@ mod tests {
         let (dir, _repo) = init_repo();
         let r = Repo::discover(dir.path()).unwrap();
         let commits = r.log(10).unwrap();
-        assert!(commits.is_empty(), "log on unborn HEAD must return empty list, not error");
+        assert!(
+            commits.is_empty(),
+            "log on unborn HEAD must return empty list, not error"
+        );
     }
 
     #[test]

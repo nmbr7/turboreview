@@ -113,14 +113,41 @@ mod tests {
 
     #[test]
     fn skill_doc_contains_required_content() {
-        assert!(SKILL_DOC.contains("comments.json"), "SKILL_DOC must reference comments.json");
-        assert!(SKILL_DOC.contains("status"), "SKILL_DOC must mention status field");
-        assert!(SKILL_DOC.contains("response"), "SKILL_DOC must mention response field");
-        assert!(SKILL_DOC.contains("open"), "SKILL_DOC must mention open status");
-        assert!(SKILL_DOC.contains("resolved"), "SKILL_DOC must mention resolved status");
-        assert!(SKILL_DOC.contains("wontfix"), "SKILL_DOC must mention wontfix status");
-        assert!(SKILL_DOC.contains("needs_info"), "SKILL_DOC must mention needs_info status");
-        assert!(SKILL_DOC.contains("comment-log"), "SKILL_DOC must reference comment-log");
-        assert!(SKILL_DOC.contains("commits/<sha>"), "SKILL_DOC must describe per-commit path layout");
+        assert!(
+            SKILL_DOC.contains("comments.json"),
+            "SKILL_DOC must reference comments.json"
+        );
+        assert!(
+            SKILL_DOC.contains("status"),
+            "SKILL_DOC must mention status field"
+        );
+        assert!(
+            SKILL_DOC.contains("response"),
+            "SKILL_DOC must mention response field"
+        );
+        assert!(
+            SKILL_DOC.contains("open"),
+            "SKILL_DOC must mention open status"
+        );
+        assert!(
+            SKILL_DOC.contains("resolved"),
+            "SKILL_DOC must mention resolved status"
+        );
+        assert!(
+            SKILL_DOC.contains("wontfix"),
+            "SKILL_DOC must mention wontfix status"
+        );
+        assert!(
+            SKILL_DOC.contains("needs_info"),
+            "SKILL_DOC must mention needs_info status"
+        );
+        assert!(
+            SKILL_DOC.contains("comment-log"),
+            "SKILL_DOC must reference comment-log"
+        );
+        assert!(
+            SKILL_DOC.contains("commits/<sha>"),
+            "SKILL_DOC must describe per-commit path layout"
+        );
     }
 }

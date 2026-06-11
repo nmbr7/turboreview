@@ -83,13 +83,18 @@ pub struct DiffLine {
 
 impl DiffLine {
     pub fn context(text: &str, old: u32, new: u32) -> Self {
-        DiffLine { kind: LineKind::Context, text: text.into(), old_lineno: Some(old), new_lineno: Some(new) }
+        DiffLine {
+            kind: LineKind::Context,
+            text: text.into(),
+            old_lineno: Some(old),
+            new_lineno: Some(new),
+        }
     }
 }
 
 /// State for the modal comment input box.
 pub struct InputState {
-    pub buffer: String,        // current text (may contain \n for multi-line)
+    pub buffer: String, // current text (may contain \n for multi-line)
     pub target_file: PathBuf,
     pub target_line: u32,
     pub target_hunk: String,
@@ -220,13 +225,21 @@ impl App {
     }
 
     pub fn effective_context(&self) -> u32 {
-        if self.full_file { u32::MAX } else { self.context_lines }
+        if self.full_file {
+            u32::MAX
+        } else {
+            self.context_lines
+        }
     }
 
     pub fn rebuild_rows(&mut self) {
         let prev = self.selected_identity();
         let empty = HashSet::new();
-        let hidden = if self.hide_reviewed { &self.reviewed } else { &empty };
+        let hidden = if self.hide_reviewed {
+            &self.reviewed
+        } else {
+            &empty
+        };
         self.rows = if self.view == ViewMode::Commits && self.open_commit.is_some() {
             crate::tree::build_commit_rows(&self.commit_files, &self.collapsed, hidden)
         } else {
@@ -241,7 +254,10 @@ impl App {
     fn selected_identity(&self) -> Option<RowId> {
         let row = self.rows.get(self.selected)?;
         match &row.kind {
-            RowKind::File { section, file_index } => {
+            RowKind::File {
+                section,
+                file_index,
+            } => {
                 return self
                     .section_files(*section)
                     .get(*file_index)
@@ -254,10 +270,22 @@ impl App {
 
     fn find_row(&self, id: &RowId) -> Option<usize> {
         self.rows.iter().position(|r| match (&r.kind, id) {
-            (RowKind::File { section: rs, file_index }, RowId::File(s, p)) if rs == s => {
-                self.section_files(*rs).get(*file_index).map_or(false, |f| &f.path == p)
-            }
-            (RowKind::Dir { section: rs, path, .. }, RowId::Dir(s, p)) if rs == s => path == p,
+            (
+                RowKind::File {
+                    section: rs,
+                    file_index,
+                },
+                RowId::File(s, p),
+            ) if rs == s => self
+                .section_files(*rs)
+                .get(*file_index)
+                .map_or(false, |f| &f.path == p),
+            (
+                RowKind::Dir {
+                    section: rs, path, ..
+                },
+                RowId::Dir(s, p),
+            ) if rs == s => path == p,
             _ => false,
         })
     }
@@ -277,23 +305,37 @@ impl App {
 
     pub fn selected_path(&self) -> Option<&PathBuf> {
         match self.rows.get(self.selected) {
-            Some(Row { kind: RowKind::File { section, file_index }, .. }) => {
-                self.section_files(*section).get(*file_index).map(|f| &f.path)
-            }
+            Some(Row {
+                kind:
+                    RowKind::File {
+                        section,
+                        file_index,
+                    },
+                ..
+            }) => self
+                .section_files(*section)
+                .get(*file_index)
+                .map(|f| &f.path),
             _ => None,
         }
     }
 
     pub fn selected_section(&self) -> Option<Section> {
         match self.rows.get(self.selected) {
-            Some(Row { kind: RowKind::File { section, .. }, .. }) => Some(*section),
+            Some(Row {
+                kind: RowKind::File { section, .. },
+                ..
+            }) => Some(*section),
             _ => None,
         }
     }
 
     pub fn selected_file_index(&self) -> Option<usize> {
         match self.rows.get(self.selected) {
-            Some(Row { kind: RowKind::File { file_index, .. }, .. }) => Some(*file_index),
+            Some(Row {
+                kind: RowKind::File { file_index, .. },
+                ..
+            }) => Some(*file_index),
             _ => None,
         }
     }
@@ -381,10 +423,19 @@ impl App {
     /// Each non-empty group gets a Header(status, count) followed by Item(i) for each match.
     pub fn comment_rows(&self) -> Vec<CommentRow> {
         use crate::comments::CommentStatus;
-        let order = [CommentStatus::Open, CommentStatus::NeedsInfo, CommentStatus::Wontfix, CommentStatus::Resolved];
+        let order = [
+            CommentStatus::Open,
+            CommentStatus::NeedsInfo,
+            CommentStatus::Wontfix,
+            CommentStatus::Resolved,
+        ];
         let mut rows = Vec::new();
         for status in &order {
-            let indices: Vec<usize> = self.comments.items.iter().enumerate()
+            let indices: Vec<usize> = self
+                .comments
+                .items
+                .iter()
+                .enumerate()
                 .filter(|(_, c)| &c.status == status)
                 .map(|(i, _)| i)
                 .collect();
@@ -420,7 +471,11 @@ impl App {
     /// Scan rows for a File row whose path matches `path`. If found, set self.selected and return true.
     pub fn select_row_for_path(&mut self, path: &Path) -> bool {
         for (i, row) in self.rows.iter().enumerate() {
-            if let RowKind::File { section, file_index } = &row.kind {
+            if let RowKind::File {
+                section,
+                file_index,
+            } = &row.kind
+            {
                 if let Some(fc) = self.section_files(*section).get(*file_index) {
                     if fc.path == path {
                         self.selected = i;
@@ -553,7 +608,10 @@ impl App {
     /// Return the short id of the open commit (looked up from `self.commits`).
     pub fn open_commit_short(&self) -> Option<&str> {
         let id = self.open_commit.as_deref()?;
-        self.commits.iter().find(|c| c.id == id).map(|c| c.short.as_str())
+        self.commits
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.short.as_str())
     }
 
     pub fn inc_context(&mut self) {
@@ -607,7 +665,11 @@ impl App {
             return;
         };
         let hunk = self.current_hunk_header();
-        let existing = self.comments.get(&file, line_no).map(|c| c.text.clone()).unwrap_or_default();
+        let existing = self
+            .comments
+            .get(&file, line_no)
+            .map(|c| c.text.clone())
+            .unwrap_or_default();
         // FIX 4: capture the anchor at the time the modal is opened, not at Ctrl-S time.
         let (anchor_line_text, anchor_before, anchor_after) = self.comment_anchor();
         self.input = Some(InputState {
@@ -672,7 +734,9 @@ impl App {
     /// FIX 2: if the cursor line's trimmed text is empty, returns "\u{0}" (NUL blank-line marker)
     /// instead of "" (which is the legacy "no anchor" sentinel).
     pub fn comment_anchor(&self) -> (String, Vec<String>, Vec<String>) {
-        let raw_trimmed = self.diff.get(self.diff_cursor)
+        let raw_trimmed = self
+            .diff
+            .get(self.diff_cursor)
             .map(|l| l.text.trim().to_string())
             .unwrap_or_default();
         // Use NUL sentinel for blank lines so relocate can distinguish them from legacy no-anchor.
@@ -694,7 +758,9 @@ impl App {
             .rev()
             .collect();
 
-        let after: Vec<String> = self.diff.get(self.diff_cursor + 1..)
+        let after: Vec<String> = self
+            .diff
+            .get(self.diff_cursor + 1..)
             .unwrap_or(&[])
             .iter()
             .filter(|l| l.kind != LineKind::Hunk)
@@ -738,9 +804,18 @@ mod tests {
     /// Build an App with files in the unstaged list only (mirrors the old `App::new(files, root)` pattern).
     fn sample() -> App {
         let files = vec![
-            FileChange { path: PathBuf::from("a.rs"), status: Status::Modified },
-            FileChange { path: PathBuf::from("b.rs"), status: Status::Added },
-            FileChange { path: PathBuf::from("c.rs"), status: Status::Deleted },
+            FileChange {
+                path: PathBuf::from("a.rs"),
+                status: Status::Modified,
+            },
+            FileChange {
+                path: PathBuf::from("b.rs"),
+                status: Status::Added,
+            },
+            FileChange {
+                path: PathBuf::from("c.rs"),
+                status: Status::Deleted,
+            },
         ];
         App::new(files, vec![], PathBuf::from("/repo"))
     }
@@ -859,9 +934,18 @@ mod tests {
     fn toggle_collapse_hides_and_shows_dir_children() {
         // Build app with src/main.rs, src/ui.rs, README.md in unstaged
         let files = vec![
-            FileChange { path: PathBuf::from("src/main.rs"), status: Status::Modified },
-            FileChange { path: PathBuf::from("src/ui.rs"), status: Status::Modified },
-            FileChange { path: PathBuf::from("README.md"), status: Status::Modified },
+            FileChange {
+                path: PathBuf::from("src/main.rs"),
+                status: Status::Modified,
+            },
+            FileChange {
+                path: PathBuf::from("src/ui.rs"),
+                status: Status::Modified,
+            },
+            FileChange {
+                path: PathBuf::from("README.md"),
+                status: Status::Modified,
+            },
         ];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         // rows: Header(U), Dir "src" (1), main.rs (2), ui.rs (3), README.md (4), Header(S) (5)
@@ -872,7 +956,13 @@ mod tests {
         app.toggle_collapse();
         // Now rows should be: Header(U), Dir "src" (collapsed), README.md, Header(S) → 4 rows
         assert_eq!(app.rows.len(), 4);
-        assert!(matches!(app.rows[1].kind, crate::tree::RowKind::Dir { collapsed: true, .. }));
+        assert!(matches!(
+            app.rows[1].kind,
+            crate::tree::RowKind::Dir {
+                collapsed: true,
+                ..
+            }
+        ));
 
         // Toggle again → expand back to 6 rows
         app.selected = 1;
@@ -891,9 +981,10 @@ mod tests {
 
     #[test]
     fn selected_path_returns_none_for_dir_row() {
-        let files = vec![
-            FileChange { path: PathBuf::from("src/main.rs"), status: Status::Modified },
-        ];
+        let files = vec![FileChange {
+            path: PathBuf::from("src/main.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         // rows: Header(U)(0), Dir "src" (1), File "main.rs" (2), Header(S) (3)
         app.selected = 1; // Dir row
@@ -920,8 +1011,14 @@ mod tests {
     #[test]
     fn hide_reviewed_hides_reviewed_file() {
         let files = vec![
-            FileChange { path: PathBuf::from("a.rs"), status: Status::Modified },
-            FileChange { path: PathBuf::from("b.rs"), status: Status::Added },
+            FileChange {
+                path: PathBuf::from("a.rs"),
+                status: Status::Modified,
+            },
+            FileChange {
+                path: PathBuf::from("b.rs"),
+                status: Status::Added,
+            },
         ];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         // Select a.rs (row 1) and review it
@@ -940,9 +1037,18 @@ mod tests {
     #[test]
     fn rebuild_preserves_selection_identity() {
         let files = vec![
-            FileChange { path: PathBuf::from("a.rs"), status: Status::Modified },
-            FileChange { path: PathBuf::from("b.rs"), status: Status::Added },
-            FileChange { path: PathBuf::from("c.rs"), status: Status::Deleted },
+            FileChange {
+                path: PathBuf::from("a.rs"),
+                status: Status::Modified,
+            },
+            FileChange {
+                path: PathBuf::from("b.rs"),
+                status: Status::Added,
+            },
+            FileChange {
+                path: PathBuf::from("c.rs"),
+                status: Status::Deleted,
+            },
         ];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         // row 3 is c.rs (index 2 in unstaged); rows: H(U)(0) a(1) b(2) c(3) H(S)(4)
@@ -954,9 +1060,10 @@ mod tests {
 
     #[test]
     fn toggle_reviewed_on_dir_row_does_nothing() {
-        let files = vec![
-            FileChange { path: PathBuf::from("src/main.rs"), status: Status::Modified },
-        ];
+        let files = vec![FileChange {
+            path: PathBuf::from("src/main.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         // rows: Header(U)(0), Dir "src"(1), File "main.rs"(2), Header(S)(3)
         app.selected = 1; // Dir "src" row
@@ -968,12 +1075,18 @@ mod tests {
     #[test]
     fn reviewing_in_hide_mode_drops_file_and_keeps_valid_selection() {
         let files = vec![
-            FileChange { path: PathBuf::from("a.rs"), status: Status::Modified },
-            FileChange { path: PathBuf::from("b.rs"), status: Status::Added },
+            FileChange {
+                path: PathBuf::from("a.rs"),
+                status: Status::Modified,
+            },
+            FileChange {
+                path: PathBuf::from("b.rs"),
+                status: Status::Added,
+            },
         ];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.toggle_hide_reviewed(); // hide-mode on, nothing reviewed yet
-        // rows: Header(U)(0) + a.rs(1) + b.rs(2) + Header(S)(3) = 4 rows
+                                    // rows: Header(U)(0) + a.rs(1) + b.rs(2) + Header(S)(3) = 4 rows
         assert_eq!(app.rows.len(), 4);
         // select a.rs and review it
         app.selected = 1;
@@ -986,8 +1099,14 @@ mod tests {
 
     #[test]
     fn selected_section_returns_correct_section() {
-        let unstaged = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
-        let staged = vec![FileChange { path: PathBuf::from("b.rs"), status: Status::Added }];
+        let unstaged = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let staged = vec![FileChange {
+            path: PathBuf::from("b.rs"),
+            status: Status::Added,
+        }];
         let mut app = App::new(unstaged, staged, PathBuf::from("/repo"));
         // rows: Header(U)(0), a.rs(1), Header(S)(2), b.rs(3)
         app.selected = 1;
@@ -1070,7 +1189,10 @@ mod tests {
 
     /// Build an App focused on Diff with a hunk + add line diff loaded.
     fn app_with_add_diff() -> App {
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.selected = 1; // select a.rs row
         app.focus = Pane::Diff;
@@ -1184,34 +1306,63 @@ mod tests {
 
     #[test]
     fn current_hunk_header_returns_empty_when_no_hunk() {
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.focus = Pane::Diff;
         app.selected = 1;
-        app.set_diff(vec![
-            DiffLine { kind: LineKind::Context, text: "ctx".into(), old_lineno: Some(1), new_lineno: Some(1) },
-        ]);
+        app.set_diff(vec![DiffLine {
+            kind: LineKind::Context,
+            text: "ctx".into(),
+            old_lineno: Some(1),
+            new_lineno: Some(1),
+        }]);
         app.diff_cursor = 0;
         assert_eq!(app.current_hunk_header(), "");
     }
 
     #[test]
     fn comment_anchor_captures_line_text_and_context() {
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.focus = Pane::Diff;
         app.selected = 1;
         app.set_diff(vec![
-            DiffLine { kind: LineKind::Hunk, text: "@@ -1 +1 @@".into(), old_lineno: None, new_lineno: None },
-            DiffLine { kind: LineKind::Context, text: "  let a = 1;  ".into(), old_lineno: Some(1), new_lineno: Some(1) },
-            DiffLine { kind: LineKind::Add, text: "  fn target()  ".into(), old_lineno: None, new_lineno: Some(2) },
-            DiffLine { kind: LineKind::Context, text: "  let b = 2;  ".into(), old_lineno: Some(3), new_lineno: Some(3) },
+            DiffLine {
+                kind: LineKind::Hunk,
+                text: "@@ -1 +1 @@".into(),
+                old_lineno: None,
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "  let a = 1;  ".into(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "  fn target()  ".into(),
+                old_lineno: None,
+                new_lineno: Some(2),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "  let b = 2;  ".into(),
+                old_lineno: Some(3),
+                new_lineno: Some(3),
+            },
         ]);
         app.diff_cursor = 2; // cursor on the Add line
 
         let (line_text, before, after) = app.comment_anchor();
         assert_eq!(line_text, "fn target()"); // trimmed
-        // context_before: last non-hunk line before index 2 = index 1 (Context)
+                                              // context_before: last non-hunk line before index 2 = index 1 (Context)
         assert_eq!(before, vec!["let a = 1;"]);
         // context_after: next non-hunk line after index 2 = index 3 (Context)
         assert_eq!(after, vec!["let b = 2;"]);
@@ -1219,16 +1370,44 @@ mod tests {
 
     #[test]
     fn comment_anchor_skips_hunk_lines_in_context() {
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.focus = Pane::Diff;
         app.selected = 1;
         app.set_diff(vec![
-            DiffLine { kind: LineKind::Hunk, text: "@@ -1 +1 @@".into(), old_lineno: None, new_lineno: None },
-            DiffLine { kind: LineKind::Add, text: "first".into(), old_lineno: None, new_lineno: Some(1) },
-            DiffLine { kind: LineKind::Hunk, text: "@@ -5 +5 @@".into(), old_lineno: None, new_lineno: None },
-            DiffLine { kind: LineKind::Add, text: "target".into(), old_lineno: None, new_lineno: Some(5) },
-            DiffLine { kind: LineKind::Context, text: "after".into(), old_lineno: Some(6), new_lineno: Some(6) },
+            DiffLine {
+                kind: LineKind::Hunk,
+                text: "@@ -1 +1 @@".into(),
+                old_lineno: None,
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "first".into(),
+                old_lineno: None,
+                new_lineno: Some(1),
+            },
+            DiffLine {
+                kind: LineKind::Hunk,
+                text: "@@ -5 +5 @@".into(),
+                old_lineno: None,
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "target".into(),
+                old_lineno: None,
+                new_lineno: Some(5),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "after".into(),
+                old_lineno: Some(6),
+                new_lineno: Some(6),
+            },
         ]);
         app.diff_cursor = 3; // cursor on "target" Add line
 
@@ -1243,14 +1422,32 @@ mod tests {
     #[test]
     fn start_comment_captures_anchor_in_input_state() {
         // Build an app with context lines so comment_anchor() returns real data
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.selected = 1;
         app.focus = Pane::Diff;
         app.set_diff(vec![
-            DiffLine { kind: LineKind::Context, text: "  let a = 1;  ".into(), old_lineno: Some(1), new_lineno: Some(1) },
-            DiffLine { kind: LineKind::Add, text: "  fn target()  ".into(), old_lineno: None, new_lineno: Some(2) },
-            DiffLine { kind: LineKind::Context, text: "  let b = 2;  ".into(), old_lineno: Some(3), new_lineno: Some(3) },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "  let a = 1;  ".into(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "  fn target()  ".into(),
+                old_lineno: None,
+                new_lineno: Some(2),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "  let b = 2;  ".into(),
+                old_lineno: Some(3),
+                new_lineno: Some(3),
+            },
         ]);
         app.diff_cursor = 1; // cursor on Add line "fn target()"
         app.start_comment();
@@ -1289,11 +1486,17 @@ mod tests {
         let mut app = sample();
         // Dark theme
         let dark_pal = app.palette();
-        assert_eq!(dark_pal.accent, crate::theme::Palette::for_theme(crate::theme::Theme::Dark).accent);
+        assert_eq!(
+            dark_pal.accent,
+            crate::theme::Palette::for_theme(crate::theme::Theme::Dark).accent
+        );
         // Switch to light
         app.toggle_theme();
         let light_pal = app.palette();
-        assert_eq!(light_pal.accent, crate::theme::Palette::for_theme(crate::theme::Theme::Light).accent);
+        assert_eq!(
+            light_pal.accent,
+            crate::theme::Palette::for_theme(crate::theme::Theme::Light).accent
+        );
         assert_ne!(dark_pal.accent, light_pal.accent);
     }
 
@@ -1343,14 +1546,32 @@ mod tests {
 
     #[test]
     fn input_commit_includes_anchor_fields() {
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.selected = 1;
         app.focus = Pane::Diff;
         app.set_diff(vec![
-            DiffLine { kind: LineKind::Context, text: "before_line".into(), old_lineno: Some(1), new_lineno: Some(1) },
-            DiffLine { kind: LineKind::Add, text: "the_target_line".into(), old_lineno: None, new_lineno: Some(2) },
-            DiffLine { kind: LineKind::Context, text: "after_line".into(), old_lineno: Some(3), new_lineno: Some(3) },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "before_line".into(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "the_target_line".into(),
+                old_lineno: None,
+                new_lineno: Some(2),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "after_line".into(),
+                old_lineno: Some(3),
+                new_lineno: Some(3),
+            },
         ]);
         app.diff_cursor = 1;
         app.start_comment();
@@ -1374,7 +1595,13 @@ mod tests {
     // ── Part 2 TDD: commit-detail open/close/section_files ─────────────────
 
     fn make_commit_files(paths: &[&str]) -> Vec<FileChange> {
-        paths.iter().map(|p| FileChange { path: PathBuf::from(p), status: Status::Modified }).collect()
+        paths
+            .iter()
+            .map(|p| FileChange {
+                path: PathBuf::from(p),
+                status: Status::Modified,
+            })
+            .collect()
     }
 
     #[test]
@@ -1401,11 +1628,29 @@ mod tests {
         assert!(app.in_commit_detail());
         // rows should have: Header(Commit) + Dir(src) + File(main.rs) + File(lib.rs)
         // = 1 header + 1 dir + 1 file under dir + 1 flat file = 4 rows
-        assert!(app.rows.len() >= 3, "expected at least 3 rows (header + files), got {}", app.rows.len());
+        assert!(
+            app.rows.len() >= 3,
+            "expected at least 3 rows (header + files), got {}",
+            app.rows.len()
+        );
         // First row is a Commit header
-        assert!(matches!(app.rows[0].kind, crate::tree::RowKind::Header { section: Section::Commit, .. }));
+        assert!(matches!(
+            app.rows[0].kind,
+            crate::tree::RowKind::Header {
+                section: Section::Commit,
+                ..
+            }
+        ));
         // At least one File row with Section::Commit
-        let has_commit_file = app.rows.iter().any(|r| matches!(&r.kind, crate::tree::RowKind::File { section: Section::Commit, .. }));
+        let has_commit_file = app.rows.iter().any(|r| {
+            matches!(
+                &r.kind,
+                crate::tree::RowKind::File {
+                    section: Section::Commit,
+                    ..
+                }
+            )
+        });
         assert!(has_commit_file, "expected File rows with Section::Commit");
     }
 
@@ -1444,8 +1689,13 @@ mod tests {
         // No row may reference Section::Commit anymore.
         assert!(!app.rows.iter().any(|r| matches!(
             &r.kind,
-            crate::tree::RowKind::File { section: Section::Commit, .. }
-                | crate::tree::RowKind::Header { section: Section::Commit, .. }
+            crate::tree::RowKind::File {
+                section: Section::Commit,
+                ..
+            } | crate::tree::RowKind::Header {
+                section: Section::Commit,
+                ..
+            }
         )));
         // selected must be in bounds for the rebuilt rows.
         assert!(app.selected < app.rows.len().max(1));
@@ -1467,18 +1717,56 @@ mod tests {
 
     fn sample_with_comments() -> App {
         let files = vec![
-            FileChange { path: PathBuf::from("a.rs"), status: Status::Modified },
-            FileChange { path: PathBuf::from("b.rs"), status: Status::Added },
+            FileChange {
+                path: PathBuf::from("a.rs"),
+                status: Status::Modified,
+            },
+            FileChange {
+                path: PathBuf::from("b.rs"),
+                status: Status::Added,
+            },
         ];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         // Add comments of various statuses
-        app.comments.set(PathBuf::from("a.rs"), 1, "@@".to_string(), "open note".to_string(), "fn a()".to_string(), vec![], vec![]);
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            1,
+            "@@".to_string(),
+            "open note".to_string(),
+            "fn a()".to_string(),
+            vec![],
+            vec![],
+        );
         // items[0] is Open by default
-        app.comments.set(PathBuf::from("a.rs"), 5, "@@".to_string(), "resolved note".to_string(), "fn b()".to_string(), vec![], vec![]);
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            5,
+            "@@".to_string(),
+            "resolved note".to_string(),
+            "fn b()".to_string(),
+            vec![],
+            vec![],
+        );
         app.comments.items[1].status = crate::comments::CommentStatus::Resolved;
-        app.comments.set(PathBuf::from("b.rs"), 3, "@@".to_string(), "wontfix note".to_string(), "fn c()".to_string(), vec![], vec![]);
+        app.comments.set(
+            PathBuf::from("b.rs"),
+            3,
+            "@@".to_string(),
+            "wontfix note".to_string(),
+            "fn c()".to_string(),
+            vec![],
+            vec![],
+        );
         app.comments.items[2].status = crate::comments::CommentStatus::Wontfix;
-        app.comments.set(PathBuf::from("b.rs"), 7, "@@".to_string(), "needs info note".to_string(), "fn d()".to_string(), vec![], vec![]);
+        app.comments.set(
+            PathBuf::from("b.rs"),
+            7,
+            "@@".to_string(),
+            "needs info note".to_string(),
+            "fn d()".to_string(),
+            vec![],
+            vec![],
+        );
         app.comments.items[3].status = crate::comments::CommentStatus::NeedsInfo;
         app
     }
@@ -1491,34 +1779,85 @@ mod tests {
         // Order: Open, NeedsInfo, Wontfix, Resolved
         assert!(!rows.is_empty(), "comment_rows must not be empty");
         // First row is Header(Open)
-        assert!(matches!(rows[0], CommentRow::Header(crate::comments::CommentStatus::Open, 1)));
+        assert!(matches!(
+            rows[0],
+            CommentRow::Header(crate::comments::CommentStatus::Open, 1)
+        ));
         // Second row is Item pointing to index 0 (the Open comment)
         assert!(matches!(rows[1], CommentRow::Item(0)));
         // Find Header(NeedsInfo)
-        let ni_pos = rows.iter().position(|r| matches!(r, CommentRow::Header(crate::comments::CommentStatus::NeedsInfo, 1)));
+        let ni_pos = rows.iter().position(|r| {
+            matches!(
+                r,
+                CommentRow::Header(crate::comments::CommentStatus::NeedsInfo, 1)
+            )
+        });
         assert!(ni_pos.is_some(), "NeedsInfo header must be present");
         // Find Header(Wontfix)
-        let wf_pos = rows.iter().position(|r| matches!(r, CommentRow::Header(crate::comments::CommentStatus::Wontfix, 1)));
+        let wf_pos = rows.iter().position(|r| {
+            matches!(
+                r,
+                CommentRow::Header(crate::comments::CommentStatus::Wontfix, 1)
+            )
+        });
         assert!(wf_pos.is_some(), "Wontfix header must be present");
         // Find Header(Resolved)
-        let res_pos = rows.iter().position(|r| matches!(r, CommentRow::Header(crate::comments::CommentStatus::Resolved, 1)));
+        let res_pos = rows.iter().position(|r| {
+            matches!(
+                r,
+                CommentRow::Header(crate::comments::CommentStatus::Resolved, 1)
+            )
+        });
         assert!(res_pos.is_some(), "Resolved header must be present");
         // Order: Open < NeedsInfo < Wontfix < Resolved
-        let open_pos = rows.iter().position(|r| matches!(r, CommentRow::Header(crate::comments::CommentStatus::Open, _))).unwrap();
-        assert!(open_pos < ni_pos.unwrap(), "Open must come before NeedsInfo");
-        assert!(ni_pos.unwrap() < wf_pos.unwrap(), "NeedsInfo must come before Wontfix");
-        assert!(wf_pos.unwrap() < res_pos.unwrap(), "Wontfix must come before Resolved");
+        let open_pos = rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    r,
+                    CommentRow::Header(crate::comments::CommentStatus::Open, _)
+                )
+            })
+            .unwrap();
+        assert!(
+            open_pos < ni_pos.unwrap(),
+            "Open must come before NeedsInfo"
+        );
+        assert!(
+            ni_pos.unwrap() < wf_pos.unwrap(),
+            "NeedsInfo must come before Wontfix"
+        );
+        assert!(
+            wf_pos.unwrap() < res_pos.unwrap(),
+            "Wontfix must come before Resolved"
+        );
     }
 
     #[test]
     fn comment_rows_skips_empty_groups() {
         let mut app = sample();
         // Only add an Open comment — other groups should be absent
-        app.comments.set(PathBuf::from("a.rs"), 1, "@@".to_string(), "only open".to_string(), "fn a()".to_string(), vec![], vec![]);
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            1,
+            "@@".to_string(),
+            "only open".to_string(),
+            "fn a()".to_string(),
+            vec![],
+            vec![],
+        );
         let rows = app.comment_rows();
         // No Resolved header
-        let has_resolved = rows.iter().any(|r| matches!(r, CommentRow::Header(crate::comments::CommentStatus::Resolved, _)));
-        assert!(!has_resolved, "Resolved header should not appear when no resolved comments");
+        let has_resolved = rows.iter().any(|r| {
+            matches!(
+                r,
+                CommentRow::Header(crate::comments::CommentStatus::Resolved, _)
+            )
+        });
+        assert!(
+            !has_resolved,
+            "Resolved header should not appear when no resolved comments"
+        );
         // Total: Header(Open) + Item(0) = 2
         assert_eq!(rows.len(), 2);
     }
@@ -1545,10 +1884,16 @@ mod tests {
         let mut app = sample_with_comments();
         // Row 0 is a Header
         app.comment_selected = 0;
-        assert!(app.selected_comment().is_none(), "selected_comment must be None for a header row");
+        assert!(
+            app.selected_comment().is_none(),
+            "selected_comment must be None for a header row"
+        );
         // Row 1 is an Item
         app.comment_selected = 1;
-        assert!(app.selected_comment().is_some(), "selected_comment must be Some for an item row");
+        assert!(
+            app.selected_comment().is_some(),
+            "selected_comment must be Some for an item row"
+        );
     }
 
     #[test]
@@ -1556,7 +1901,10 @@ mod tests {
         let mut app = sample();
         // rows: Header(U)(0), a.rs(1), b.rs(2), c.rs(3), Header(S)(4)
         let found = app.select_row_for_path(Path::new("b.rs"));
-        assert!(found, "select_row_for_path must return true for an existing file path");
+        assert!(
+            found,
+            "select_row_for_path must return true for an existing file path"
+        );
         assert_eq!(app.selected_path(), Some(&PathBuf::from("b.rs")));
     }
 
@@ -1564,23 +1912,50 @@ mod tests {
     fn select_row_for_path_returns_false_for_missing() {
         let mut app = sample();
         let found = app.select_row_for_path(Path::new("nonexistent.rs"));
-        assert!(!found, "select_row_for_path must return false for a path not in rows");
+        assert!(
+            !found,
+            "select_row_for_path must return false for a path not in rows"
+        );
     }
 
     #[test]
     fn move_cursor_to_line_positions_diff_cursor() {
-        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         app.set_diff(vec![
-            DiffLine { kind: LineKind::Context, text: "x".into(), old_lineno: Some(1), new_lineno: Some(1) },
-            DiffLine { kind: LineKind::Context, text: "y".into(), old_lineno: Some(2), new_lineno: Some(2) },
-            DiffLine { kind: LineKind::Add, text: "z".into(), old_lineno: None, new_lineno: Some(5) },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "x".into(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "y".into(),
+                old_lineno: Some(2),
+                new_lineno: Some(2),
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "z".into(),
+                old_lineno: None,
+                new_lineno: Some(5),
+            },
         ]);
         app.move_cursor_to_line(5);
-        assert_eq!(app.diff_cursor, 2, "diff_cursor must point to the line with new_lineno==5");
+        assert_eq!(
+            app.diff_cursor, 2,
+            "diff_cursor must point to the line with new_lineno==5"
+        );
         // Non-existent line: cursor stays unchanged
         app.move_cursor_to_line(99);
-        assert_eq!(app.diff_cursor, 0, "cursor should reset to 0 when line not found");
+        assert_eq!(
+            app.diff_cursor, 0,
+            "cursor should reset to 0 when line not found"
+        );
     }
 
     #[test]
