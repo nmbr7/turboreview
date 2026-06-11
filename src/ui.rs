@@ -1,10 +1,10 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, LineKind, Pane, Section, Status};
+use crate::app::{App, InputState, LineKind, Pane, Section, Status};
 use crate::highlight::highlight_code;
 use crate::theme;
 use crate::tree::RowKind;
@@ -48,6 +48,9 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_diff(frame, app, main_area);
     }
     render_status(frame, app, outer[1]);
+    if let Some(input) = &app.input {
+        render_input_modal(frame, input);
+    }
 }
 
 fn focused_border(app: &App, pane: Pane) -> Style {
@@ -147,56 +150,71 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         let page = area.height.saturating_sub(2) as usize;
         let scroll = if app.diff_cursor >= page { app.diff_cursor + 1 - page } else { 0 };
-        app.diff
-            .iter()
-            .enumerate()
-            .skip(scroll)
-            .take(page)
-            .map(|(idx, dl)| {
-                let is_cursor = idx == app.diff_cursor;
-                let bg = match dl.kind {
-                    LineKind::Add => Some(theme::ADD_BG),
-                    LineKind::Del => Some(theme::DEL_BG),
-                    _ => None,
-                };
-                if dl.kind == LineKind::Hunk {
-                    let shifted: String = dl.text.chars().skip(app.diff_hscroll).collect();
-                    let mut span = Span::styled(shifted, Style::default().fg(theme::HUNK));
-                    if is_cursor {
-                        span.style = span.style.bg(theme::SELECTED_BG);
-                    }
-                    return Line::from(span);
-                }
-                let gutter_style = if is_cursor {
-                    Style::default().fg(theme::ACCENT_DIM).bg(theme::SELECTED_BG)
-                } else {
-                    Style::default().fg(theme::ACCENT_DIM)
-                };
-                let gutter_span = Span::styled(gutter(dl), gutter_style);
+        let mut result: Vec<Line> = Vec::new();
+        for (idx, dl) in app.diff.iter().enumerate().skip(scroll).take(page) {
+            let is_cursor = idx == app.diff_cursor;
+            let bg = match dl.kind {
+                LineKind::Add => Some(theme::ADD_BG),
+                LineKind::Del => Some(theme::DEL_BG),
+                _ => None,
+            };
+            if dl.kind == LineKind::Hunk {
                 let shifted: String = dl.text.chars().skip(app.diff_hscroll).collect();
-                let mut spans: Vec<Span> = highlight_code(&shifted, &ext);
+                let mut span = Span::styled(shifted, Style::default().fg(theme::HUNK));
                 if is_cursor {
+                    span.style = span.style.bg(theme::SELECTED_BG);
+                }
+                result.push(Line::from(span));
+                continue;
+            }
+            // Gutter: use ACCENT (bright) for commented lines, ACCENT_DIM otherwise.
+            let has_comment = app.has_comment(dl);
+            let gutter_fg = if has_comment { theme::ACCENT } else { theme::ACCENT_DIM };
+            let gutter_style = if is_cursor {
+                Style::default().fg(gutter_fg).bg(theme::SELECTED_BG)
+            } else {
+                Style::default().fg(gutter_fg)
+            };
+            let gutter_span = Span::styled(gutter(dl), gutter_style);
+            let shifted: String = dl.text.chars().skip(app.diff_hscroll).collect();
+            let mut spans: Vec<Span> = highlight_code(&shifted, &ext);
+            if is_cursor {
+                for s in spans.iter_mut() {
+                    s.style = s.style.bg(theme::SELECTED_BG);
+                }
+            } else {
+                if let Some(bg) = bg {
                     for s in spans.iter_mut() {
-                        s.style = s.style.bg(theme::SELECTED_BG);
-                    }
-                } else {
-                    if let Some(bg) = bg {
-                        for s in spans.iter_mut() {
-                            s.style = s.style.bg(bg);
-                        }
-                    }
-                    if dl.kind == LineKind::Context {
-                        for s in spans.iter_mut() {
-                            s.style = s.style.add_modifier(Modifier::DIM);
-                        }
+                        s.style = s.style.bg(bg);
                     }
                 }
-                let mut all_spans = Vec::with_capacity(1 + spans.len());
-                all_spans.push(gutter_span);
-                all_spans.extend(spans);
-                Line::from(all_spans)
-            })
-            .collect()
+                if dl.kind == LineKind::Context {
+                    for s in spans.iter_mut() {
+                        s.style = s.style.add_modifier(Modifier::DIM);
+                    }
+                }
+            }
+            let mut all_spans = Vec::with_capacity(1 + spans.len());
+            all_spans.push(gutter_span);
+            all_spans.extend(spans);
+            result.push(Line::from(all_spans));
+
+            // Inline comment: emit one Line per comment line directly below.
+            // NOTE: This inserts extra rendered lines beyond `page`, which ratatui
+            // Paragraph clips. The cursor<->diff-index mapping is unaffected because
+            // scroll math uses app.diff indices, not rendered-line count.
+            if let Some(comment_text) = app.comment_text_for(dl) {
+                let comment_style = Style::default()
+                    .fg(theme::ACCENT_DIM)
+                    .add_modifier(Modifier::ITALIC);
+                for comment_line in comment_text.lines() {
+                    let prefix = Span::styled("    ▏ ", comment_style);
+                    let body = Span::styled(comment_line.to_string(), comment_style);
+                    result.push(Line::from(vec![prefix, body]));
+                }
+            }
+        }
+        result
     };
 
     let para = Paragraph::new(lines).block(
@@ -209,12 +227,52 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let base = "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:files  F:full-file  +/-:context  z:hide-files  <>:resize  q:quit";
+    let base = "Tab:focus  s:stage/unstage  Space:review  R:hide-reviewed  up/down/jk:move  gg/G  hl:hscroll  Enter:focus-diff  Esc:files  F:full-file  +/-:context  z:hide-files  <>:resize  c:comment  q:quit";
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
         None => base.to_string(),
     };
     let para = Paragraph::new(text).style(Style::default().fg(theme::ACCENT_DIM));
+    frame.render_widget(para, area);
+}
+
+/// Compute a centered Rect using percentages of the given area.
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let margin_v = (100u16.saturating_sub(percent_y)) / 2;
+    let margin_h = (100u16.saturating_sub(percent_x)) / 2;
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(margin_v),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage(margin_v),
+        ])
+        .split(area);
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(margin_h),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage(margin_h),
+        ])
+        .split(vertical[1]);
+    horizontal[1]
+}
+
+fn render_input_modal(frame: &mut Frame, input: &InputState) {
+    let area = centered_rect(60, 40, frame.area());
+    frame.render_widget(Clear, area);
+    let title = format!(" Comment line {} (Ctrl-S save, Esc cancel) ", input.target_line);
+    // Append a cursor indicator to the buffer text.
+    let display_text = format!("{}▏", input.buffer);
+    let para = Paragraph::new(display_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::ACCENT))
+                .title(title),
+        )
+        .wrap(Wrap { trim: false });
     frame.render_widget(para, area);
 }
 
@@ -409,6 +467,49 @@ mod tests {
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains('M'), "Modified file should show 'M' status letter");
         assert!(dump.contains("a.rs"), "filename should still appear");
+    }
+
+    #[test]
+    fn input_modal_shows_buffer_and_title() {
+        use crate::app::InputState;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = app_with_diff();
+        app.focus = Pane::Diff;
+        app.input = Some(InputState {
+            buffer: "hello world".to_string(),
+            target_file: PathBuf::from("a.rs"),
+            target_line: 1,
+            target_hunk: "@@ -1 +1 @@".to_string(),
+        });
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains("hello world"), "modal buffer text must appear");
+        assert!(dump.contains("Comment"), "modal title must contain 'Comment'");
+    }
+
+    #[test]
+    fn commented_line_shows_comment_text_inline() {
+        use crate::app::LineKind;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.selected = 1; // select a.rs row
+        app.focus = Pane::Diff;
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Add, text: "let x = 1;".into(), old_lineno: None, new_lineno: Some(5) },
+        ]);
+        // attach a comment for a.rs line 5
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            5,
+            "@@ -3,4 @@".to_string(),
+            "review note here".to_string(),
+        );
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains("review note here"), "inline comment text must appear below commented line");
     }
 
     #[test]

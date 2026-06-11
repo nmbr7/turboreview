@@ -14,6 +14,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::Terminal;
 
 use turboreview::app::{App, Mode, Pane, Section};
+use turboreview::comments;
 use turboreview::git::Repo;
 use turboreview::{review, ui};
 
@@ -26,6 +27,7 @@ fn main() -> Result<()> {
     let staged = repo.changed_files(Mode::Staged)?;
     let mut app = App::new(unstaged, staged, root.clone());
     app.reviewed = review::load(&root)?;
+    app.comments = comments::Comments::load(&root).unwrap_or_default();
     refresh_diff(&repo, &mut app);
 
     let mut terminal = setup_terminal()?;
@@ -90,6 +92,32 @@ fn run(
         match event::read()? {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+
+                // When the comment input modal is active, route all keys to the
+                // editor and skip normal key handling entirely.
+                if app.input_active() {
+                    match key.code {
+                        KeyCode::Esc => app.input_cancel(),
+                        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            if let Some((file, line, hunk, text)) = app.input_commit() {
+                                let trimmed = text.trim().to_string();
+                                if trimmed.is_empty() {
+                                    app.comments.remove(&file, line);
+                                } else {
+                                    app.comments.set(file, line, hunk, text.clone());
+                                }
+                                if let Err(e) = app.comments.save(&app.repo_root) {
+                                    app.status_msg = Some(format!("comment save error: {e}"));
+                                }
+                            }
+                        }
+                        KeyCode::Enter => app.input_newline(),
+                        KeyCode::Backspace => app.input_backspace(),
+                        KeyCode::Char(c) => app.input_push(c),
+                        _ => {}
+                    }
                     continue;
                 }
 
@@ -179,6 +207,8 @@ fn run(
                     (KeyCode::Char('z'), _) => app.toggle_files(),
                     (KeyCode::Char('>'), _) | (KeyCode::Char('.'), _) => app.widen_files(),
                     (KeyCode::Char('<'), _) | (KeyCode::Char(','), _) => app.narrow_files(),
+                    // c (no modifier) opens comment modal; Ctrl-C is already handled above
+                    (KeyCode::Char('c'), _) => app.start_comment(),
                     _ => {}
                 }
             }

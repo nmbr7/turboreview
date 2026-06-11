@@ -1,4 +1,5 @@
 pub mod app;
+pub mod comments;
 pub mod git;
 pub mod highlight;
 pub mod icons;

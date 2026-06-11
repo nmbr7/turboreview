@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::comments::Comments;
 use crate::tree::{Row, RowKind};
 
 const MAX_HSCROLL: usize = 500;
@@ -60,6 +61,14 @@ impl DiffLine {
     }
 }
 
+/// State for the modal comment input box.
+pub struct InputState {
+    pub buffer: String,        // current text (may contain \n for multi-line)
+    pub target_file: PathBuf,
+    pub target_line: u32,
+    pub target_hunk: String,
+}
+
 pub struct App {
     pub repo_root: PathBuf,
     pub focus: Pane,
@@ -78,6 +87,8 @@ pub struct App {
     pub full_file: bool,
     pub show_files: bool,
     pub file_pane_pct: u16,
+    pub comments: Comments,
+    pub input: Option<InputState>,
 }
 
 enum RowId {
@@ -105,6 +116,8 @@ impl App {
             full_file: false,
             show_files: true,
             file_pane_pct: 25,
+            comments: Comments::default(),
+            input: None,
         };
         app.rebuild_rows();
         app
@@ -299,6 +312,113 @@ impl App {
 
     pub fn dec_context(&mut self) {
         self.context_lines = self.context_lines.saturating_sub(5);
+    }
+
+    // ── Comment input methods ──────────────────────────────────────────────
+
+    /// Return the diff line currently under the cursor, if any.
+    pub fn current_diff_line(&self) -> Option<&DiffLine> {
+        self.diff.get(self.diff_cursor)
+    }
+
+    /// Scan backwards from `diff_cursor` to find the nearest preceding Hunk
+    /// line's text. Returns empty string if none found.
+    pub fn current_hunk_header(&self) -> String {
+        let end = self.diff_cursor.min(self.diff.len().saturating_sub(1));
+        for i in (0..=end).rev() {
+            if self.diff[i].kind == LineKind::Hunk {
+                return self.diff[i].text.clone();
+            }
+        }
+        String::new()
+    }
+
+    /// Open the comment modal for the current diff line.
+    /// Only activates when Diff focused, a file is selected, and the current
+    /// line has a new_lineno and is not itself a Hunk header.
+    pub fn start_comment(&mut self) {
+        if self.focus != Pane::Diff {
+            return;
+        }
+        let Some(file) = self.selected_path().cloned() else {
+            self.status_msg = Some("comment: no file selected".to_string());
+            return;
+        };
+        let Some(dl) = self.diff.get(self.diff_cursor) else {
+            self.status_msg = Some("comment: place cursor on a line".to_string());
+            return;
+        };
+        if dl.kind == LineKind::Hunk {
+            self.status_msg = Some("comment: place cursor on a line".to_string());
+            return;
+        }
+        let Some(line_no) = dl.new_lineno else {
+            self.status_msg = Some("comment: place cursor on a line".to_string());
+            return;
+        };
+        let hunk = self.current_hunk_header();
+        let existing = self.comments.get(&file, line_no).map(|c| c.text.clone()).unwrap_or_default();
+        self.input = Some(InputState {
+            buffer: existing,
+            target_file: file,
+            target_line: line_no,
+            target_hunk: hunk,
+        });
+    }
+
+    pub fn input_active(&self) -> bool {
+        self.input.is_some()
+    }
+
+    /// Push a character to the input buffer.
+    pub fn input_push(&mut self, ch: char) {
+        if let Some(ref mut s) = self.input {
+            s.buffer.push(ch);
+        }
+    }
+
+    /// Remove the last character from the input buffer.
+    pub fn input_backspace(&mut self) {
+        if let Some(ref mut s) = self.input {
+            s.buffer.pop();
+        }
+    }
+
+    /// Push a newline to the input buffer.
+    pub fn input_newline(&mut self) {
+        if let Some(ref mut s) = self.input {
+            s.buffer.push('\n');
+        }
+    }
+
+    /// Cancel the input modal without saving.
+    pub fn input_cancel(&mut self) {
+        self.input = None;
+    }
+
+    /// Finalise the input: takes the InputState, clears `self.input`,
+    /// and returns `(file, line, hunk, text)` so the caller can
+    /// decide whether to set or remove the comment.
+    pub fn input_commit(&mut self) -> Option<(PathBuf, u32, String, String)> {
+        let s = self.input.take()?;
+        Some((s.target_file, s.target_line, s.target_hunk, s.buffer))
+    }
+
+    /// Whether `line` has a comment attached.
+    pub fn has_comment(&self, line: &DiffLine) -> bool {
+        if let Some(n) = line.new_lineno {
+            if let Some(file) = self.selected_path() {
+                return self.comments.get(file, n).is_some();
+            }
+        }
+        false
+    }
+
+    /// Return the comment text for `line`, if any.
+    pub fn comment_text_for<'a>(&'a self, line: &DiffLine) -> Option<&'a str> {
+        let n = line.new_lineno?;
+        let file = self.selected_path()?;
+        self.comments.get(file, n).map(|c| c.text.as_str())
     }
 }
 
@@ -636,5 +756,129 @@ mod tests {
         app.toggle_files();
         assert_eq!(app.show_files, true);
         assert_eq!(app.focus, Pane::Files);
+    }
+
+    // ── Comment input tests ───────────────────────────────────────────────
+
+    /// Build an App focused on Diff with a hunk + add line diff loaded.
+    fn app_with_add_diff() -> App {
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.selected = 1; // select a.rs row
+        app.focus = Pane::Diff;
+        app.set_diff(vec![
+            DiffLine {
+                kind: LineKind::Hunk,
+                text: "@@ -1,4 +1,8 @@".into(),
+                old_lineno: None,
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "let x = 1;".into(),
+                old_lineno: None,
+                new_lineno: Some(2),
+            },
+        ]);
+        app.diff_cursor = 1; // cursor on the Add line
+        app
+    }
+
+    #[test]
+    fn start_comment_sets_input_with_correct_target() {
+        let mut app = app_with_add_diff();
+        app.start_comment();
+        assert!(app.input.is_some());
+        let input = app.input.as_ref().unwrap();
+        assert_eq!(input.target_file, PathBuf::from("a.rs"));
+        assert_eq!(input.target_line, 2);
+        assert_eq!(input.target_hunk, "@@ -1,4 +1,8 @@");
+        assert_eq!(input.buffer, "");
+    }
+
+    #[test]
+    fn start_comment_prefills_buffer_with_existing_comment() {
+        let mut app = app_with_add_diff();
+        // pre-load a comment for a.rs line 2
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            2,
+            "@@ -1,4 +1,8 @@".to_string(),
+            "existing note".to_string(),
+        );
+        app.start_comment();
+        let input = app.input.as_ref().unwrap();
+        assert_eq!(input.buffer, "existing note");
+    }
+
+    #[test]
+    fn start_comment_does_nothing_on_hunk_line() {
+        let mut app = app_with_add_diff();
+        app.diff_cursor = 0; // cursor on Hunk line
+        app.start_comment();
+        assert!(app.input.is_none());
+    }
+
+    #[test]
+    fn start_comment_does_nothing_when_not_diff_focused() {
+        let mut app = app_with_add_diff();
+        app.focus = Pane::Files;
+        app.start_comment();
+        assert!(app.input.is_none());
+    }
+
+    #[test]
+    fn input_push_backspace_newline_mutate_buffer() {
+        let mut app = app_with_add_diff();
+        app.start_comment();
+        app.input_push('h');
+        app.input_push('i');
+        assert_eq!(app.input.as_ref().unwrap().buffer, "hi");
+        app.input_newline();
+        assert_eq!(app.input.as_ref().unwrap().buffer, "hi\n");
+        app.input_push('!');
+        assert_eq!(app.input.as_ref().unwrap().buffer, "hi\n!");
+        app.input_backspace();
+        assert_eq!(app.input.as_ref().unwrap().buffer, "hi\n");
+        app.input_backspace();
+        assert_eq!(app.input.as_ref().unwrap().buffer, "hi");
+    }
+
+    #[test]
+    fn input_commit_returns_tuple_and_clears_input() {
+        let mut app = app_with_add_diff();
+        app.start_comment();
+        app.input_push('g');
+        app.input_push('o');
+        let result = app.input_commit();
+        assert!(result.is_some());
+        let (file, line, hunk, text) = result.unwrap();
+        assert_eq!(file, PathBuf::from("a.rs"));
+        assert_eq!(line, 2);
+        assert_eq!(hunk, "@@ -1,4 +1,8 @@");
+        assert_eq!(text, "go");
+        // input cleared
+        assert!(app.input.is_none());
+    }
+
+    #[test]
+    fn current_hunk_header_finds_preceding_hunk() {
+        let mut app = app_with_add_diff();
+        app.diff_cursor = 1; // past the Hunk line at index 0
+        let hunk = app.current_hunk_header();
+        assert_eq!(hunk, "@@ -1,4 +1,8 @@");
+    }
+
+    #[test]
+    fn current_hunk_header_returns_empty_when_no_hunk() {
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.focus = Pane::Diff;
+        app.selected = 1;
+        app.set_diff(vec![
+            DiffLine { kind: LineKind::Context, text: "ctx".into(), old_lineno: Some(1), new_lineno: Some(1) },
+        ]);
+        app.diff_cursor = 0;
+        assert_eq!(app.current_hunk_header(), "");
     }
 }
