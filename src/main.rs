@@ -198,7 +198,7 @@ fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
             app.move_selection(delta);
             refresh_diff(repo, app);
         }
-        Pane::Diff => app.scroll_diff(delta),
+        Pane::Diff => app.move_diff_cursor(delta),
     }
 }
 

@@ -4,10 +4,20 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, LineKind, Pane, Section};
+use crate::app::{App, LineKind, Pane, Section, Status};
 use crate::highlight::highlight_code;
 use crate::theme;
 use crate::tree::RowKind;
+
+fn status_letter(status: Status) -> (&'static str, ratatui::style::Color) {
+    match status {
+        Status::Added => ("A", theme::TICK),
+        Status::Modified => ("M", theme::YELLOW),
+        Status::Deleted => ("D", theme::RED),
+        Status::Renamed => ("R", theme::BLUE),
+        Status::Other => (" ", theme::ACCENT_DIM),
+    }
+}
 
 fn gutter(dl: &crate::app::DiffLine) -> String {
     let n = dl.new_lineno.or(dl.old_lineno);
@@ -73,15 +83,18 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
                 }
                 RowKind::File { section, file_index } => {
                     let files = app.section_files(*section);
-                    let file_path = &files[*file_index].path;
+                    let fc = &files[*file_index];
+                    let file_path = &fc.path;
                     let (mark, mark_style) = if app.is_reviewed_path(file_path) {
                         ("✓ ", Style::default().fg(theme::TICK))
                     } else {
                         ("○ ", Style::default().fg(theme::ACCENT_DIM))
                     };
+                    let (letter, letter_color) = status_letter(fc.status);
                     let icon = crate::icons::icon_for(file_path);
                     let line = Line::from(vec![
                         Span::raw(indent),
+                        Span::styled(format!("{} ", letter), Style::default().fg(letter_color)),
                         Span::styled(mark, mark_style),
                         Span::raw(format!("{} {}", icon, row.name)),
                     ]);
@@ -132,11 +145,15 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme::PLACEHOLDER),
         ))]
     } else {
+        let page = area.height.saturating_sub(2) as usize;
+        let scroll = if app.diff_cursor >= page { app.diff_cursor + 1 - page } else { 0 };
         app.diff
             .iter()
-            .skip(app.diff_scroll)
-            .take(area.height.saturating_sub(2) as usize)
-            .map(|dl| {
+            .enumerate()
+            .skip(scroll)
+            .take(page)
+            .map(|(idx, dl)| {
+                let is_cursor = idx == app.diff_cursor;
                 let bg = match dl.kind {
                     LineKind::Add => Some(theme::ADD_BG),
                     LineKind::Del => Some(theme::DEL_BG),
@@ -144,10 +161,11 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                 };
                 if dl.kind == LineKind::Hunk {
                     let shifted: String = dl.text.chars().skip(app.diff_hscroll).collect();
-                    return Line::from(Span::styled(
-                        shifted,
-                        Style::default().fg(theme::HUNK),
-                    ));
+                    let mut span = Span::styled(shifted, Style::default().fg(theme::HUNK));
+                    if is_cursor {
+                        span.style = span.style.bg(theme::SELECTED_BG);
+                    }
+                    return Line::from(span);
                 }
                 let gutter_span = Span::styled(
                     gutter(dl),
@@ -155,14 +173,20 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                 );
                 let shifted: String = dl.text.chars().skip(app.diff_hscroll).collect();
                 let mut spans: Vec<Span> = highlight_code(&shifted, &ext);
-                if let Some(bg) = bg {
+                if is_cursor {
                     for s in spans.iter_mut() {
-                        s.style = s.style.bg(bg);
+                        s.style = s.style.bg(theme::SELECTED_BG);
                     }
-                }
-                if dl.kind == LineKind::Context {
-                    for s in spans.iter_mut() {
-                        s.style = s.style.add_modifier(Modifier::DIM);
+                } else {
+                    if let Some(bg) = bg {
+                        for s in spans.iter_mut() {
+                            s.style = s.style.bg(bg);
+                        }
+                    }
+                    if dl.kind == LineKind::Context {
+                        for s in spans.iter_mut() {
+                            s.style = s.style.add_modifier(Modifier::DIM);
+                        }
                     }
                 }
                 let mut all_spans = Vec::with_capacity(1 + spans.len());
@@ -227,8 +251,23 @@ mod tests {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = app_with_diff();
-        // diff is [Hunk "@@ -1 +1 @@", Add "let x = 1;"]; scroll past the hunk header.
-        app.diff_scroll = 1;
+        // diff is [Hunk "@@ -1 +1 @@", Add "let x = 1;"]; move cursor to index 1 (past the hunk header).
+        // With page=18, scroll = 1+1-18 = 0, so both lines show. To hide the hunk we need a tall
+        // enough diff where cursor pushes scroll forward. Build a diff with many context lines so
+        // cursor=1 forces scroll=0 still — instead verify by building a large diff and moving cursor.
+        // Simpler: extend diff so cursor at last line scrolls viewport past line 0.
+        app.set_diff({
+            let mut lines = vec![
+                crate::app::DiffLine { kind: LineKind::Hunk, text: "@@ -1 +1 @@".into(), old_lineno: None, new_lineno: None },
+            ];
+            // Add 18 context lines after hunk so page=18 and cursor=18 scrolls past the hunk.
+            for i in 1..=18u32 {
+                lines.push(crate::app::DiffLine { kind: LineKind::Add, text: "let x = 1;".into(), old_lineno: None, new_lineno: Some(i) });
+            }
+            lines
+        });
+        // With page=18, cursor=18 -> scroll = 18+1-18 = 1, so hunk at index 0 is hidden.
+        app.diff_cursor = 18;
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(!dump.contains("@@ -1 +1 @@"));
@@ -360,5 +399,32 @@ mod tests {
         let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(!dump.contains("zzz.rs")); // file pane hidden
         assert!(dump.contains("No changes") || dump.contains("Diff")); // diff pane present
+    }
+
+    #[test]
+    fn modified_file_shows_m_status_letter() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange { path: PathBuf::from("a.rs"), status: Status::Modified }];
+        let app = App::new(files, vec![], PathBuf::from("/repo"));
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains('M'), "Modified file should show 'M' status letter");
+        assert!(dump.contains("a.rs"), "filename should still appear");
+    }
+
+    #[test]
+    fn added_file_shows_a_deleted_shows_d() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![
+            FileChange { path: PathBuf::from("new.rs"), status: Status::Added },
+            FileChange { path: PathBuf::from("old.rs"), status: Status::Deleted },
+        ];
+        let app = App::new(files, vec![], PathBuf::from("/repo"));
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(dump.contains('A'), "Added file should show 'A' status letter");
+        assert!(dump.contains('D'), "Deleted file should show 'D' status letter");
     }
 }

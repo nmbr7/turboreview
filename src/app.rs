@@ -67,7 +67,7 @@ pub struct App {
     pub staged: Vec<FileChange>,
     pub selected: usize,
     pub diff: Vec<DiffLine>,
-    pub diff_scroll: usize,
+    pub diff_cursor: usize,
     pub diff_hscroll: usize,
     pub reviewed: HashSet<PathBuf>,
     pub status_msg: Option<String>,
@@ -94,7 +94,7 @@ impl App {
             staged,
             selected: 0,
             diff: Vec::new(),
-            diff_scroll: 0,
+            diff_cursor: 0,
             diff_hscroll: 0,
             reviewed: HashSet::new(),
             status_msg: None,
@@ -208,7 +208,7 @@ impl App {
 
     pub fn set_diff(&mut self, diff: Vec<DiffLine>) {
         self.diff = diff;
-        self.diff_scroll = 0;
+        self.diff_cursor = 0;
         self.diff_hscroll = 0;
     }
 
@@ -226,27 +226,26 @@ impl App {
         self.diff_hscroll = (next as usize).min(MAX_HSCROLL);
     }
 
-    pub fn scroll_diff(&mut self, delta: isize) {
+    pub fn move_diff_cursor(&mut self, delta: isize) {
         if self.diff.is_empty() {
-            self.diff_scroll = 0;
+            self.diff_cursor = 0;
             return;
         }
         let max = self.diff.len() as isize - 1;
-        let next = (self.diff_scroll as isize + delta).clamp(0, max);
-        self.diff_scroll = next as usize;
+        self.diff_cursor = (self.diff_cursor as isize + delta).clamp(0, max) as usize;
     }
 
     pub fn to_top(&mut self) {
         match self.focus {
             Pane::Files => self.selected = 0,
-            Pane::Diff => self.diff_scroll = 0,
+            Pane::Diff => self.diff_cursor = 0,
         }
     }
 
     pub fn to_bottom(&mut self) {
         match self.focus {
             Pane::Files => self.selected = self.rows.len().saturating_sub(1),
-            Pane::Diff => self.diff_scroll = self.diff.len().saturating_sub(1),
+            Pane::Diff => self.diff_cursor = self.diff.len().saturating_sub(1),
         }
     }
 
@@ -343,18 +342,18 @@ mod tests {
     }
 
     #[test]
-    fn diff_scroll_clamps_and_gg_g() {
+    fn diff_cursor_clamps_and_gg_g() {
         let mut app = sample();
         app.set_diff(vec![DiffLine::context("x", 1, 1); 5]);
         app.focus = Pane::Diff;
-        app.scroll_diff(-3);
-        assert_eq!(app.diff_scroll, 0);
-        app.scroll_diff(100);
-        assert_eq!(app.diff_scroll, 4); // last index
+        app.move_diff_cursor(-3);
+        assert_eq!(app.diff_cursor, 0);
+        app.move_diff_cursor(100);
+        assert_eq!(app.diff_cursor, 4); // last index
         app.to_top();
-        assert_eq!(app.diff_scroll, 0);
+        assert_eq!(app.diff_cursor, 0);
         app.to_bottom();
-        assert_eq!(app.diff_scroll, 4);
+        assert_eq!(app.diff_cursor, 4);
     }
 
     #[test]
@@ -369,14 +368,29 @@ mod tests {
     }
 
     #[test]
-    fn set_diff_resets_scroll() {
+    fn set_diff_resets_cursor() {
         let mut app = sample();
         app.set_diff(vec![DiffLine::context("x", 1, 1); 5]);
         app.focus = Pane::Diff;
-        app.scroll_diff(3);
-        assert_eq!(app.diff_scroll, 3);
+        app.move_diff_cursor(3);
+        assert_eq!(app.diff_cursor, 3);
         app.set_diff(vec![DiffLine::context("y", 1, 1); 2]);
-        assert_eq!(app.diff_scroll, 0);
+        assert_eq!(app.diff_cursor, 0);
+    }
+
+    #[test]
+    fn diff_cursor_moves_and_clamps() {
+        let mut app = sample();
+        app.set_diff(vec![DiffLine::context("x", 1, 1); 5]);
+        app.focus = Pane::Diff;
+        app.move_diff_cursor(-3);
+        assert_eq!(app.diff_cursor, 0);
+        app.move_diff_cursor(100);
+        assert_eq!(app.diff_cursor, 4);
+        app.to_top();
+        assert_eq!(app.diff_cursor, 0);
+        app.to_bottom();
+        assert_eq!(app.diff_cursor, 4);
     }
 
     #[test]

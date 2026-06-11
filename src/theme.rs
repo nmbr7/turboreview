@@ -26,6 +26,15 @@ pub const HUNK: Color = Color::Rgb(0x89, 0xdc, 0xeb);
 /// Green — reviewed file tick (✓).
 pub const TICK: Color = Color::Rgb(0xa6, 0xe3, 0xa1); // catppuccin green
 
+/// Yellow — Modified file status letter "M".
+pub const YELLOW: Color = Color::Rgb(0xf9, 0xe2, 0xaf); // catppuccin yellow
+
+/// Red — Deleted file status letter "D".
+pub const RED: Color = Color::Rgb(0xf3, 0x8b, 0xa8); // catppuccin red
+
+/// Blue — Renamed file status letter "R".
+pub const BLUE: Color = Color::Rgb(0x89, 0xb4, 0xfa); // catppuccin blue
+
 #[cfg(test)]
 mod tests {
     use super::*;
