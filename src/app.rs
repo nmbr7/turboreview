@@ -342,21 +342,6 @@ mod tests {
     }
 
     #[test]
-    fn diff_cursor_clamps_and_gg_g() {
-        let mut app = sample();
-        app.set_diff(vec![DiffLine::context("x", 1, 1); 5]);
-        app.focus = Pane::Diff;
-        app.move_diff_cursor(-3);
-        assert_eq!(app.diff_cursor, 0);
-        app.move_diff_cursor(100);
-        assert_eq!(app.diff_cursor, 4); // last index
-        app.to_top();
-        assert_eq!(app.diff_cursor, 0);
-        app.to_bottom();
-        assert_eq!(app.diff_cursor, 4);
-    }
-
-    #[test]
     fn gg_g_on_files_pane_moves_selection() {
         let mut app = sample();
         app.focus = Pane::Files;

@@ -167,10 +167,12 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                     }
                     return Line::from(span);
                 }
-                let gutter_span = Span::styled(
-                    gutter(dl),
-                    Style::default().fg(theme::ACCENT_DIM),
-                );
+                let gutter_style = if is_cursor {
+                    Style::default().fg(theme::ACCENT_DIM).bg(theme::SELECTED_BG)
+                } else {
+                    Style::default().fg(theme::ACCENT_DIM)
+                };
+                let gutter_span = Span::styled(gutter(dl), gutter_style);
                 let shifted: String = dl.text.chars().skip(app.diff_hscroll).collect();
                 let mut spans: Vec<Span> = highlight_code(&shifted, &ext);
                 if is_cursor {
@@ -251,11 +253,7 @@ mod tests {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = app_with_diff();
-        // diff is [Hunk "@@ -1 +1 @@", Add "let x = 1;"]; move cursor to index 1 (past the hunk header).
-        // With page=18, scroll = 1+1-18 = 0, so both lines show. To hide the hunk we need a tall
-        // enough diff where cursor pushes scroll forward. Build a diff with many context lines so
-        // cursor=1 forces scroll=0 still — instead verify by building a large diff and moving cursor.
-        // Simpler: extend diff so cursor at last line scrolls viewport past line 0.
+        // With the cursor near the end, the viewport scrolls so earlier lines are not rendered.
         app.set_diff({
             let mut lines = vec![
                 crate::app::DiffLine { kind: LineKind::Hunk, text: "@@ -1 +1 @@".into(), old_lineno: None, new_lineno: None },
