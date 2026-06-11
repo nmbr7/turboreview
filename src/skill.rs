@@ -6,6 +6,23 @@ comments while reviewing a git diff. Comments are stored as JSON files under
 the requested code changes, then write a response and update each comment's
 status — all by editing the appropriate JSON file.
 
+## Setup (in the target repository)
+
+`turboreview` keeps all of its review state in a `.turboreview/` directory at
+the root of the git repository being reviewed. Run it from inside the repo:
+
+    turboreview            # review the current repo
+    turboreview /path/to/repo
+
+This state is local review metadata, not part of the project's source. Add it to
+the repository's `.gitignore` so it is never committed:
+
+    # .gitignore
+    .turboreview/
+
+If a `.gitignore` already exists, append the `.turboreview/` line; otherwise
+create one. Do this once per repository.
+
 ## File locations
 
 ### Working-tree review (Changes view)

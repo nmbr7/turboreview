@@ -355,7 +355,10 @@ impl App {
     /// Toggle the comment pane. If hiding while Comments has focus, move focus to Diff.
     pub fn toggle_comment_pane(&mut self) {
         self.show_comments = !self.show_comments;
-        if !self.show_comments && self.focus == Pane::Comments {
+        if self.show_comments {
+            // Opening the pane focuses it so it can be navigated immediately.
+            self.focus = Pane::Comments;
+        } else if self.focus == Pane::Comments {
             self.focus = Pane::Diff;
         }
     }
@@ -1584,6 +1587,15 @@ mod tests {
         assert!(app.show_comments);
         app.toggle_comment_pane();
         assert!(!app.show_comments);
+    }
+
+    #[test]
+    fn toggle_comment_pane_focuses_comments_when_opening() {
+        let mut app = sample();
+        app.focus = Pane::Files;
+        app.toggle_comment_pane(); // opens
+        assert!(app.show_comments);
+        assert_eq!(app.focus, Pane::Comments);
     }
 
     #[test]
