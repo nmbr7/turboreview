@@ -72,6 +72,17 @@ Each element of the `comments.json` array is a comment object:
 | `stale`          | bool            | true if turboreview could not confidently relocate the comment |
 | `status`         | string          | one of `open`, `resolved`, `wontfix`, `needs_info`             |
 | `response`       | string or null  | your reply to the reviewer                                     |
+| `updated`        | number          | unix epoch seconds of the last edit (0 for legacy comments without it) |
+
+## Archive
+
+Resolved comments may be moved to `.turboreview/archive/comments-archive.jsonl` to
+keep the active `comments.json` small. This happens automatically on startup for
+resolved comments older than 14 days, or manually when the reviewer presses `A`.
+
+The archive file is **append-only JSON lines** — one serialized comment object per
+line, same schema as the `comments.json` array elements above. Agents normally only
+need the active `comments.json`; the archive is historical only.
 
 ## Your workflow
 
@@ -148,6 +159,14 @@ mod tests {
         assert!(
             SKILL_DOC.contains("commits/<sha>"),
             "SKILL_DOC must describe per-commit path layout"
+        );
+        assert!(
+            SKILL_DOC.contains("archive"),
+            "SKILL_DOC must mention the archive"
+        );
+        assert!(
+            SKILL_DOC.contains("updated"),
+            "SKILL_DOC must mention the updated field"
         );
     }
 }

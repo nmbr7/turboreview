@@ -66,6 +66,40 @@ pub fn save_theme(repo_root: &Path, theme: crate::theme::Theme) -> Result<()> {
     Ok(())
 }
 
+const ARCHIVE_DAYS: i64 = 14;
+
+/// Returns the archive file path: `<repo_root>/.turboreview/archive/comments-archive.jsonl`.
+pub fn archive_path(repo_root: &Path) -> PathBuf {
+    worktree_dir(repo_root).join("archive").join("comments-archive.jsonl")
+}
+
+/// Append archived comments as JSON lines to the archive file. Best-effort; errors returned.
+pub fn append_archive(repo_root: &Path, comments: &[crate::comments::Comment]) -> anyhow::Result<()> {
+    if comments.is_empty() {
+        return Ok(());
+    }
+    let path = archive_path(repo_root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    for c in comments {
+        let mut line = serde_json::to_string(c)?;
+        line.push('\n');
+        f.write_all(line.as_bytes())?;
+    }
+    Ok(())
+}
+
+/// Returns the cutoff unix epoch seconds for auto-archiving: `now - ARCHIVE_DAYS * 86400`.
+pub fn archive_cutoff_secs(now: i64) -> i64 {
+    now - ARCHIVE_DAYS * 86400
+}
+
 /// Append one line to `<repo_root>/.turboreview/comment-log.jsonl`.
 /// Best-effort; errors are returned but the caller is expected to ignore them.
 pub fn append_comment_log(
@@ -96,7 +130,7 @@ pub fn append_comment_log(
     Ok(())
 }
 
-fn now_secs() -> i64 {
+pub fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -107,6 +141,133 @@ fn now_secs() -> i64 {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    // ─── TDD: archive_path, append_archive, archive_cutoff_secs ──────────────
+
+    #[test]
+    fn archive_path_is_under_dot_turboreview_archive() {
+        let root = PathBuf::from("/my/repo");
+        let p = archive_path(&root);
+        assert_eq!(
+            p,
+            PathBuf::from("/my/repo/.turboreview/archive/comments-archive.jsonl")
+        );
+    }
+
+    #[test]
+    fn append_archive_writes_one_json_line_per_comment() {
+        use crate::comments::{Comment, CommentStatus};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let comments = vec![
+            Comment {
+                file: std::path::PathBuf::from("a.rs"),
+                line: 1,
+                hunk: "@@".to_string(),
+                text: "note one".to_string(),
+                line_text: "fn a()".to_string(),
+                context_before: vec![],
+                context_after: vec![],
+                orig_line: 1,
+                stale: false,
+                status: CommentStatus::Resolved,
+                response: None,
+                updated: 1000,
+            },
+            Comment {
+                file: std::path::PathBuf::from("b.rs"),
+                line: 5,
+                hunk: "@@".to_string(),
+                text: "note two".to_string(),
+                line_text: "fn b()".to_string(),
+                context_before: vec![],
+                context_after: vec![],
+                orig_line: 5,
+                stale: false,
+                status: CommentStatus::Resolved,
+                response: None,
+                updated: 2000,
+            },
+        ];
+
+        append_archive(root, &comments).unwrap();
+
+        let archive = archive_path(root);
+        assert!(archive.exists(), "archive file must exist");
+        let contents = std::fs::read_to_string(&archive).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2, "must write one line per comment");
+
+        // Each line must be valid JSON and contain the comment text
+        let v1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(v1["text"], "note one");
+        let v2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(v2["text"], "note two");
+    }
+
+    #[test]
+    fn append_archive_is_append_only() {
+        use crate::comments::{Comment, CommentStatus};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let c1 = Comment {
+            file: std::path::PathBuf::from("a.rs"),
+            line: 1,
+            hunk: "@@".to_string(),
+            text: "first".to_string(),
+            line_text: "".to_string(),
+            context_before: vec![],
+            context_after: vec![],
+            orig_line: 1,
+            stale: false,
+            status: CommentStatus::Resolved,
+            response: None,
+            updated: 100,
+        };
+        let c2 = Comment {
+            file: std::path::PathBuf::from("b.rs"),
+            line: 2,
+            hunk: "@@".to_string(),
+            text: "second".to_string(),
+            line_text: "".to_string(),
+            context_before: vec![],
+            context_after: vec![],
+            orig_line: 2,
+            stale: false,
+            status: CommentStatus::Resolved,
+            response: None,
+            updated: 200,
+        };
+
+        append_archive(root, &[c1]).unwrap();
+        append_archive(root, &[c2]).unwrap();
+
+        let contents = std::fs::read_to_string(archive_path(root)).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2, "second call must append, not overwrite");
+        let v1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(v1["text"], "first");
+        let v2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(v2["text"], "second");
+    }
+
+    #[test]
+    fn append_archive_empty_slice_does_nothing() {
+        use crate::comments::Comment;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        append_archive(root, &[] as &[Comment]).unwrap();
+        assert!(!archive_path(root).exists(), "empty slice must not create archive file");
+    }
+
+    #[test]
+    fn archive_cutoff_secs_is_14_days_before_now() {
+        let now = 1_000_000_i64;
+        let cutoff = archive_cutoff_secs(now);
+        assert_eq!(cutoff, now - 14 * 86400);
+    }
 
     #[test]
     fn worktree_dir_is_dot_turboreview() {

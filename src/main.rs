@@ -40,6 +40,13 @@ fn main() -> Result<()> {
     let wt_dir = storage::worktree_dir(&root);
     app.reviewed = review::load(&wt_dir).unwrap_or_default();
     app.comments = comments::Comments::load(&wt_dir).unwrap_or_default();
+    // Auto-archive resolved comments older than 14 days on startup
+    let cutoff = storage::archive_cutoff_secs(storage::now_secs());
+    let old = app.comments.drain_resolved_older_than(cutoff);
+    if !old.is_empty() {
+        let _ = storage::append_archive(&root, &old);
+        let _ = app.comments.save(&wt_dir);
+    }
     app.commits = repo.log(200).unwrap_or_default();
     // Load persisted theme preference
     app.theme = storage::load_theme(&root);
@@ -203,6 +210,7 @@ fn run(
                                         committed.line_text.clone(),
                                         committed.context_before.clone(),
                                         committed.context_after.clone(),
+                                        storage::now_secs(),
                                     );
                                 }
                                 // Save to the current scope directory
@@ -423,6 +431,21 @@ fn run(
                     (KeyCode::Char('T'), _) => {
                         app.toggle_theme();
                         let _ = storage::save_theme(&app.repo_root, app.theme);
+                    }
+                    // A (capital) — archive all resolved comments in the current scope
+                    (KeyCode::Char('A'), _) => {
+                        let drained = app.comments.drain_resolved();
+                        let n = drained.len();
+                        if !drained.is_empty() {
+                            let _ = storage::append_archive(&app.repo_root, &drained);
+                            // Persist the shrunken active comments to the current scope
+                            let dir = storage::scope_dir(&app.repo_root, &app.comment_scope);
+                            let _ = app.comments.save(&dir);
+                            // Clamp comment-pane selection
+                            let clen = app.comment_rows().len();
+                            app.comment_selected = app.comment_selected.min(clen.saturating_sub(1));
+                        }
+                        app.status_msg = Some(format!("archived {n} resolved comment(s)"));
                     }
                     // ? toggles the help overlay
                     (KeyCode::Char('?'), _) => app.toggle_help(),

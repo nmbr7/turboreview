@@ -1062,6 +1062,7 @@ mod tests {
             "let x = 1;".to_string(),
             vec![],
             vec![],
+            0,
         );
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal
@@ -1125,6 +1126,7 @@ mod tests {
             "added_line".to_string(),
             vec![],
             vec![],
+            0,
         );
 
         terminal.draw(|f| render(f, &app)).unwrap();
@@ -1173,6 +1175,7 @@ mod tests {
             "fn main() {}".to_string(),
             vec![],
             vec![],
+            0,
         );
 
         terminal.draw(|f| render(f, &app)).unwrap();
@@ -1254,6 +1257,7 @@ mod tests {
             "fn foo() {}".to_string(),
             vec![],
             vec![],
+            0,
         );
         app.comments.items[0].status = CommentStatus::Resolved;
         app.comments.items[0].response = Some("Fixed it".to_string());
@@ -1303,6 +1307,7 @@ mod tests {
             "let y = 2;".to_string(),
             vec![],
             vec![],
+            0,
         );
         // Mark it stale manually (simulating relocation failure)
         app.comments.items[0].stale = true;
@@ -1345,6 +1350,7 @@ mod tests {
             "fn foo()".to_string(),
             vec![],
             vec![],
+            0,
         );
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal
@@ -1386,6 +1392,7 @@ mod tests {
             "fn x()".to_string(),
             vec![],
             vec![],
+            0,
         );
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal
@@ -1476,6 +1483,7 @@ mod tests {
             stale: false,
             status: crate::comments::CommentStatus::Open,
             response: Some(String::new()),
+            updated: 0,
         });
         app.set_diff(vec![DiffLine {
             kind: LineKind::Add,

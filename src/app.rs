@@ -420,7 +420,8 @@ impl App {
 
     /// Build the displayable rows for the comment-list pane.
     /// Groups items by status in order: Open, NeedsInfo, Wontfix, Resolved.
-    /// Each non-empty group gets a Header(status, count) followed by Item(i) for each match.
+    /// Each non-empty group gets a Header(status, count) followed by Item(i) for each match,
+    /// sorted by `updated` descending (newest first). Ties are stable by original index.
     pub fn comment_rows(&self) -> Vec<CommentRow> {
         use crate::comments::CommentStatus;
         let order = [
@@ -431,7 +432,7 @@ impl App {
         ];
         let mut rows = Vec::new();
         for status in &order {
-            let indices: Vec<usize> = self
+            let mut indices: Vec<usize> = self
                 .comments
                 .items
                 .iter()
@@ -440,6 +441,12 @@ impl App {
                 .map(|(i, _)| i)
                 .collect();
             if !indices.is_empty() {
+                // Sort by updated descending (newest first); stable by original index for ties.
+                indices.sort_by(|&a, &b| {
+                    self.comments.items[b]
+                        .updated
+                        .cmp(&self.comments.items[a].updated)
+                });
                 rows.push(CommentRow::Header(*status, indices.len()));
                 for i in indices {
                     rows.push(CommentRow::Item(i));
@@ -1238,6 +1245,7 @@ mod tests {
             "let x = 1;".to_string(),
             vec![],
             vec![],
+            0,
         );
         app.start_comment();
         let input = app.input.as_ref().unwrap();
@@ -1736,6 +1744,7 @@ mod tests {
             "fn a()".to_string(),
             vec![],
             vec![],
+            0,
         );
         // items[0] is Open by default
         app.comments.set(
@@ -1746,6 +1755,7 @@ mod tests {
             "fn b()".to_string(),
             vec![],
             vec![],
+            0,
         );
         app.comments.items[1].status = crate::comments::CommentStatus::Resolved;
         app.comments.set(
@@ -1756,6 +1766,7 @@ mod tests {
             "fn c()".to_string(),
             vec![],
             vec![],
+            0,
         );
         app.comments.items[2].status = crate::comments::CommentStatus::Wontfix;
         app.comments.set(
@@ -1766,6 +1777,7 @@ mod tests {
             "fn d()".to_string(),
             vec![],
             vec![],
+            0,
         );
         app.comments.items[3].status = crate::comments::CommentStatus::NeedsInfo;
         app
@@ -1845,6 +1857,7 @@ mod tests {
             "fn a()".to_string(),
             vec![],
             vec![],
+            0,
         );
         let rows = app.comment_rows();
         // No Resolved header
@@ -2018,6 +2031,62 @@ mod tests {
         app.toggle_comment_pane();
         assert!(!app.show_comments);
         assert_eq!(app.focus, Pane::Diff);
+    }
+
+    // ── Part 2 TDD: sort within group by updated desc ────────────────────────
+
+    #[test]
+    fn comment_rows_within_open_group_sorted_by_updated_desc() {
+        let mut app = sample();
+        // Add two Open comments: one with updated=500 (older), one with updated=1500 (newer)
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            1,
+            "@@".to_string(),
+            "older comment".to_string(),
+            "fn a()".to_string(),
+            vec![],
+            vec![],
+            500,
+        );
+        // items[0].updated = 500
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            2,
+            "@@".to_string(),
+            "newer comment".to_string(),
+            "fn b()".to_string(),
+            vec![],
+            vec![],
+            1500,
+        );
+        // items[1].updated = 1500
+        let rows = app.comment_rows();
+        // Expected: Header(Open,2), Item(?newer), Item(?older)
+        // The newer-updated comment (items[1], updated=1500) should come first
+        assert_eq!(rows.len(), 3, "Header + 2 items");
+        assert!(matches!(rows[0], CommentRow::Header(crate::comments::CommentStatus::Open, 2)));
+        // First Item should be the one with updated=1500 (items index 1)
+        match rows[1] {
+            CommentRow::Item(idx) => {
+                assert_eq!(
+                    app.comments.items[idx].text,
+                    "newer comment",
+                    "first item in group must be the newer-updated comment"
+                );
+            }
+            _ => panic!("expected Item at rows[1]"),
+        }
+        match rows[2] {
+            CommentRow::Item(idx) => {
+                assert_eq!(
+                    app.comments.items[idx].text,
+                    "older comment",
+                    "second item in group must be the older-updated comment"
+                );
+            }
+            _ => panic!("expected Item at rows[2]"),
+        }
     }
 
     // ── CommentScope tests ─────────────────────────────────────────────────────
