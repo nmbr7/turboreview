@@ -30,6 +30,61 @@ fn gutter(dl: &crate::app::DiffLine) -> String {
     }
 }
 
+/// Word-wrap `text` to `width` columns. Each `\n`-delimited source line is wrapped
+/// independently; words longer than `width` are hard-split. An empty source line
+/// yields one empty visual line, so blank lines are preserved. `width` is clamped
+/// to at least 1. Returns the visual lines (no trailing newline).
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    for src_line in text.split('\n') {
+        if src_line.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut cur = String::new();
+        let mut cur_len = 0usize; // in chars
+        for word in src_line.split(' ') {
+            let wlen = word.chars().count();
+            // Hard-split a word longer than the full width.
+            if wlen > width {
+                if cur_len > 0 {
+                    out.push(std::mem::take(&mut cur));
+                    cur_len = 0;
+                }
+                let mut chunk = String::new();
+                for ch in word.chars() {
+                    if chunk.chars().count() == width {
+                        out.push(std::mem::take(&mut chunk));
+                    }
+                    chunk.push(ch);
+                }
+                if !chunk.is_empty() {
+                    cur = chunk;
+                    cur_len = cur.chars().count();
+                }
+                continue;
+            }
+            // +1 for the joining space when cur is non-empty.
+            let needed = if cur_len == 0 { wlen } else { cur_len + 1 + wlen };
+            if needed > width {
+                out.push(std::mem::take(&mut cur));
+                cur = word.to_string();
+                cur_len = wlen;
+            } else {
+                if cur_len > 0 {
+                    cur.push(' ');
+                    cur_len += 1;
+                }
+                cur.push_str(word);
+                cur_len += wlen;
+            }
+        }
+        out.push(cur);
+    }
+    out
+}
+
 pub fn render(frame: &mut Frame, app: &App) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -394,18 +449,25 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         let page = area.height.saturating_sub(2) as usize;
 
+        // Inline comment box body is indented by "    │ " (6 columns). Wrap comment and
+        // response text to the remaining inner width so long comments don't overflow.
+        let box_indent = 6usize;
+        let inner_w = area.width.saturating_sub(2) as usize; // minus the diff pane borders
+        let wrap_w = inner_w.saturating_sub(box_indent).max(1);
+
         // Compute the rendered height (diff line + its inline comment box lines) for a
         // given diff index, so we can scroll in rendered-line space and guarantee the
-        // cursor line AND its comment are always visible.
-        // comment box: 1 (top) + text_lines + (if response: 1 blank + response_lines) + 1 (bottom)
+        // cursor line AND its comment are always visible. Wrapped text height must match
+        // the body/response render below or scrolling drifts.
+        // comment box: 1 (top) + wrapped text + (if response: 1 blank + wrapped response) + 1 (bottom)
         let rendered_height = |i: usize| -> usize {
             let dl = &app.diff[i];
             let comment_lines = app
                 .comment_for(dl)
                 .map(|c| {
-                    let text_lines = c.text.lines().count().max(1);
+                    let text_lines = wrap_text(&c.text, wrap_w).len().max(1);
                     let response_lines = match c.response.as_deref() {
-                        Some(r) if !r.trim().is_empty() => 1 + r.lines().count(), // 1 blank separator + response text lines
+                        Some(r) if !r.trim().is_empty() => 1 + wrap_text(r, wrap_w).len(), // 1 blank separator + wrapped response
                         _ => 0,
                     };
                     1 + text_lines + response_lines + 1 // top + text + [blank+response] + bottom
@@ -528,13 +590,13 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                     result.push(Line::from(Span::styled(top_label, border_style)));
                     rendered_rows += 1;
                 }
-                // Body lines (reviewer's comment text)
-                for comment_line in c.text.lines() {
+                // Body lines (reviewer's comment text), wrapped to the box width.
+                for comment_line in wrap_text(&c.text, wrap_w) {
                     if rendered_rows >= page {
                         break;
                     }
                     let prefix = Span::styled("    │ ", body_style);
-                    let body = Span::styled(comment_line.to_string(), body_style);
+                    let body = Span::styled(comment_line, body_style);
                     result.push(Line::from(vec![prefix, body]));
                     rendered_rows += 1;
                 }
@@ -552,9 +614,9 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                         result.push(Line::from(Span::styled("    │ ", body_style)));
                         rendered_rows += 1;
                     }
-                    // Response lines
+                    // Response lines, wrapped to the box width (same height as the closure).
                     let mut first = true;
-                    for resp_line in resp.lines() {
+                    for resp_line in wrap_text(resp, wrap_w) {
                         if rendered_rows >= page {
                             break;
                         }
@@ -668,6 +730,7 @@ const HELP_LINES: &[(&str, &str)] = &[
     ("{ / }", "older / newer revision (in history overlay)"),
     ("/", "search within the diff"),
     ("n / N", "next / previous search match"),
+    ("a", "fold/unfold all directories"),
     ("z", "hide/show file pane"),
     ("C", "toggle comment-list pane"),
     ("< / >", "resize file pane"),
@@ -715,6 +778,33 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::path::PathBuf;
+
+    #[test]
+    fn wrap_text_wraps_long_lines_on_word_boundaries() {
+        let lines = wrap_text("the quick brown fox", 9);
+        // "the quick" (9), "brown fox" (9)
+        assert_eq!(lines, vec!["the quick".to_string(), "brown fox".to_string()]);
+        // No visual line exceeds the width.
+        assert!(lines.iter().all(|l| l.chars().count() <= 9));
+    }
+
+    #[test]
+    fn wrap_text_hard_splits_overlong_word() {
+        let lines = wrap_text("abcdefghij", 4);
+        assert_eq!(lines, vec!["abcd", "efgh", "ij"]);
+    }
+
+    #[test]
+    fn wrap_text_preserves_blank_lines_and_short_lines() {
+        let lines = wrap_text("hi\n\nbye", 10);
+        assert_eq!(lines, vec!["hi".to_string(), String::new(), "bye".to_string()]);
+    }
+
+    #[test]
+    fn wrap_text_clamps_zero_width_to_one() {
+        let lines = wrap_text("ab", 0);
+        assert_eq!(lines, vec!["a", "b"]);
+    }
 
     fn app_with_diff() -> App {
         let files = vec![FileChange {

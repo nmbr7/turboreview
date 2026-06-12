@@ -562,6 +562,11 @@ fn run(
                             load_scope(&app.repo_root.clone(), app);
                         }
                     }
+                    // a — smart fold-all: collapse every dir, or expand all if all collapsed.
+                    (KeyCode::Char('a'), _) => {
+                        app.toggle_fold_all();
+                        refresh_diff(repo, app);
+                    }
                     (KeyCode::Char('z'), _) => app.toggle_files(),
                     (KeyCode::Char('>'), _) | (KeyCode::Char('.'), _) => app.widen_files(),
                     (KeyCode::Char('<'), _) | (KeyCode::Char(','), _) => app.narrow_files(),

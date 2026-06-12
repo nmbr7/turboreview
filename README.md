@@ -73,6 +73,7 @@ Press `?` at any time for an in-app keybinding overlay.
 | `{` / `}`        | step to older / newer revision (in the history overlay)         |
 | `/`              | search within the current diff                                  |
 | `n` / `N`        | jump to next / previous search match                            |
+| `a`              | fold / unfold all directories in the file tree                 |
 | `z`              | hide / show the file pane (diff goes full-width)               |
 | `<` / `>`        | narrow / widen the file pane                                    |
 | `c`              | comment on the cursor line (opens a modal input box)            |

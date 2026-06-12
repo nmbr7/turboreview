@@ -604,6 +604,55 @@ impl App {
         }
     }
 
+    /// Which sections are shown in the current view (for fold-all enumeration).
+    fn active_sections(&self) -> Vec<Section> {
+        if self.in_commit_detail() {
+            vec![Section::Commit]
+        } else {
+            vec![Section::Unstaged, Section::Staged]
+        }
+    }
+
+    /// All `(section, dir_path)` keys for every directory ancestor of every file
+    /// in the active view's sections. Independent of current collapse state, so
+    /// it can both fully expand and fully collapse.
+    fn all_dir_keys(&self) -> HashSet<(Section, PathBuf)> {
+        let mut keys = HashSet::new();
+        for section in self.active_sections() {
+            for fc in self.section_files(section) {
+                let mut acc = PathBuf::new();
+                let comps: Vec<_> = fc.path.components().collect();
+                // Every component except the last (the file name) is a directory.
+                for comp in comps.iter().take(comps.len().saturating_sub(1)) {
+                    acc.push(comp);
+                    keys.insert((section, acc.clone()));
+                }
+            }
+        }
+        keys
+    }
+
+    /// Smart fold-all toggle. If any directory in the active view is currently
+    /// expanded, collapse them all; otherwise expand them all. No-op when there
+    /// are no directories.
+    pub fn toggle_fold_all(&mut self) {
+        let dirs = self.all_dir_keys();
+        if dirs.is_empty() {
+            return;
+        }
+        let any_expanded = dirs.iter().any(|k| !self.collapsed.contains(k));
+        if any_expanded {
+            for k in dirs {
+                self.collapsed.insert(k);
+            }
+        } else {
+            for k in &dirs {
+                self.collapsed.remove(k);
+            }
+        }
+        self.rebuild_rows();
+    }
+
     pub fn next_view(&mut self) {
         let prev = self.view;
         self.view = match self.view {
@@ -1189,6 +1238,70 @@ mod tests {
         app.selected = 1; // a.rs File row
         app.toggle_collapse();
         assert_eq!(app.rows.len(), initial_len);
+    }
+
+    #[test]
+    fn fold_all_collapses_then_expands_every_dir() {
+        let files = vec![
+            FileChange {
+                path: PathBuf::from("src/a/x.rs"),
+                status: Status::Modified,
+            },
+            FileChange {
+                path: PathBuf::from("src/b/y.rs"),
+                status: Status::Modified,
+            },
+            FileChange {
+                path: PathBuf::from("top.rs"),
+                status: Status::Modified,
+            },
+        ];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        // Fully expanded baseline: Header(U) + src + a + x.rs + b + y.rs + top.rs + Header(S) = 8
+        assert_eq!(app.rows.len(), 8);
+
+        // First press: collapse all. Nested dirs hidden; only top-level src + top.rs show.
+        app.toggle_fold_all();
+        // Header(U) + src(collapsed) + top.rs + Header(S) = 4
+        assert_eq!(app.rows.len(), 4);
+        // src, src/a, src/b all collapsed
+        assert!(app.collapsed.contains(&(Section::Unstaged, PathBuf::from("src"))));
+        assert!(app.collapsed.contains(&(Section::Unstaged, PathBuf::from("src/a"))));
+        assert!(app.collapsed.contains(&(Section::Unstaged, PathBuf::from("src/b"))));
+
+        // Second press: expand all → back to 8 rows.
+        app.toggle_fold_all();
+        assert_eq!(app.rows.len(), 8);
+        assert!(app.collapsed.is_empty());
+    }
+
+    #[test]
+    fn fold_all_with_partial_collapse_collapses_remaining() {
+        let files = vec![
+            FileChange {
+                path: PathBuf::from("src/a/x.rs"),
+                status: Status::Modified,
+            },
+            FileChange {
+                path: PathBuf::from("lib/b.rs"),
+                status: Status::Modified,
+            },
+        ];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        // Collapse only "lib" manually; "src"/"src/a" still expanded → fold-all should collapse all.
+        app.collapsed.insert((Section::Unstaged, PathBuf::from("lib")));
+        app.toggle_fold_all();
+        assert!(app.collapsed.contains(&(Section::Unstaged, PathBuf::from("src"))));
+        assert!(app.collapsed.contains(&(Section::Unstaged, PathBuf::from("src/a"))));
+        assert!(app.collapsed.contains(&(Section::Unstaged, PathBuf::from("lib"))));
+    }
+
+    #[test]
+    fn fold_all_no_dirs_is_noop() {
+        let mut app = sample(); // flat files, no dirs
+        let before = app.collapsed.len();
+        app.toggle_fold_all();
+        assert_eq!(app.collapsed.len(), before);
     }
 
     #[test]
