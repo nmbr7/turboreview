@@ -410,19 +410,25 @@ impl App {
         }
         let max = self.diff.len() as isize - 1;
         let mut pos = (self.diff_cursor as isize + delta).clamp(0, max);
-        // Skip hunk-header lines in the direction of travel: they are not a
-        // meaningful cursor target (can't comment on them) and resting on one
-        // makes the split view jump. Step `sign` until a non-hunk line.
+        // Lines the cursor should not rest on, in the direction of travel:
+        //  - Hunk headers (can't comment on them; resting makes split view jump).
+        //  - In side-by-side mode, Del (old) lines too: each del/add pair shares a
+        //    visual row whose new side is the comment target, so landing on the del
+        //    would highlight the same row twice. Comments aren't allowed on old
+        //    lines anyway, so the cursor tracks only the new side.
+        let skip = |k: LineKind| -> bool {
+            k == LineKind::Hunk || (self.split_diff && k == LineKind::Del)
+        };
         let step = if delta >= 0 { 1 } else { -1 };
-        while self.diff[pos as usize].kind == LineKind::Hunk {
+        while skip(self.diff[pos as usize].kind) {
             let next = pos + step;
             if next < 0 || next > max {
-                // Edge of the diff: reverse to find the nearest non-hunk line.
+                // Edge of the diff: reverse to find the nearest acceptable line.
                 let mut back = pos - step;
-                while back >= 0 && back <= max && self.diff[back as usize].kind == LineKind::Hunk {
+                while (0..=max).contains(&back) && skip(self.diff[back as usize].kind) {
                     back -= step;
                 }
-                if back >= 0 && back <= max {
+                if (0..=max).contains(&back) {
                     pos = back;
                 }
                 break;
@@ -1217,6 +1223,75 @@ mod tests {
         // Up: 4 -> skip hunk(3) -> land add(2)
         app.move_diff_cursor(-1);
         assert_eq!(app.diff_cursor, 2);
+    }
+
+    #[test]
+    fn move_diff_cursor_split_skips_del_lines() {
+        let mut app = sample();
+        app.focus = Pane::Diff;
+        app.split_diff = true;
+        // ctx(0) del(1) add(2) ctx(3)
+        app.set_diff(vec![
+            DiffLine {
+                kind: LineKind::Context,
+                text: "c0".into(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+            },
+            DiffLine {
+                kind: LineKind::Del,
+                text: "old".into(),
+                old_lineno: Some(2),
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "new".into(),
+                old_lineno: None,
+                new_lineno: Some(2),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "c3".into(),
+                old_lineno: Some(3),
+                new_lineno: Some(3),
+            },
+        ]);
+        app.diff_cursor = 0;
+        // Down: skip del(1) -> land add(2)
+        app.move_diff_cursor(1);
+        assert_eq!(app.diff_cursor, 2);
+        // Down: ctx(3)
+        app.move_diff_cursor(1);
+        assert_eq!(app.diff_cursor, 3);
+        // Up from ctx(3): skip del(1) -> add(2)
+        app.move_diff_cursor(-1);
+        assert_eq!(app.diff_cursor, 2);
+    }
+
+    #[test]
+    fn move_diff_cursor_unified_does_not_skip_del() {
+        let mut app = sample();
+        app.focus = Pane::Diff;
+        app.split_diff = false; // unified
+        app.set_diff(vec![
+            DiffLine {
+                kind: LineKind::Context,
+                text: "c0".into(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+            },
+            DiffLine {
+                kind: LineKind::Del,
+                text: "old".into(),
+                old_lineno: Some(2),
+                new_lineno: None,
+            },
+        ]);
+        app.diff_cursor = 0;
+        // Unified: del IS a valid cursor target.
+        app.move_diff_cursor(1);
+        assert_eq!(app.diff_cursor, 1);
     }
 
     #[test]
