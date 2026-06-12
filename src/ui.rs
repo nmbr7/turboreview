@@ -327,10 +327,21 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         format!("ctx {}", app.context_lines)
     };
-    let title = app
-        .selected_path()
-        .map(|p| format!(" Diff: {} ({}) ", p.display(), ctx_label))
-        .unwrap_or_else(|| " Diff ".to_string());
+    let title = if let Some(commit) = app.history_current_commit() {
+        let h = app.history.as_ref().unwrap();
+        format!(
+            " {} @ {} ({}/{}) — {} ",
+            h.file.display(),
+            commit.short,
+            h.idx,
+            h.commits.len(),
+            commit.summary,
+        )
+    } else {
+        app.selected_path()
+            .map(|p| format!(" Diff: {} ({}) ", p.display(), ctx_label))
+            .unwrap_or_else(|| " Diff ".to_string())
+    };
 
     let lines: Vec<Line> = if app.view == ViewMode::Commits && app.open_commit.is_none() {
         vec![Line::from(Span::styled(
@@ -676,6 +687,39 @@ mod tests {
             },
         ]);
         app
+    }
+
+    #[test]
+    fn diff_title_shows_history_revision() {
+        use crate::app::{CommentScope, FileHistory};
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = app_with_diff();
+        app.selected = 1;
+        app.focus = Pane::Diff;
+        app.history = Some(FileHistory {
+            file: std::path::PathBuf::from("a.rs"),
+            commits: vec![crate::git::CommitInfo {
+                id: "deadbeefcafebabe".into(),
+                short: "deadbeef".into(),
+                summary: "old change".into(),
+                author: "t".into(),
+                time: "2024-01-01".into(),
+            }],
+            idx: 1,
+            baseline_scope: CommentScope::Worktree,
+        });
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(dump.contains("deadbeef"), "title should show short sha");
+        assert!(dump.contains("1/1"), "title should show revision position");
+        assert!(dump.contains("old change"), "title should show summary");
     }
 
     #[test]
