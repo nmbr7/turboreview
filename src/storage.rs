@@ -254,6 +254,30 @@ mod tests {
     }
 
     #[test]
+    fn append_archive_errors_when_path_unwritable() {
+        use crate::comments::{Comment, CommentStatus};
+        let dir = tempdir().unwrap();
+        // Create a FILE where the .turboreview dir should be, so create_dir_all fails.
+        std::fs::write(dir.path().join(".turboreview"), b"x").unwrap();
+        let c = Comment {
+            file: std::path::PathBuf::from("a.rs"),
+            line: 1,
+            hunk: "@@".to_string(),
+            text: "test".to_string(),
+            line_text: "fn a()".to_string(),
+            context_before: vec![],
+            context_after: vec![],
+            orig_line: 1,
+            stale: false,
+            status: CommentStatus::Resolved,
+            response: None,
+            updated: 1000,
+        };
+        let res = append_archive(dir.path(), &[c]);
+        assert!(res.is_err(), "append_archive must error when the dir can't be created");
+    }
+
+    #[test]
     fn append_archive_empty_slice_does_nothing() {
         use crate::comments::Comment;
         let dir = tempdir().unwrap();

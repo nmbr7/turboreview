@@ -744,6 +744,60 @@ mod tests {
         assert_eq!(comments.items.len(), 2);
     }
 
+    // ─── TDD: archive-first safety — drain_then_restore_preserves_items ────────
+
+    #[test]
+    fn drain_then_restore_preserves_items() {
+        // Build a Comments with 2 resolved + 1 open.
+        let mut comments = Comments::default();
+        // open comment
+        comments.set(
+            PathBuf::from("a.rs"),
+            1,
+            "@@".to_string(),
+            "open".to_string(),
+            "fn a()".to_string(),
+            vec![],
+            vec![],
+            1000,
+        );
+        // resolved comment 1
+        comments.set(
+            PathBuf::from("a.rs"),
+            2,
+            "@@".to_string(),
+            "resolved1".to_string(),
+            "fn b()".to_string(),
+            vec![],
+            vec![],
+            1001,
+        );
+        comments.items[1].status = CommentStatus::Resolved;
+        // resolved comment 2
+        comments.set(
+            PathBuf::from("a.rs"),
+            3,
+            "@@".to_string(),
+            "resolved2".to_string(),
+            "fn c()".to_string(),
+            vec![],
+            vec![],
+            1002,
+        );
+        comments.items[2].status = CommentStatus::Resolved;
+
+        // Simulate archive-first failure path: drain, archive fails, restore.
+        let drained = comments.drain_resolved();
+        // After drain: only 1 open item left.
+        assert_eq!(comments.items.len(), 1, "after drain only the open comment remains");
+        assert_eq!(drained.len(), 2, "drained must hold the 2 resolved comments");
+
+        // Simulate restore on archive failure.
+        comments.items.extend(drained);
+        // After restore: all 3 items are back.
+        assert_eq!(comments.items.len(), 3, "restore must bring back all items — no data lost");
+    }
+
     // ─── Original tests (updated to new 8-arg set signature) ─────────────────
 
     #[test]

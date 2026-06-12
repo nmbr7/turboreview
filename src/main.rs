@@ -44,8 +44,15 @@ fn main() -> Result<()> {
     let cutoff = storage::archive_cutoff_secs(storage::now_secs());
     let old = app.comments.drain_resolved_older_than(cutoff);
     if !old.is_empty() {
-        let _ = storage::append_archive(&root, &old);
-        let _ = app.comments.save(&wt_dir);
+        match storage::append_archive(&root, &old) {
+            Ok(()) => {
+                let _ = app.comments.save(&wt_dir);
+            }
+            Err(_) => {
+                // Archive write failed — put the drained comments back so they are not lost.
+                app.comments.items.extend(old);
+            }
+        }
     }
     app.commits = repo.log(200).unwrap_or_default();
     // Load persisted theme preference
@@ -434,18 +441,31 @@ fn run(
                     }
                     // A (capital) — archive all resolved comments in the current scope
                     (KeyCode::Char('A'), _) => {
-                        let drained = app.comments.drain_resolved();
-                        let n = drained.len();
-                        if !drained.is_empty() {
-                            let _ = storage::append_archive(&app.repo_root, &drained);
-                            // Persist the shrunken active comments to the current scope
-                            let dir = storage::scope_dir(&app.repo_root, &app.comment_scope);
-                            let _ = app.comments.save(&dir);
-                            // Clamp comment-pane selection
-                            let clen = app.comment_rows().len();
-                            app.comment_selected = app.comment_selected.min(clen.saturating_sub(1));
+                        // Peek the resolved comments WITHOUT draining yet.
+                        let resolved: Vec<_> = app.comments.items.iter()
+                            .filter(|c| c.status == comments::CommentStatus::Resolved)
+                            .cloned()
+                            .collect();
+                        if resolved.is_empty() {
+                            app.status_msg = Some("no resolved comments to archive".into());
+                        } else {
+                            // Archive FIRST. Only mutate the active set if the archive write succeeded.
+                            match storage::append_archive(&app.repo_root, &resolved) {
+                                Ok(()) => {
+                                    let n = app.comments.drain_resolved().len();
+                                    let dir = storage::scope_dir(&app.repo_root, &app.comment_scope);
+                                    match app.comments.save(&dir) {
+                                        Ok(()) => {
+                                            let clen = app.comment_rows().len();
+                                            app.comment_selected = app.comment_selected.min(clen.saturating_sub(1));
+                                            app.status_msg = Some(format!("archived {n} resolved comment(s)"));
+                                        }
+                                        Err(e) => app.status_msg = Some(format!("archive save error: {e}")),
+                                    }
+                                }
+                                Err(e) => app.status_msg = Some(format!("archive error: {e}")),
+                            }
                         }
-                        app.status_msg = Some(format!("archived {n} resolved comment(s)"));
                     }
                     // ? toggles the help overlay
                     (KeyCode::Char('?'), _) => app.toggle_help(),
