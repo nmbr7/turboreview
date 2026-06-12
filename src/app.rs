@@ -26,6 +26,17 @@ pub struct FileHistory {
     pub baseline_scope: CommentScope,
 }
 
+/// In-diff substring search state (committed query with matches).
+#[derive(Clone, Debug)]
+pub struct SearchState {
+    /// Lowercased query (matching is case-insensitive).
+    pub query: String,
+    /// Indices into `diff` of matching lines, ascending.
+    pub matches: Vec<usize>,
+    /// Position within `matches` of the focused match.
+    pub cur: usize,
+}
+
 const MAX_FILE_HISTORY: usize = 50;
 const MAX_HSCROLL: usize = 500;
 
@@ -160,6 +171,8 @@ pub struct App {
     pub comment_selected: usize,
     pub theme: crate::theme::Theme,
     pub history: Option<FileHistory>,
+    pub search: Option<SearchState>,
+    pub search_input: Option<String>,
 }
 
 enum RowId {
@@ -200,6 +213,8 @@ impl App {
             comment_selected: 0,
             theme: crate::theme::Theme::Dark,
             history: None,
+            search: None,
+            search_input: None,
         };
         app.rebuild_rows();
         app
@@ -360,6 +375,8 @@ impl App {
         self.diff = diff;
         self.diff_cursor = 0;
         self.diff_hscroll = 0;
+        self.search = None;
+        self.search_input = None;
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -687,6 +704,86 @@ impl App {
 
     pub fn history_active(&self) -> bool {
         self.history.is_some()
+    }
+
+    /// Open the search input line (typing phase). Caller guards on Diff focus.
+    pub fn search_start(&mut self) {
+        self.search_input = Some(String::new());
+    }
+
+    pub fn search_input_active(&self) -> bool {
+        self.search_input.is_some()
+    }
+
+    pub fn search_active(&self) -> bool {
+        self.search.is_some()
+    }
+
+    pub fn search_input_push(&mut self, ch: char) {
+        if let Some(buf) = self.search_input.as_mut() {
+            buf.push(ch);
+        }
+    }
+
+    pub fn search_input_backspace(&mut self) {
+        if let Some(buf) = self.search_input.as_mut() {
+            buf.pop();
+        }
+    }
+
+    pub fn search_input_cancel(&mut self) {
+        self.search_input = None;
+    }
+
+    pub fn search_clear(&mut self) {
+        self.search = None;
+        self.search_input = None;
+    }
+
+    /// Commit the typed query: compute matches (case-insensitive substring) over the
+    /// current diff. If none, leave `search` None and return false. Otherwise set
+    /// `search` with `cur` = first match index at/after `diff_cursor` (wrapping),
+    /// move `diff_cursor` there, and return true. Clears the input buffer either way.
+    pub fn search_commit(&mut self) -> bool {
+        let query = match self.search_input.take() {
+            Some(q) if !q.is_empty() => q.to_lowercase(),
+            _ => return false,
+        };
+        let matches: Vec<usize> = self
+            .diff
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.text.to_lowercase().contains(&query))
+            .map(|(i, _)| i)
+            .collect();
+        if matches.is_empty() {
+            self.search = None;
+            return false;
+        }
+        // First match at/after the current cursor, else wrap to the first.
+        let cur = matches
+            .iter()
+            .position(|&i| i >= self.diff_cursor)
+            .unwrap_or(0);
+        self.diff_cursor = matches[cur];
+        self.search = Some(SearchState {
+            query,
+            matches,
+            cur,
+        });
+        true
+    }
+
+    /// Move to the next (+1) / previous (-1) match with wraparound. No-op if inactive.
+    pub fn search_next(&mut self, delta: isize) {
+        if let Some(s) = self.search.as_mut() {
+            let len = s.matches.len() as isize;
+            if len == 0 {
+                return;
+            }
+            s.cur = ((s.cur as isize + delta) % len + len) as usize % len as usize;
+            self.diff_cursor = s.matches[s.cur];
+        }
     }
 
     pub fn inc_context(&mut self) {
@@ -1648,6 +1745,115 @@ mod tests {
         app.exit_history();
         assert!(app.history.is_none());
         assert_eq!(app.comment_scope, CommentScope::Worktree);
+    }
+
+    fn app_with_search_diff() -> App {
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.selected = 1;
+        app.focus = Pane::Diff;
+        app.set_diff(vec![
+            DiffLine {
+                kind: LineKind::Context,
+                text: "fn alpha() {".into(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "let Beta = 2;".into(),
+                old_lineno: None,
+                new_lineno: Some(2),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "let gamma = 3;".into(),
+                old_lineno: Some(3),
+                new_lineno: Some(3),
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "return beta;".into(),
+                old_lineno: None,
+                new_lineno: Some(4),
+            },
+        ]);
+        app
+    }
+
+    #[test]
+    fn search_commit_finds_case_insensitive_matches() {
+        let mut app = app_with_search_diff();
+        app.search_start();
+        for ch in "beta".chars() {
+            app.search_input_push(ch);
+        }
+        let ok = app.search_commit();
+        assert!(ok);
+        let s = app.search.as_ref().unwrap();
+        // "let Beta = 2;" (idx 1) and "return beta;" (idx 3)
+        assert_eq!(s.matches, vec![1, 3]);
+        // cursor jumped to first match at/after current cursor (cursor was 0) -> idx 1
+        assert_eq!(app.diff_cursor, 1);
+    }
+
+    #[test]
+    fn search_commit_no_match_returns_false() {
+        let mut app = app_with_search_diff();
+        app.search_start();
+        for ch in "zzz".chars() {
+            app.search_input_push(ch);
+        }
+        let ok = app.search_commit();
+        assert!(!ok);
+        assert!(app.search.is_none());
+    }
+
+    #[test]
+    fn search_next_wraps_forward_and_back() {
+        let mut app = app_with_search_diff();
+        app.search_start();
+        for ch in "beta".chars() {
+            app.search_input_push(ch);
+        }
+        app.search_commit(); // cursor at idx 1 (cur=0)
+        app.search_next(1); // -> idx 3 (cur=1)
+        assert_eq!(app.diff_cursor, 3);
+        app.search_next(1); // wrap -> idx 1 (cur=0)
+        assert_eq!(app.diff_cursor, 1);
+        app.search_next(-1); // wrap back -> idx 3 (cur=1)
+        assert_eq!(app.diff_cursor, 3);
+    }
+
+    #[test]
+    fn set_diff_clears_active_search() {
+        let mut app = app_with_search_diff();
+        app.search_start();
+        for ch in "beta".chars() {
+            app.search_input_push(ch);
+        }
+        app.search_commit();
+        assert!(app.search.is_some());
+        app.set_diff(vec![DiffLine::context("x", 1, 1)]);
+        assert!(app.search.is_none());
+        assert!(app.search_input.is_none());
+    }
+
+    #[test]
+    fn search_input_push_backspace_cancel() {
+        let mut app = app_with_search_diff();
+        app.search_start();
+        app.search_input_push('a');
+        app.search_input_push('b');
+        assert_eq!(app.search_input.as_deref(), Some("ab"));
+        app.search_input_backspace();
+        assert_eq!(app.search_input.as_deref(), Some("a"));
+        app.search_input_cancel();
+        assert!(app.search_input.is_none());
+        assert!(app.search.is_none());
     }
 
     #[test]
