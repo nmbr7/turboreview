@@ -409,7 +409,27 @@ impl App {
             return;
         }
         let max = self.diff.len() as isize - 1;
-        self.diff_cursor = (self.diff_cursor as isize + delta).clamp(0, max) as usize;
+        let mut pos = (self.diff_cursor as isize + delta).clamp(0, max);
+        // Skip hunk-header lines in the direction of travel: they are not a
+        // meaningful cursor target (can't comment on them) and resting on one
+        // makes the split view jump. Step `sign` until a non-hunk line.
+        let step = if delta >= 0 { 1 } else { -1 };
+        while self.diff[pos as usize].kind == LineKind::Hunk {
+            let next = pos + step;
+            if next < 0 || next > max {
+                // Edge of the diff: reverse to find the nearest non-hunk line.
+                let mut back = pos - step;
+                while back >= 0 && back <= max && self.diff[back as usize].kind == LineKind::Hunk {
+                    back -= step;
+                }
+                if back >= 0 && back <= max {
+                    pos = back;
+                }
+                break;
+            }
+            pos = next;
+        }
+        self.diff_cursor = pos as usize;
     }
 
     pub fn to_top(&mut self) {
@@ -1148,6 +1168,79 @@ mod tests {
         assert_eq!(app.diff_cursor, 0);
         app.to_bottom();
         assert_eq!(app.diff_cursor, 4);
+    }
+
+    #[test]
+    fn move_diff_cursor_skips_hunk_headers() {
+        let mut app = sample();
+        app.focus = Pane::Diff;
+        // ctx(0) hunk(1) add(2) hunk(3) ctx(4)
+        app.set_diff(vec![
+            DiffLine {
+                kind: LineKind::Context,
+                text: "c0".into(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+            },
+            DiffLine {
+                kind: LineKind::Hunk,
+                text: "@@ a @@".into(),
+                old_lineno: None,
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "a2".into(),
+                old_lineno: None,
+                new_lineno: Some(2),
+            },
+            DiffLine {
+                kind: LineKind::Hunk,
+                text: "@@ b @@".into(),
+                old_lineno: None,
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "c4".into(),
+                old_lineno: Some(5),
+                new_lineno: Some(5),
+            },
+        ]);
+        app.diff_cursor = 0;
+        // Down: 0 -> skip hunk(1) -> land add(2)
+        app.move_diff_cursor(1);
+        assert_eq!(app.diff_cursor, 2);
+        // Down again: 2 -> skip hunk(3) -> land ctx(4)
+        app.move_diff_cursor(1);
+        assert_eq!(app.diff_cursor, 4);
+        // Up: 4 -> skip hunk(3) -> land add(2)
+        app.move_diff_cursor(-1);
+        assert_eq!(app.diff_cursor, 2);
+    }
+
+    #[test]
+    fn move_diff_cursor_all_hunks_does_not_hang() {
+        let mut app = sample();
+        app.focus = Pane::Diff;
+        app.set_diff(vec![
+            DiffLine {
+                kind: LineKind::Hunk,
+                text: "@@ a @@".into(),
+                old_lineno: None,
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Hunk,
+                text: "@@ b @@".into(),
+                old_lineno: None,
+                new_lineno: None,
+            },
+        ]);
+        app.diff_cursor = 0;
+        // No non-hunk line exists; must terminate (lands somewhere in range).
+        app.move_diff_cursor(1);
+        assert!(app.diff_cursor <= 1);
     }
 
     #[test]

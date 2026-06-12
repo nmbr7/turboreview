@@ -594,17 +594,20 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
     let wrap_w = inner_w.saturating_sub(6).max(1); // comment box indent "    │ "
 
     let pairs = pair_diff_rows(&app.diff);
-    // Which paired row holds the cursor (left or right == diff_cursor).
+    // Which paired row holds the cursor — its header (hunk), left, or right cell.
+    let cur = Some(app.diff_cursor);
     let cursor_row = pairs
         .iter()
-        .position(|p| p.left == Some(app.diff_cursor) || p.right == Some(app.diff_cursor))
+        .position(|p| p.header == cur || p.left == cur || p.right == cur)
         .unwrap_or(0);
 
-    // Rendered height of a paired row = 1 + comment box for whichever side has a comment.
+    // Rendered height of a paired row = 1 + comment box for each distinct side
+    // with a comment. Context rows have left==right; count that box only once.
     let row_height = |pi: usize| -> usize {
         let p = &pairs[pi];
         let mut h = 1;
-        for side in [p.left, p.right] {
+        let right = if p.right == p.left { None } else { p.right };
+        for side in [p.left, right] {
             if let Some(di) = side {
                 if let Some(c) = app.comment_for(&app.diff[di]) {
                     h += comment_box_height(c, wrap_w);
@@ -726,8 +729,10 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
         result.push(Line::from(spans));
         rendered_rows += 1;
 
-        // Inline comment box(es) full-width under the row (left side first, then right).
-        for side in [p.left, p.right] {
+        // Inline comment box(es) full-width under the row. For a context row,
+        // left and right are the SAME diff index — render its box once.
+        let right = if p.right == p.left { None } else { p.right };
+        for side in [p.left, right] {
             if let Some(di) = side {
                 if let Some(c) = app.comment_for(&app.diff[di]) {
                     push_comment_box(&mut result, &mut rendered_rows, page, c, wrap_w, &pal);
@@ -1123,6 +1128,48 @@ mod tests {
         assert!(dump.contains("old_left"), "old side token must render");
         assert!(dump.contains("new_right"), "new side token must render");
         assert!(dump.contains("│"), "column separator must render");
+    }
+
+    #[test]
+    fn split_context_comment_renders_one_box() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.selected = 1;
+        app.focus = Pane::Diff;
+        app.split_diff = true;
+        app.set_diff(vec![DiffLine {
+            kind: LineKind::Context,
+            text: "ctx".into(),
+            old_lineno: Some(1),
+            new_lineno: Some(1),
+        }]);
+        // Comment on the context line (new_lineno 1).
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            1,
+            "@@".to_string(),
+            "uniq_box_text".to_string(),
+            "ctx".to_string(),
+            vec![],
+            vec![],
+            0,
+        );
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        // The comment box top border "╭─ comment" must appear exactly once.
+        let box_tops = dump.matches("╭─").count();
+        assert_eq!(box_tops, 1, "context-line comment must render a single box");
     }
 
     #[test]
