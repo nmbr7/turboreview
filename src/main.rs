@@ -13,7 +13,7 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::Terminal;
 
-use turboreview::app::{App, Mode, Pane, Section, ViewMode};
+use turboreview::app::{App, CommentScope, Mode, Pane, Section, ViewMode};
 use turboreview::comments;
 use turboreview::git::Repo;
 use turboreview::{review, storage, ui};
@@ -72,7 +72,49 @@ fn load_scope(repo_root: &Path, app: &mut App) {
     app.reviewed = review::load(&dir).unwrap_or_default();
 }
 
+/// Re-sync the comment scope to the current history revision (or the baseline),
+/// load that scope's comments/reviewed, and refresh the diff. Call after any
+/// change to `history.idx`.
+fn sync_history_scope(repo: &Repo, app: &mut App) {
+    match app.history_current_commit() {
+        Some(commit) => app.comment_scope = CommentScope::Commit(commit.id.clone()),
+        None => {
+            // Back at baseline (idx 0): restore whatever scope History saved.
+            if let Some(h) = app.history.as_ref() {
+                app.comment_scope = h.baseline_scope.clone();
+            }
+        }
+    }
+    let root = app.repo_root.clone();
+    load_scope(&root, app);
+    refresh_diff(repo, app);
+}
+
 fn refresh_diff(repo: &Repo, app: &mut App) {
+    // File-history overlay: when showing a past revision (idx >= 1), render that
+    // commit's diff for the history file. idx 0 falls through to the baseline branches.
+    if let Some(commit) = app.history_current_commit() {
+        let id = commit.id.clone();
+        let file = app.history.as_ref().unwrap().file.clone();
+        match repo.commit_diff_for(&id, &file, app.effective_context()) {
+            Ok(lines) => {
+                app.status_msg = None;
+                app.set_diff(lines);
+                let candidates: Vec<(u32, String)> = app
+                    .diff
+                    .iter()
+                    .filter_map(|l| l.new_lineno.map(|n| (n, l.text.trim().to_string())))
+                    .collect();
+                app.comments.relocate_file(&file, &candidates);
+            }
+            Err(e) => {
+                app.status_msg = Some(format!("diff error: {e}"));
+                app.set_diff(Vec::new());
+            }
+        }
+        return;
+    }
+
     // Commit-detail: use commit_diff_for instead of working-tree diff.
     if app.in_commit_detail() {
         if let (Some(path), Some(id)) = (app.selected_path().cloned(), app.open_commit.clone()) {
@@ -378,7 +420,12 @@ fn run(
                         }
                     }
                     (KeyCode::Esc, _) => {
-                        if app.in_commit_detail() && app.focus == Pane::Diff {
+                        if app.history_active() && app.focus == Pane::Diff {
+                            app.exit_history();
+                            let root = app.repo_root.clone();
+                            load_scope(&root, app);
+                            refresh_diff(repo, app);
+                        } else if app.in_commit_detail() && app.focus == Pane::Diff {
                             // Inside a commit's file diff: step back to that commit's
                             // file list, not all the way out to the commit list.
                             app.focus = Pane::Files;
@@ -394,6 +441,43 @@ fn run(
                     (KeyCode::Char('F'), _) => {
                         app.toggle_full_file();
                         refresh_diff(repo, app);
+                    }
+                    (KeyCode::Char('H'), _) => {
+                        if app.focus == Pane::Diff {
+                            if app.history_active() {
+                                // Toggle off: exit and reload baseline scope/diff.
+                                app.exit_history();
+                                let root = app.repo_root.clone();
+                                load_scope(&root, app);
+                                refresh_diff(repo, app);
+                            } else if let Some(file) = app.selected_path().cloned() {
+                                match repo.file_history(&file, App::MAX_FILE_HISTORY) {
+                                    Ok(commits) => {
+                                        if app.start_history(commits) {
+                                            sync_history_scope(repo, app);
+                                        } else {
+                                            app.status_msg =
+                                                Some(format!("no history for {}", file.display()));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        app.status_msg = Some(format!("history error: {e}"));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    (KeyCode::Char('{'), _) => {
+                        if app.history_active() {
+                            app.history_step(1); // older
+                            sync_history_scope(repo, app);
+                        }
+                    }
+                    (KeyCode::Char('}'), _) => {
+                        if app.history_active() {
+                            app.history_step(-1); // newer
+                            sync_history_scope(repo, app);
+                        }
                     }
                     (KeyCode::Char('l'), _) | (KeyCode::Right, _) => {
                         if app.focus == Pane::Diff {
@@ -414,6 +498,9 @@ fn run(
                         refresh_diff(repo, app);
                     }
                     (KeyCode::Char(']'), _) => {
+                        if app.history_active() {
+                            app.exit_history();
+                        }
                         let was_in_commit = app.in_commit_detail();
                         app.next_view();
                         // If we were in a commit detail and left, reload worktree scope
@@ -422,6 +509,9 @@ fn run(
                         }
                     }
                     (KeyCode::Char('['), _) => {
+                        if app.history_active() {
+                            app.exit_history();
+                        }
                         let was_in_commit = app.in_commit_detail();
                         app.prev_view();
                         // If we were in a commit detail and left, reload worktree scope
@@ -497,6 +587,11 @@ fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
                 app.move_commit_selection(delta);
             } else {
                 // Changes view or commit-detail: move file row selection.
+                if app.history_active() {
+                    app.exit_history();
+                    let root = app.repo_root.clone();
+                    load_scope(&root, app);
+                }
                 app.move_selection(delta);
                 refresh_diff(repo, app);
             }
