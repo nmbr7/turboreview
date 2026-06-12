@@ -13,6 +13,20 @@ pub enum CommentScope {
     Commit(String),
 }
 
+/// Active file-history overlay over the diff pane.
+#[derive(Clone, Debug)]
+pub struct FileHistory {
+    /// The file whose history is being browsed (repo-relative).
+    pub file: PathBuf,
+    /// Commits touching `file`, newest first. Capped at MAX_FILE_HISTORY.
+    pub commits: Vec<crate::git::CommitInfo>,
+    /// 0 = baseline (live diff). 1..=commits.len() = commits[idx-1].
+    pub idx: usize,
+    /// Comment scope active when H was pressed; restored on exit.
+    pub baseline_scope: CommentScope,
+}
+
+const MAX_FILE_HISTORY: usize = 50;
 const MAX_HSCROLL: usize = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -145,6 +159,7 @@ pub struct App {
     pub show_comments: bool,
     pub comment_selected: usize,
     pub theme: crate::theme::Theme,
+    pub history: Option<FileHistory>,
 }
 
 enum RowId {
@@ -184,6 +199,7 @@ impl App {
             show_comments: false,
             comment_selected: 0,
             theme: crate::theme::Theme::Dark,
+            history: None,
         };
         app.rebuild_rows();
         app
@@ -619,6 +635,58 @@ impl App {
             .iter()
             .find(|c| c.id == id)
             .map(|c| c.short.as_str())
+    }
+
+    /// Public so callers can cap their `file_history` request consistently.
+    pub const MAX_FILE_HISTORY: usize = MAX_FILE_HISTORY;
+
+    /// Enter history mode for the selected file. Returns false (no state change) if
+    /// `commits` is empty or no file is selected. On success, idx starts at 1
+    /// (newest commit) and the current comment scope is saved as the baseline.
+    pub fn start_history(&mut self, commits: Vec<crate::git::CommitInfo>) -> bool {
+        if commits.is_empty() {
+            return false;
+        }
+        let Some(file) = self.selected_path().cloned() else {
+            return false;
+        };
+        self.history = Some(FileHistory {
+            file,
+            commits,
+            idx: 1,
+            baseline_scope: self.comment_scope.clone(),
+        });
+        true
+    }
+
+    /// Step the history index by `delta` (+1 = older, -1 = newer), clamped to
+    /// `0..=commits.len()`. No-op when not in history mode.
+    pub fn history_step(&mut self, delta: isize) {
+        if let Some(h) = self.history.as_mut() {
+            let max = h.commits.len() as isize;
+            h.idx = (h.idx as isize + delta).clamp(0, max) as usize;
+        }
+    }
+
+    /// The commit for the current revision (None at baseline idx 0 or when inactive).
+    pub fn history_current_commit(&self) -> Option<&crate::git::CommitInfo> {
+        let h = self.history.as_ref()?;
+        if h.idx == 0 {
+            None
+        } else {
+            h.commits.get(h.idx - 1)
+        }
+    }
+
+    /// Exit history mode, restoring the baseline comment scope.
+    pub fn exit_history(&mut self) {
+        if let Some(h) = self.history.take() {
+            self.comment_scope = h.baseline_scope;
+        }
+    }
+
+    pub fn history_active(&self) -> bool {
+        self.history.is_some()
     }
 
     pub fn inc_context(&mut self) {
@@ -1518,6 +1586,68 @@ mod tests {
             author: "test".to_string(),
             time: "2024-01-01".to_string(),
         }
+    }
+
+    #[test]
+    fn start_history_empty_commits_returns_false() {
+        let mut app = sample();
+        app.selected = 1; // a.rs
+        let ok = app.start_history(vec![]);
+        assert!(!ok);
+        assert!(app.history.is_none());
+    }
+
+    #[test]
+    fn start_history_sets_state_at_rev_one() {
+        let mut app = sample();
+        app.selected = 1; // a.rs
+        let ok = app.start_history(vec![make_commit_info("c1"), make_commit_info("c2")]);
+        assert!(ok);
+        let h = app.history.as_ref().unwrap();
+        assert_eq!(h.file, std::path::PathBuf::from("a.rs"));
+        assert_eq!(h.commits.len(), 2);
+        assert_eq!(h.idx, 1); // newest commit, one step back from baseline
+        assert_eq!(h.baseline_scope, CommentScope::Worktree);
+    }
+
+    #[test]
+    fn history_step_clamps_to_zero_and_len() {
+        let mut app = sample();
+        app.selected = 1;
+        app.start_history(vec![make_commit_info("c1"), make_commit_info("c2")]);
+        // idx starts at 1
+        app.history_step(1); // older -> 2
+        assert_eq!(app.history.as_ref().unwrap().idx, 2);
+        app.history_step(1); // older past oldest -> stays 2
+        assert_eq!(app.history.as_ref().unwrap().idx, 2);
+        app.history_step(-1); // newer -> 1
+        app.history_step(-1); // newer -> 0 (baseline)
+        assert_eq!(app.history.as_ref().unwrap().idx, 0);
+        app.history_step(-1); // never negative -> stays 0
+        assert_eq!(app.history.as_ref().unwrap().idx, 0);
+    }
+
+    #[test]
+    fn history_current_commit_none_at_baseline() {
+        let mut app = sample();
+        app.selected = 1;
+        app.start_history(vec![make_commit_info("c1")]);
+        assert!(app.history_current_commit().is_some()); // idx 1
+        app.history_step(-1); // idx 0
+        assert!(app.history_current_commit().is_none());
+    }
+
+    #[test]
+    fn exit_history_restores_scope_and_clears() {
+        let mut app = sample();
+        app.selected = 1;
+        app.comment_scope = CommentScope::Worktree;
+        app.start_history(vec![make_commit_info("c1")]);
+        // Simulate the main loop swapping scope into the revision's commit.
+        app.comment_scope = CommentScope::Commit("abcdef1234567890".into());
+        app.exit_history();
+        assert!(app.history.is_none());
+        assert_eq!(app.comment_scope, CommentScope::Worktree);
     }
 
     #[test]
