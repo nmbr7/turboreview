@@ -67,8 +67,12 @@ Press `?` at any time for an in-app keybinding overlay.
 | `C`              | toggle the comment-list pane                                    |
 | `Esc`            | step back (Diff → files → commit list) / focus the Files pane   |
 | `h`/`l` `←`/`→`  | scroll the diff horizontally (Diff pane)                        |
-| `+` / `-`        | increase / decrease diff context lines (step 5)                 |
-| `F`              | toggle full-file view (whole file vs hunks only)               |
+| `+` / `-`        | increase / decrease diff context (step 5; `+` at max → full file) |
+| `F`              | toggle full-file view (shortcut; also reachable via `+`)          |
+| `H`              | file-history overlay for the selected file's diff               |
+| `{` / `}`        | step to older / newer revision (in the history overlay)         |
+| `/`              | search within the current diff                                  |
+| `n` / `N`        | jump to next / previous search match                            |
 | `z`              | hide / show the file pane (diff goes full-width)               |
 | `<` / `>`        | narrow / widen the file pane                                    |
 | `c`              | comment on the cursor line (opens a modal input box)            |
@@ -109,6 +113,19 @@ optional `response`. An AI coding agent can close the loop:
    `response` and sets the `status` in the relevant `comments.json`.
 3. Reopen turboreview — each comment box shows the agent's status badge
    (`✓ resolved`, `✗ wontfix`, `? needs-info`) and its response inline.
+
+## File history & search
+
+Press `H` on a file's diff to enter the **history overlay** — it walks the
+commits that touched that file (newest first). `{` steps to an older revision,
+`}` to a newer one; `}` past the newest returns to the live diff, and `Esc`
+exits. While stepping, the cursor stays on the same line number, the view
+scrolls to keep it centered, and context is expanded (up to full file) if needed
+to show that line. Comments made on a past revision are stored in that commit's
+scope (`.turboreview/commits/<sha>/`).
+
+Press `/` to **search** within the current diff (case-insensitive substring).
+`n` and `N` jump to the next and previous match.
 
 ## Review state & storage
 

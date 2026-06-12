@@ -38,6 +38,8 @@ pub struct SearchState {
 }
 
 const MAX_FILE_HISTORY: usize = 50;
+/// Largest hunks-only context before `+` switches to full-file diff.
+pub const MAX_CONTEXT_LINES: u32 = 50;
 const MAX_HSCROLL: usize = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -527,16 +529,42 @@ impl App {
         false
     }
 
-    /// Scan self.diff for the first line whose new_lineno == new_lineno; set diff_cursor to it.
+    /// Line number under the diff cursor (`new_lineno`, else `old_lineno`).
+    pub fn cursor_lineno(&self) -> Option<u32> {
+        self.diff
+            .get(self.diff_cursor)
+            .and_then(|l| l.new_lineno.or(l.old_lineno))
+    }
+
+    /// True if any diff line carries `lineno` as its new or old line number.
+    pub fn diff_has_lineno(&self, lineno: u32) -> bool {
+        self.diff.iter().any(|l| {
+            l.new_lineno == Some(lineno) || l.old_lineno == Some(lineno)
+        })
+    }
+
+    /// Scan self.diff for the first line matching `lineno` (new, then old); set diff_cursor.
     /// If not found, reset diff_cursor to 0.
-    pub fn move_cursor_to_line(&mut self, new_lineno: u32) {
+    pub fn move_cursor_to_lineno(&mut self, lineno: u32) {
         for (i, dl) in self.diff.iter().enumerate() {
-            if dl.new_lineno == Some(new_lineno) {
+            if dl.new_lineno == Some(lineno) {
+                self.diff_cursor = i;
+                return;
+            }
+        }
+        for (i, dl) in self.diff.iter().enumerate() {
+            if dl.old_lineno == Some(lineno) {
                 self.diff_cursor = i;
                 return;
             }
         }
         self.diff_cursor = 0;
+    }
+
+    /// Scan self.diff for the first line whose new_lineno == new_lineno; set diff_cursor to it.
+    /// If not found, reset diff_cursor to 0.
+    pub fn move_cursor_to_line(&mut self, new_lineno: u32) {
+        self.move_cursor_to_lineno(new_lineno);
     }
 
     pub fn toggle_reviewed(&mut self) {
@@ -656,6 +684,7 @@ impl App {
 
     /// Public so callers can cap their `file_history` request consistently.
     pub const MAX_FILE_HISTORY: usize = MAX_FILE_HISTORY;
+    pub const MAX_CONTEXT_LINES: u32 = MAX_CONTEXT_LINES;
 
     /// Enter history mode for the selected file. Returns false (no state change) if
     /// `commits` is empty or no file is selected. On success, idx starts at 1
@@ -787,10 +816,21 @@ impl App {
     }
 
     pub fn inc_context(&mut self) {
-        self.context_lines = (self.context_lines + 5).min(50);
+        if self.full_file {
+            return;
+        }
+        if self.context_lines >= MAX_CONTEXT_LINES {
+            self.full_file = true;
+        } else {
+            self.context_lines = (self.context_lines + 5).min(MAX_CONTEXT_LINES);
+        }
     }
 
     pub fn dec_context(&mut self) {
+        if self.full_file {
+            self.full_file = false;
+            return;
+        }
         self.context_lines = self.context_lines.saturating_sub(5);
     }
 
@@ -1311,11 +1351,16 @@ mod tests {
         assert_eq!(app.context_lines, 8);
         app.dec_context();
         assert_eq!(app.context_lines, 3);
-        // inc clamps at 50
+        // inc clamps at MAX_CONTEXT_LINES then + switches to full file
         for _ in 0..60 {
             app.inc_context();
         }
-        assert_eq!(app.context_lines, 50);
+        assert_eq!(app.context_lines, MAX_CONTEXT_LINES);
+        assert!(app.full_file);
+        // dec from full file restores hunks-only at max context
+        app.dec_context();
+        assert!(!app.full_file);
+        assert_eq!(app.context_lines, MAX_CONTEXT_LINES);
         // dec clamps at 0
         for _ in 0..60 {
             app.dec_context();
@@ -1324,6 +1369,27 @@ mod tests {
         // one more dec stays at 0
         app.dec_context();
         assert_eq!(app.context_lines, 0);
+    }
+
+    #[test]
+    fn inc_context_at_max_context_enables_full_file() {
+        let mut app = sample();
+        app.context_lines = MAX_CONTEXT_LINES;
+        app.inc_context();
+        assert!(app.full_file);
+        assert_eq!(app.context_lines, MAX_CONTEXT_LINES);
+        app.inc_context(); // no-op while full file
+        assert!(app.full_file);
+    }
+
+    #[test]
+    fn dec_context_from_full_file_via_f_keeps_context_lines() {
+        let mut app = sample();
+        app.context_lines = 8;
+        app.toggle_full_file();
+        app.dec_context();
+        assert!(!app.full_file);
+        assert_eq!(app.context_lines, 8);
     }
 
     #[test]
@@ -2265,6 +2331,54 @@ mod tests {
             !found,
             "select_row_for_path must return false for a path not in rows"
         );
+    }
+
+    #[test]
+    fn cursor_lineno_prefers_new_over_old() {
+        let mut app = sample();
+        app.set_diff(vec![DiffLine {
+            kind: LineKind::Del,
+            text: "gone".into(),
+            old_lineno: Some(7),
+            new_lineno: None,
+        }]);
+        app.diff_cursor = 0;
+        assert_eq!(app.cursor_lineno(), Some(7));
+    }
+
+    #[test]
+    fn diff_has_lineno_matches_new_or_old() {
+        let mut app = sample();
+        app.set_diff(vec![
+            DiffLine {
+                kind: LineKind::Del,
+                text: "gone".into(),
+                old_lineno: Some(7),
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "new".into(),
+                old_lineno: None,
+                new_lineno: Some(9),
+            },
+        ]);
+        assert!(app.diff_has_lineno(7));
+        assert!(app.diff_has_lineno(9));
+        assert!(!app.diff_has_lineno(1));
+    }
+
+    #[test]
+    fn move_cursor_to_lineno_falls_back_to_old_lineno() {
+        let mut app = sample();
+        app.set_diff(vec![DiffLine {
+            kind: LineKind::Del,
+            text: "gone".into(),
+            old_lineno: Some(7),
+            new_lineno: None,
+        }]);
+        app.move_cursor_to_lineno(7);
+        assert_eq!(app.diff_cursor, 0);
     }
 
     #[test]

@@ -76,6 +76,7 @@ fn load_scope(repo_root: &Path, app: &mut App) {
 /// load that scope's comments/reviewed, and refresh the diff. Call after any
 /// change to `history.idx`.
 fn sync_history_scope(repo: &Repo, app: &mut App) {
+    let anchor = app.history_active().then(|| app.cursor_lineno()).flatten();
     match app.history_current_commit() {
         Some(commit) => app.comment_scope = CommentScope::Commit(commit.id.clone()),
         None => {
@@ -87,7 +88,32 @@ fn sync_history_scope(repo: &Repo, app: &mut App) {
     }
     let root = app.repo_root.clone();
     load_scope(&root, app);
-    refresh_diff(repo, app);
+    refresh_diff_preserving_line(repo, app, anchor);
+}
+
+/// Reload the diff, keeping the cursor on `anchor` when possible. Increases context
+/// in steps of 5 (up to [`App::MAX_CONTEXT_LINES`]), then full-file, until visible.
+fn refresh_diff_preserving_line(repo: &Repo, app: &mut App, anchor: Option<u32>) {
+    let Some(lineno) = anchor else {
+        refresh_diff(repo, app);
+        return;
+    };
+    loop {
+        refresh_diff(repo, app);
+        if app.diff_has_lineno(lineno) {
+            app.move_cursor_to_lineno(lineno);
+            return;
+        }
+        if app.full_file {
+            app.move_cursor_to_lineno(lineno);
+            return;
+        }
+        if app.context_lines >= App::MAX_CONTEXT_LINES {
+            app.full_file = true;
+            continue;
+        }
+        app.context_lines = (app.context_lines + 5).min(App::MAX_CONTEXT_LINES);
+    }
 }
 
 fn refresh_diff(repo: &Repo, app: &mut App) {
@@ -282,6 +308,23 @@ fn run(
                         KeyCode::Enter => app.input_newline(),
                         KeyCode::Backspace => app.input_backspace(),
                         KeyCode::Char(c) => app.input_push(c),
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                // When the search input line is open, route keys to it.
+                if app.search_input_active() {
+                    match key.code {
+                        KeyCode::Esc => app.search_input_cancel(),
+                        KeyCode::Enter => {
+                            if !app.search_commit() {
+                                // search_commit already cleared `search`; tell the user.
+                                app.status_msg = Some("no match".into());
+                            }
+                        }
+                        KeyCode::Backspace => app.search_input_backspace(),
+                        KeyCode::Char(c) => app.search_input_push(c),
                         _ => {}
                     }
                     continue;
@@ -559,6 +602,21 @@ fn run(
                     }
                     // ? toggles the help overlay
                     (KeyCode::Char('?'), _) => app.toggle_help(),
+                    (KeyCode::Char('/'), _) => {
+                        if app.focus == Pane::Diff {
+                            app.search_start();
+                        }
+                    }
+                    (KeyCode::Char('n'), _) => {
+                        if app.search_active() {
+                            app.search_next(1);
+                        }
+                    }
+                    (KeyCode::Char('N'), _) => {
+                        if app.search_active() {
+                            app.search_next(-1);
+                        }
+                    }
                     // c (no modifier) opens comment modal; Ctrl-C is already handled above.
                     // In Commits-list mode (not in detail), rows are stale; ignore.
                     (KeyCode::Char('c'), _) => {

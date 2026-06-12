@@ -313,6 +313,44 @@ fn render_commits(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+/// Keep the cursor visible at the bottom of the viewport (default diff scrolling).
+fn diff_scroll_start_follow(cursor: usize, page: usize, rh: &impl Fn(usize) -> usize) -> usize {
+    if page == 0 {
+        return cursor;
+    }
+    let mut start = cursor;
+    let mut used = rh(cursor);
+    while start > 0 {
+        let h = rh(start - 1);
+        if used + h > page {
+            break;
+        }
+        used += h;
+        start -= 1;
+    }
+    start
+}
+
+/// Place the cursor near the vertical center, or near the top when the cursor is early.
+fn diff_scroll_start_center(cursor: usize, page: usize, rh: &impl Fn(usize) -> usize) -> usize {
+    if page == 0 {
+        return cursor;
+    }
+    let cursor_h = rh(cursor);
+    let above_target = page.saturating_sub(cursor_h) / 2;
+    let mut start = cursor;
+    let mut above_used = 0;
+    while start > 0 {
+        let h = rh(start - 1);
+        if above_used + h > above_target {
+            break;
+        }
+        above_used += h;
+        start -= 1;
+    }
+    start
+}
+
 fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
     let pal = app.palette();
     let ext = app
@@ -376,18 +414,12 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             1 + comment_lines
         };
 
-        // Walk backward from diff_cursor to find the first visible diff index such
-        // that the total rendered height from start..=cursor fits within `page`.
-        let mut start = app.diff_cursor;
-        let mut used = rendered_height(app.diff_cursor);
-        while start > 0 {
-            let h = rendered_height(start - 1);
-            if used + h > page {
-                break;
-            }
-            used += h;
-            start -= 1;
-        }
+        // History overlay: center the cursor line. Otherwise: cursor at viewport bottom.
+        let start = if app.history_active() {
+            diff_scroll_start_center(app.diff_cursor, page, &rendered_height)
+        } else {
+            diff_scroll_start_follow(app.diff_cursor, page, &rendered_height)
+        };
 
         let mut result: Vec<Line> = Vec::new();
         let mut rendered_rows: usize = 0;
@@ -439,6 +471,14 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                 if dl.kind == LineKind::Context {
                     for s in spans.iter_mut() {
                         s.style = s.style.add_modifier(Modifier::DIM);
+                    }
+                }
+            }
+            // Search: tint the background of lines that match the active query.
+            if let Some(s) = app.search.as_ref() {
+                if !is_cursor && dl.text.to_lowercase().contains(&s.query) {
+                    for sp in spans.iter_mut() {
+                        sp.style = sp.style.bg(pal.accent_dim);
                     }
                 }
             }
@@ -549,7 +589,13 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
     let pal = app.palette();
-    // Footer is just a help reminder plus any transient status message.
+    // While the search input line is open, it owns the status row.
+    if let Some(buf) = app.search_input.as_ref() {
+        let text = format!("/{}\u{2588}", buf); // trailing block as a cursor
+        let para = Paragraph::new(text).style(Style::default().fg(pal.accent));
+        frame.render_widget(para, area);
+        return;
+    }
     let base = "? for help";
     let text = match &app.status_msg {
         Some(msg) => format!("{}   |   {}", base, msg),
@@ -616,8 +662,12 @@ const HELP_LINES: &[(&str, &str)] = &[
     ),
     ("Esc", "back / focus files"),
     ("h/l, ←/→", "scroll diff horizontally"),
-    ("+/-", "context lines (±5)"),
+    ("+/-", "context lines (±5, + at max → full file)"),
     ("F", "full-file diff toggle"),
+    ("H", "file-history overlay for the current file diff"),
+    ("{ / }", "older / newer revision (in history overlay)"),
+    ("/", "search within the diff"),
+    ("n / N", "next / previous search match"),
     ("z", "hide/show file pane"),
     ("C", "toggle comment-list pane"),
     ("< / >", "resize file pane"),
@@ -690,6 +740,50 @@ mod tests {
     }
 
     #[test]
+    fn status_row_shows_search_input() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = app_with_diff();
+        app.focus = Pane::Diff;
+        app.search_input = Some("foo".into());
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            dump.contains("/foo"),
+            "status row should show the /-prefixed query while typing"
+        );
+    }
+
+    #[test]
+    fn render_with_active_search_is_stable() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = app_with_diff();
+        app.focus = Pane::Diff;
+        app.search = Some(crate::app::SearchState {
+            query: "let".into(),
+            matches: vec![1],
+            cur: 0,
+        });
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!dump.is_empty());
+        assert!(dump.contains("let x = 1;"));
+    }
+
+    #[test]
     fn diff_title_shows_history_revision() {
         use crate::app::{CommentScope, FileHistory};
         let backend = TestBackend::new(80, 20);
@@ -732,6 +826,107 @@ mod tests {
         let dump: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains("a.rs"));
         assert!(dump.contains("○"));
+    }
+
+    #[test]
+    fn diff_scroll_start_center_places_cursor_mid_viewport() {
+        let rh = |_| 1usize;
+        // page 10, cursor 15 -> ~4 lines above -> start 11
+        assert_eq!(diff_scroll_start_center(15, 10, &rh), 11);
+        // early cursor: clamped to top
+        assert_eq!(diff_scroll_start_center(2, 10, &rh), 0);
+    }
+
+    #[test]
+    fn diff_scroll_start_follow_places_cursor_at_bottom() {
+        let rh = |_| 1usize;
+        // page 10, cursor 15 -> start 6 (lines 6..=15 fill the page)
+        assert_eq!(diff_scroll_start_follow(15, 10, &rh), 6);
+    }
+
+    #[test]
+    fn history_mode_scrolls_cursor_toward_center() {
+        use crate::app::{CommentScope, FileHistory};
+        use ratatui::layout::Rect;
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let diff_area = Rect::new(0, 0, 80, 8); // page = 6 diff lines
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.selected = 1;
+        app.focus = Pane::Diff;
+        let mut diff_lines = vec![DiffLine {
+            kind: LineKind::Hunk,
+            text: "@@".into(),
+            old_lineno: None,
+            new_lineno: None,
+        }];
+        for i in 0..20u32 {
+            diff_lines.push(DiffLine {
+                kind: LineKind::Context,
+                text: format!("LINE_{i}"),
+                old_lineno: Some(i + 1),
+                new_lineno: Some(i + 1),
+            });
+        }
+        app.set_diff(diff_lines);
+        // Index 19 = LINE_18 (index 0 is the hunk header).
+        app.diff_cursor = 19;
+
+        // Default (follow): LINE_13 visible; centered history mode hides it.
+        terminal
+            .draw(|f| render_diff(f, &app, diff_area))
+            .unwrap();
+        let follow_dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            follow_dump.contains("LINE_13"),
+            "follow scroll should include LINE_13 above cursor"
+        );
+
+        app.history = Some(FileHistory {
+            file: PathBuf::from("a.rs"),
+            commits: vec![crate::git::CommitInfo {
+                id: "abc".into(),
+                short: "abc".into(),
+                summary: "s".into(),
+                author: "t".into(),
+                time: "2024".into(),
+            }],
+            idx: 1,
+            baseline_scope: CommentScope::Worktree,
+        });
+
+        terminal
+            .draw(|f| render_diff(f, &app, diff_area))
+            .unwrap();
+        let center_dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !center_dump.contains("LINE_13"),
+            "centered history scroll should hide LINE_13"
+        );
+        assert!(
+            center_dump.contains("LINE_16"),
+            "centered history scroll should show lines nearer the cursor"
+        );
+        assert!(
+            center_dump.contains("LINE_18"),
+            "centered history scroll must show the cursor line"
+        );
     }
 
     #[test]
@@ -1479,7 +1674,7 @@ mod tests {
 
     #[test]
     fn help_overlay_shows_theme_toggle_key() {
-        let backend = TestBackend::new(80, 30);
+        let backend = TestBackend::new(80, 50);
         let mut terminal = Terminal::new(backend).unwrap();
         let files = vec![FileChange {
             path: PathBuf::from("a.rs"),
