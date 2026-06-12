@@ -213,11 +213,9 @@ impl Repo {
             };
             let mut opts = git2::DiffOptions::new();
             opts.pathspec(file);
-            let diff = self.inner.diff_tree_to_tree(
-                parent_tree.as_ref(),
-                Some(&tree),
-                Some(&mut opts),
-            )?;
+            let diff =
+                self.inner
+                    .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
             if diff.deltas().len() == 0 {
                 continue; // this commit did not touch `file`
             }
@@ -472,8 +470,10 @@ mod tests {
             let tree_oid = index.write_tree().unwrap();
             let tree = repo.find_tree(tree_oid).unwrap();
             let msg = format!("c{}", i + 1);
-            let parents: Vec<git2::Commit> =
-                parent.iter().map(|oid| repo.find_commit(*oid).unwrap()).collect();
+            let parents: Vec<git2::Commit> = parent
+                .iter()
+                .map(|oid| repo.find_commit(*oid).unwrap())
+                .collect();
             let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
             let oid = repo
                 .commit(Some("HEAD"), &sig, &sig, &msg, &tree, &parent_refs)
@@ -510,17 +510,16 @@ mod tests {
     #[test]
     fn file_history_untouched_file_is_empty() {
         let (_tmp, r) = repo_with_commits(&[&[("a.txt", "a1")]]);
-        let hist = r.file_history(std::path::Path::new("never.txt"), 50).unwrap();
+        let hist = r
+            .file_history(std::path::Path::new("never.txt"), 50)
+            .unwrap();
         assert!(hist.is_empty());
     }
 
     #[test]
     fn file_history_respects_limit() {
-        let (_tmp, r) = repo_with_commits(&[
-            &[("a.txt", "1")],
-            &[("a.txt", "2")],
-            &[("a.txt", "3")],
-        ]);
+        let (_tmp, r) =
+            repo_with_commits(&[&[("a.txt", "1")], &[("a.txt", "2")], &[("a.txt", "3")]]);
         let hist = r.file_history(std::path::Path::new("a.txt"), 2).unwrap();
         assert_eq!(hist.len(), 2); // capped, newest two
         assert_eq!(hist[0].summary, "c3");

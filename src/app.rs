@@ -538,9 +538,9 @@ impl App {
 
     /// True if any diff line carries `lineno` as its new or old line number.
     pub fn diff_has_lineno(&self, lineno: u32) -> bool {
-        self.diff.iter().any(|l| {
-            l.new_lineno == Some(lineno) || l.old_lineno == Some(lineno)
-        })
+        self.diff
+            .iter()
+            .any(|l| l.new_lineno == Some(lineno) || l.old_lineno == Some(lineno))
     }
 
     /// Scan self.diff for the first line matching `lineno` (new, then old); set diff_cursor.
@@ -1265,9 +1265,15 @@ mod tests {
         // Header(U) + src(collapsed) + top.rs + Header(S) = 4
         assert_eq!(app.rows.len(), 4);
         // src, src/a, src/b all collapsed
-        assert!(app.collapsed.contains(&(Section::Unstaged, PathBuf::from("src"))));
-        assert!(app.collapsed.contains(&(Section::Unstaged, PathBuf::from("src/a"))));
-        assert!(app.collapsed.contains(&(Section::Unstaged, PathBuf::from("src/b"))));
+        assert!(app
+            .collapsed
+            .contains(&(Section::Unstaged, PathBuf::from("src"))));
+        assert!(app
+            .collapsed
+            .contains(&(Section::Unstaged, PathBuf::from("src/a"))));
+        assert!(app
+            .collapsed
+            .contains(&(Section::Unstaged, PathBuf::from("src/b"))));
 
         // Second press: expand all → back to 8 rows.
         app.toggle_fold_all();
@@ -1289,11 +1295,18 @@ mod tests {
         ];
         let mut app = App::new(files, vec![], PathBuf::from("/repo"));
         // Collapse only "lib" manually; "src"/"src/a" still expanded → fold-all should collapse all.
-        app.collapsed.insert((Section::Unstaged, PathBuf::from("lib")));
+        app.collapsed
+            .insert((Section::Unstaged, PathBuf::from("lib")));
         app.toggle_fold_all();
-        assert!(app.collapsed.contains(&(Section::Unstaged, PathBuf::from("src"))));
-        assert!(app.collapsed.contains(&(Section::Unstaged, PathBuf::from("src/a"))));
-        assert!(app.collapsed.contains(&(Section::Unstaged, PathBuf::from("lib"))));
+        assert!(app
+            .collapsed
+            .contains(&(Section::Unstaged, PathBuf::from("src"))));
+        assert!(app
+            .collapsed
+            .contains(&(Section::Unstaged, PathBuf::from("src/a"))));
+        assert!(app
+            .collapsed
+            .contains(&(Section::Unstaged, PathBuf::from("lib"))));
     }
 
     #[test]
@@ -2628,13 +2641,15 @@ mod tests {
         // Expected: Header(Open,2), Item(?newer), Item(?older)
         // The newer-updated comment (items[1], updated=1500) should come first
         assert_eq!(rows.len(), 3, "Header + 2 items");
-        assert!(matches!(rows[0], CommentRow::Header(crate::comments::CommentStatus::Open, 2)));
+        assert!(matches!(
+            rows[0],
+            CommentRow::Header(crate::comments::CommentStatus::Open, 2)
+        ));
         // First Item should be the one with updated=1500 (items index 1)
         match rows[1] {
             CommentRow::Item(idx) => {
                 assert_eq!(
-                    app.comments.items[idx].text,
-                    "newer comment",
+                    app.comments.items[idx].text, "newer comment",
                     "first item in group must be the newer-updated comment"
                 );
             }
@@ -2643,8 +2658,7 @@ mod tests {
         match rows[2] {
             CommentRow::Item(idx) => {
                 assert_eq!(
-                    app.comments.items[idx].text,
-                    "older comment",
+                    app.comments.items[idx].text, "older comment",
                     "second item in group must be the older-updated comment"
                 );
             }

@@ -580,7 +580,10 @@ fn run(
                     // A (capital) — archive all resolved comments in the current scope
                     (KeyCode::Char('A'), _) => {
                         // Peek the resolved comments WITHOUT draining yet.
-                        let resolved: Vec<_> = app.comments.items.iter()
+                        let resolved: Vec<_> = app
+                            .comments
+                            .items
+                            .iter()
                             .filter(|c| c.status == comments::CommentStatus::Resolved)
                             .cloned()
                             .collect();
@@ -591,14 +594,20 @@ fn run(
                             match storage::append_archive(&app.repo_root, &resolved) {
                                 Ok(()) => {
                                     let n = app.comments.drain_resolved().len();
-                                    let dir = storage::scope_dir(&app.repo_root, &app.comment_scope);
+                                    let dir =
+                                        storage::scope_dir(&app.repo_root, &app.comment_scope);
                                     match app.comments.save(&dir) {
                                         Ok(()) => {
                                             let clen = app.comment_rows().len();
-                                            app.comment_selected = app.comment_selected.min(clen.saturating_sub(1));
-                                            app.status_msg = Some(format!("archived {n} resolved comment(s)"));
+                                            app.comment_selected =
+                                                app.comment_selected.min(clen.saturating_sub(1));
+                                            app.status_msg =
+                                                Some(format!("archived {n} resolved comment(s)"));
                                         }
-                                        Err(e) => app.status_msg = Some(format!("archive save error: {e}")),
+                                        Err(e) => {
+                                            app.status_msg =
+                                                Some(format!("archive save error: {e}"))
+                                        }
                                     }
                                 }
                                 Err(e) => app.status_msg = Some(format!("archive error: {e}")),

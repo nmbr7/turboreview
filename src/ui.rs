@@ -66,7 +66,11 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
                 continue;
             }
             // +1 for the joining space when cur is non-empty.
-            let needed = if cur_len == 0 { wlen } else { cur_len + 1 + wlen };
+            let needed = if cur_len == 0 {
+                wlen
+            } else {
+                cur_len + 1 + wlen
+            };
             if needed > width {
                 out.push(std::mem::take(&mut cur));
                 cur = word.to_string();
@@ -783,7 +787,10 @@ mod tests {
     fn wrap_text_wraps_long_lines_on_word_boundaries() {
         let lines = wrap_text("the quick brown fox", 9);
         // "the quick" (9), "brown fox" (9)
-        assert_eq!(lines, vec!["the quick".to_string(), "brown fox".to_string()]);
+        assert_eq!(
+            lines,
+            vec!["the quick".to_string(), "brown fox".to_string()]
+        );
         // No visual line exceeds the width.
         assert!(lines.iter().all(|l| l.chars().count() <= 9));
     }
@@ -797,7 +804,10 @@ mod tests {
     #[test]
     fn wrap_text_preserves_blank_lines_and_short_lines() {
         let lines = wrap_text("hi\n\nbye", 10);
-        assert_eq!(lines, vec!["hi".to_string(), String::new(), "bye".to_string()]);
+        assert_eq!(
+            lines,
+            vec!["hi".to_string(), String::new(), "bye".to_string()]
+        );
     }
 
     #[test]
@@ -967,9 +977,7 @@ mod tests {
         app.diff_cursor = 19;
 
         // Default (follow): LINE_13 visible; centered history mode hides it.
-        terminal
-            .draw(|f| render_diff(f, &app, diff_area))
-            .unwrap();
+        terminal.draw(|f| render_diff(f, &app, diff_area)).unwrap();
         let follow_dump: String = terminal
             .backend()
             .buffer()
@@ -995,9 +1003,7 @@ mod tests {
             baseline_scope: CommentScope::Worktree,
         });
 
-        terminal
-            .draw(|f| render_diff(f, &app, diff_area))
-            .unwrap();
+        terminal.draw(|f| render_diff(f, &app, diff_area)).unwrap();
         let center_dump: String = terminal
             .backend()
             .buffer()

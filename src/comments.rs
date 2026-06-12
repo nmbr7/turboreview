@@ -138,9 +138,8 @@ impl Comments {
 
     /// Remove and return Resolved comments whose `updated` is older than `cutoff` (and updated>0).
     pub fn drain_resolved_older_than(&mut self, cutoff: i64) -> Vec<Comment> {
-        let (old, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.items)
-            .into_iter()
-            .partition(|c| {
+        let (old, keep): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.items).into_iter().partition(|c| {
                 c.status == CommentStatus::Resolved && c.updated > 0 && c.updated < cutoff
             });
         self.items = keep;
@@ -644,7 +643,10 @@ mod tests {
         assert_eq!(drained[0].text, "resolved");
         // remaining items: open + wontfix
         assert_eq!(comments.items.len(), 2);
-        assert!(comments.items.iter().all(|c| c.status != CommentStatus::Resolved));
+        assert!(comments
+            .items
+            .iter()
+            .all(|c| c.status != CommentStatus::Resolved));
     }
 
     #[test]
@@ -704,7 +706,11 @@ mod tests {
         );
 
         let drained = comments.drain_resolved_older_than(200);
-        assert_eq!(drained.len(), 1, "only the old resolved (updated=100) should be drained");
+        assert_eq!(
+            drained.len(),
+            1,
+            "only the old resolved (updated=100) should be drained"
+        );
         assert_eq!(drained[0].text, "old resolved");
         // 3 remain: new resolved, legacy resolved, open
         assert_eq!(comments.items.len(), 3);
@@ -789,13 +795,25 @@ mod tests {
         // Simulate archive-first failure path: drain, archive fails, restore.
         let drained = comments.drain_resolved();
         // After drain: only 1 open item left.
-        assert_eq!(comments.items.len(), 1, "after drain only the open comment remains");
-        assert_eq!(drained.len(), 2, "drained must hold the 2 resolved comments");
+        assert_eq!(
+            comments.items.len(),
+            1,
+            "after drain only the open comment remains"
+        );
+        assert_eq!(
+            drained.len(),
+            2,
+            "drained must hold the 2 resolved comments"
+        );
 
         // Simulate restore on archive failure.
         comments.items.extend(drained);
         // After restore: all 3 items are back.
-        assert_eq!(comments.items.len(), 3, "restore must bring back all items — no data lost");
+        assert_eq!(
+            comments.items.len(),
+            3,
+            "restore must bring back all items — no data lost"
+        );
     }
 
     // ─── Original tests (updated to new 8-arg set signature) ─────────────────

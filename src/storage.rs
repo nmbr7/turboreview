@@ -70,11 +70,16 @@ const ARCHIVE_DAYS: i64 = 14;
 
 /// Returns the archive file path: `<repo_root>/.turboreview/archive/comments-archive.jsonl`.
 pub fn archive_path(repo_root: &Path) -> PathBuf {
-    worktree_dir(repo_root).join("archive").join("comments-archive.jsonl")
+    worktree_dir(repo_root)
+        .join("archive")
+        .join("comments-archive.jsonl")
 }
 
 /// Append archived comments as JSON lines to the archive file. Best-effort; errors returned.
-pub fn append_archive(repo_root: &Path, comments: &[crate::comments::Comment]) -> anyhow::Result<()> {
+pub fn append_archive(
+    repo_root: &Path,
+    comments: &[crate::comments::Comment],
+) -> anyhow::Result<()> {
     if comments.is_empty() {
         return Ok(());
     }
@@ -274,7 +279,10 @@ mod tests {
             updated: 1000,
         };
         let res = append_archive(dir.path(), &[c]);
-        assert!(res.is_err(), "append_archive must error when the dir can't be created");
+        assert!(
+            res.is_err(),
+            "append_archive must error when the dir can't be created"
+        );
     }
 
     #[test]
@@ -283,7 +291,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         append_archive(root, &[] as &[Comment]).unwrap();
-        assert!(!archive_path(root).exists(), "empty slice must not create archive file");
+        assert!(
+            !archive_path(root).exists(),
+            "empty slice must not create archive file"
+        );
     }
 
     #[test]
