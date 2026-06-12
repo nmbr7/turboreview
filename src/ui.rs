@@ -89,6 +89,67 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// One visual row in side-by-side mode. A `header` (hunk) row spans the full
+/// width and ignores left/right. Otherwise `left`/`right` hold the diff indices
+/// shown on the old/new sides (`None` = a blank cell).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RowPair {
+    header: Option<usize>,
+    left: Option<usize>,
+    right: Option<usize>,
+}
+
+/// Pair a unified `diff` into side-by-side rows. Context lines map to one row
+/// with the same index on both sides. A run of Del lines immediately followed by
+/// a run of Add lines is zipped position-wise (the shorter side padded blank).
+/// Hunk lines become full-width header rows.
+fn pair_diff_rows(diff: &[crate::app::DiffLine]) -> Vec<RowPair> {
+    let mut rows = Vec::new();
+    let mut i = 0;
+    while i < diff.len() {
+        match diff[i].kind {
+            LineKind::Hunk => {
+                rows.push(RowPair {
+                    header: Some(i),
+                    left: None,
+                    right: None,
+                });
+                i += 1;
+            }
+            LineKind::Context => {
+                rows.push(RowPair {
+                    header: None,
+                    left: Some(i),
+                    right: Some(i),
+                });
+                i += 1;
+            }
+            LineKind::Del | LineKind::Add => {
+                // Gather the maximal run of Dels, then the maximal run of Adds.
+                let dels_start = i;
+                while i < diff.len() && diff[i].kind == LineKind::Del {
+                    i += 1;
+                }
+                let dels: Vec<usize> = (dels_start..i).collect();
+                let adds_start = i;
+                while i < diff.len() && diff[i].kind == LineKind::Add {
+                    i += 1;
+                }
+                let adds: Vec<usize> = (adds_start..i).collect();
+                let n = dels.len().max(adds.len());
+                for k in 0..n {
+                    rows.push(RowPair {
+                        header: None,
+                        left: dels.get(k).copied(),
+                        right: adds.get(k).copied(),
+                    });
+                }
+            }
+        }
+    }
+    rows
+}
+
 pub fn render(frame: &mut Frame, app: &App) {
     // The bottom status row only exists when it has something to show — a search
     // input line or a transient message. Otherwise the panes use the full height
@@ -417,6 +478,266 @@ fn diff_scroll_start_center(cursor: usize, page: usize, rh: &impl Fn(usize) -> u
     start
 }
 
+/// Number of rendered lines an inline comment box occupies for `wrap_w` columns:
+/// 1 (top) + wrapped text + (response ? 1 blank + wrapped response : 0) + 1 (bottom).
+fn comment_box_height(c: &crate::comments::Comment, wrap_w: usize) -> usize {
+    let text_lines = wrap_text(&c.text, wrap_w).len().max(1);
+    let response_lines = match c.response.as_deref() {
+        Some(r) if !r.trim().is_empty() => 1 + wrap_text(r, wrap_w).len(),
+        _ => 0,
+    };
+    1 + text_lines + response_lines + 1
+}
+
+/// Push an inline comment box (top border, wrapped text, optional response,
+/// bottom border) into `result`, honoring the remaining `page` budget. Shared by
+/// the unified and side-by-side diff renderers.
+fn push_comment_box(
+    result: &mut Vec<Line<'static>>,
+    rendered_rows: &mut usize,
+    page: usize,
+    c: &crate::comments::Comment,
+    wrap_w: usize,
+    pal: &Palette,
+) {
+    let border_color = if c.stale {
+        pal.yellow
+    } else {
+        match c.status {
+            CommentStatus::Open => pal.accent_dim,
+            CommentStatus::Resolved => pal.tick,
+            CommentStatus::Wontfix => pal.red,
+            CommentStatus::NeedsInfo => pal.yellow,
+        }
+    };
+    let border_style = Style::default()
+        .fg(border_color)
+        .add_modifier(Modifier::ITALIC | Modifier::DIM);
+    let body_style = Style::default()
+        .fg(pal.accent_dim)
+        .add_modifier(Modifier::ITALIC);
+
+    // Top border line with status badge
+    if *rendered_rows < page {
+        let top_label = if c.stale {
+            format!("    ╭─ ⚠ outdated · {}", c.status.label())
+        } else {
+            match c.status {
+                CommentStatus::Open => "    ╭─ comment".to_string(),
+                CommentStatus::Resolved => "    ╭─ ✓ resolved".to_string(),
+                CommentStatus::Wontfix => "    ╭─ ✗ wontfix".to_string(),
+                CommentStatus::NeedsInfo => "    ╭─ ? needs-info".to_string(),
+            }
+        };
+        result.push(Line::from(Span::styled(top_label, border_style)));
+        *rendered_rows += 1;
+    }
+    // Body lines (reviewer's comment text), wrapped to the box width.
+    for comment_line in wrap_text(&c.text, wrap_w) {
+        if *rendered_rows >= page {
+            break;
+        }
+        let prefix = Span::styled("    │ ", body_style);
+        let body = Span::styled(comment_line, body_style);
+        result.push(Line::from(vec![prefix, body]));
+        *rendered_rows += 1;
+    }
+    // Response block (only when response is present AND non-empty after trim)
+    if c.response
+        .as_deref()
+        .map_or(false, |r| !r.trim().is_empty())
+    {
+        let resp = c.response.as_deref().unwrap();
+        let response_label_style = Style::default()
+            .fg(border_color)
+            .add_modifier(Modifier::ITALIC | Modifier::DIM);
+        if *rendered_rows < page {
+            result.push(Line::from(Span::styled("    │ ", body_style)));
+            *rendered_rows += 1;
+        }
+        let mut first = true;
+        for resp_line in wrap_text(resp, wrap_w) {
+            if *rendered_rows >= page {
+                break;
+            }
+            let line_content = if first {
+                first = false;
+                format!("    │ ↳ response: {}", resp_line)
+            } else {
+                format!("    │   {}", resp_line)
+            };
+            result.push(Line::from(Span::styled(line_content, response_label_style)));
+            *rendered_rows += 1;
+        }
+    }
+    // Bottom border line
+    if *rendered_rows < page {
+        result.push(Line::from(Span::styled("    ╰─", border_style)));
+        *rendered_rows += 1;
+    }
+}
+
+/// Build the rendered lines for side-by-side (split) diff mode. Old lines sit on
+/// the left half, new lines on the right, separated by a vertical bar. Cursor row
+/// (whichever side holds `diff_cursor`) is highlighted full-row; search matches
+/// tint their cell; hunk headers span the full width; inline comment boxes render
+/// full width under their row.
+fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
+    let pal = app.palette();
+    let page = area.height.saturating_sub(2) as usize;
+    let inner_w = area.width.saturating_sub(2) as usize; // minus borders
+    // Two columns + a 1-char separator between them.
+    let sep_w = 1usize;
+    let cell_w = inner_w.saturating_sub(sep_w) / 2;
+    let gutter_w = 5usize; // matches `gutter()` width
+    let text_w = cell_w.saturating_sub(gutter_w).max(1);
+    let wrap_w = inner_w.saturating_sub(6).max(1); // comment box indent "    │ "
+
+    let pairs = pair_diff_rows(&app.diff);
+    // Which paired row holds the cursor (left or right == diff_cursor).
+    let cursor_row = pairs
+        .iter()
+        .position(|p| p.left == Some(app.diff_cursor) || p.right == Some(app.diff_cursor))
+        .unwrap_or(0);
+
+    // Rendered height of a paired row = 1 + comment box for whichever side has a comment.
+    let row_height = |pi: usize| -> usize {
+        let p = &pairs[pi];
+        let mut h = 1;
+        for side in [p.left, p.right] {
+            if let Some(di) = side {
+                if let Some(c) = app.comment_for(&app.diff[di]) {
+                    h += comment_box_height(c, wrap_w);
+                }
+            }
+        }
+        h
+    };
+
+    let start = if app.history_active() {
+        diff_scroll_start_center(cursor_row, page, &row_height)
+    } else {
+        diff_scroll_start_follow(cursor_row, page, &row_height)
+    };
+
+    // Render one cell (gutter + text), padded/truncated to `cell_w`, with the
+    // appropriate background. `di` None => a blank cell.
+    let render_cell = |di: Option<usize>, is_cursor_row: bool| -> Vec<Span<'static>> {
+        let Some(di) = di else {
+            // Blank cell: pad to cell width.
+            let bg = if is_cursor_row {
+                Style::default().bg(pal.selected_bg)
+            } else {
+                Style::default()
+            };
+            return vec![Span::styled(" ".repeat(cell_w), bg)];
+        };
+        let dl = &app.diff[di];
+        let comment = app.comment_for(dl);
+        let gutter_fg = match comment {
+            Some(c) if c.stale => pal.yellow,
+            Some(_) => pal.accent,
+            None => pal.accent_dim,
+        };
+        let bg = match dl.kind {
+            LineKind::Add => Some(pal.add_bg),
+            LineKind::Del => Some(pal.del_bg),
+            _ => None,
+        };
+        let cell_bg = if is_cursor_row { Some(pal.selected_bg) } else { bg };
+        let gutter_style = {
+            let mut s = Style::default().fg(gutter_fg);
+            if let Some(b) = cell_bg {
+                s = s.bg(b);
+            }
+            s
+        };
+        // Text, horizontally scrolled then truncated to text width, syntax-highlighted.
+        let shifted: String = dl
+            .text
+            .chars()
+            .skip(app.diff_hscroll)
+            .take(text_w)
+            .collect();
+        let visible = shifted.chars().count();
+        let pad = text_w.saturating_sub(visible);
+        // Search tint applies to the whole cell when matched (not on cursor row).
+        let search_hit = app.search.as_ref().map_or(false, |s| {
+            !is_cursor_row && dl.text.to_lowercase().contains(&s.query)
+        });
+        let mut text_spans: Vec<Span<'static>> = highlight_code(&shifted, ext, app.theme);
+        for sp in text_spans.iter_mut() {
+            if is_cursor_row {
+                sp.style = sp.style.bg(pal.selected_bg);
+            } else if search_hit {
+                sp.style = sp.style.bg(pal.accent_dim);
+            } else if let Some(b) = cell_bg {
+                sp.style = sp.style.bg(b);
+            }
+            if !is_cursor_row && dl.kind == LineKind::Context {
+                sp.style = sp.style.add_modifier(Modifier::DIM);
+            }
+        }
+        // Pad the cell to full width so backgrounds fill the column.
+        let pad_style = {
+            let mut s = Style::default();
+            if is_cursor_row {
+                s = s.bg(pal.selected_bg);
+            } else if let Some(b) = cell_bg {
+                s = s.bg(b);
+            }
+            s
+        };
+        let mut spans = vec![Span::styled(gutter(dl), gutter_style)];
+        spans.extend(text_spans);
+        spans.push(Span::styled(" ".repeat(pad), pad_style));
+        spans
+    };
+
+    let mut result: Vec<Line<'static>> = Vec::new();
+    let mut rendered_rows = 0usize;
+    for (pi, p) in pairs.iter().enumerate().skip(start) {
+        if rendered_rows >= page {
+            break;
+        }
+        let is_cursor_row = pi == cursor_row;
+
+        // Hunk header: full width.
+        if let Some(hi) = p.header {
+            let shifted: String = app.diff[hi].text.chars().skip(app.diff_hscroll).collect();
+            let mut style = Style::default().fg(pal.hunk);
+            if is_cursor_row {
+                style = style.bg(pal.selected_bg);
+            }
+            result.push(Line::from(Span::styled(shifted, style)));
+            rendered_rows += 1;
+            continue;
+        }
+
+        // Two cells + separator.
+        let mut spans = render_cell(p.left, is_cursor_row);
+        let sep_style = if is_cursor_row {
+            Style::default().fg(pal.accent_dim).bg(pal.selected_bg)
+        } else {
+            Style::default().fg(pal.accent_dim)
+        };
+        spans.push(Span::styled("│", sep_style));
+        spans.extend(render_cell(p.right, is_cursor_row));
+        result.push(Line::from(spans));
+        rendered_rows += 1;
+
+        // Inline comment box(es) full-width under the row (left side first, then right).
+        for side in [p.left, p.right] {
+            if let Some(di) = side {
+                if let Some(c) = app.comment_for(&app.diff[di]) {
+                    push_comment_box(&mut result, &mut rendered_rows, page, c, wrap_w, &pal);
+                }
+            }
+        }
+    }
+    result
+}
+
 fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
     let pal = app.palette();
     let ext = app
@@ -457,6 +778,8 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             "No changes",
             Style::default().fg(pal.placeholder),
         ))]
+    } else if app.split_diff {
+        build_split_lines(app, area, &ext)
     } else {
         let page = area.height.saturating_sub(2) as usize;
 
@@ -568,84 +891,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             // Response: blank line + ↳ response: <text> lines, shown below body
             // The top + body lines + optional response + bottom are all counted toward budget.
             if let Some(c) = comment {
-                // Determine border color based on stale flag and status
-                let border_color = if c.stale {
-                    pal.yellow
-                } else {
-                    match c.status {
-                        CommentStatus::Open => pal.accent_dim,
-                        CommentStatus::Resolved => pal.tick,
-                        CommentStatus::Wontfix => pal.red,
-                        CommentStatus::NeedsInfo => pal.yellow,
-                    }
-                };
-                let border_style = Style::default()
-                    .fg(border_color)
-                    .add_modifier(Modifier::ITALIC | Modifier::DIM);
-                let body_style = Style::default()
-                    .fg(pal.accent_dim)
-                    .add_modifier(Modifier::ITALIC);
-
-                // Top border line with status badge
-                if rendered_rows < page {
-                    let top_label = if c.stale {
-                        format!("    ╭─ ⚠ outdated · {}", c.status.label())
-                    } else {
-                        match c.status {
-                            CommentStatus::Open => "    ╭─ comment".to_string(),
-                            CommentStatus::Resolved => "    ╭─ ✓ resolved".to_string(),
-                            CommentStatus::Wontfix => "    ╭─ ✗ wontfix".to_string(),
-                            CommentStatus::NeedsInfo => "    ╭─ ? needs-info".to_string(),
-                        }
-                    };
-                    result.push(Line::from(Span::styled(top_label, border_style)));
-                    rendered_rows += 1;
-                }
-                // Body lines (reviewer's comment text), wrapped to the box width.
-                for comment_line in wrap_text(&c.text, wrap_w) {
-                    if rendered_rows >= page {
-                        break;
-                    }
-                    let prefix = Span::styled("    │ ", body_style);
-                    let body = Span::styled(comment_line, body_style);
-                    result.push(Line::from(vec![prefix, body]));
-                    rendered_rows += 1;
-                }
-                // Response block (only when response is present AND non-empty after trim)
-                if c.response
-                    .as_deref()
-                    .map_or(false, |r| !r.trim().is_empty())
-                {
-                    let resp = c.response.as_deref().unwrap();
-                    let response_label_style = Style::default()
-                        .fg(border_color)
-                        .add_modifier(Modifier::ITALIC | Modifier::DIM);
-                    // Blank separator line
-                    if rendered_rows < page {
-                        result.push(Line::from(Span::styled("    │ ", body_style)));
-                        rendered_rows += 1;
-                    }
-                    // Response lines, wrapped to the box width (same height as the closure).
-                    let mut first = true;
-                    for resp_line in wrap_text(resp, wrap_w) {
-                        if rendered_rows >= page {
-                            break;
-                        }
-                        let line_content = if first {
-                            first = false;
-                            format!("    │ ↳ response: {}", resp_line)
-                        } else {
-                            format!("    │   {}", resp_line)
-                        };
-                        result.push(Line::from(Span::styled(line_content, response_label_style)));
-                        rendered_rows += 1;
-                    }
-                }
-                // Bottom border line
-                if rendered_rows < page {
-                    result.push(Line::from(Span::styled("    ╰─", border_style)));
-                    rendered_rows += 1;
-                }
+                push_comment_box(&mut result, &mut rendered_rows, page, c, wrap_w, &pal);
             }
         }
         result
@@ -754,6 +1000,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("h/l, ←/→", "scroll diff horizontally"),
             ("+/-", "context lines (±5, + at max → full file)"),
             ("F", "full-file diff toggle"),
+            ("v", "side-by-side / unified diff"),
         ],
     ),
     (
@@ -837,6 +1084,112 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::path::PathBuf;
+
+    fn dl(kind: LineKind, text: &str) -> DiffLine {
+        DiffLine {
+            kind,
+            text: text.into(),
+            old_lineno: None,
+            new_lineno: None,
+        }
+    }
+
+    #[test]
+    fn split_diff_renders_both_sides_without_panic() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.selected = 1;
+        app.focus = Pane::Diff;
+        app.split_diff = true;
+        app.set_diff(vec![
+            dl(LineKind::Hunk, "@@ -1,2 +1,2 @@"),
+            dl(LineKind::Del, "old_left_token"),
+            dl(LineKind::Add, "new_right_token"),
+            dl(LineKind::Context, "shared_ctx"),
+        ]);
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(dump.contains("old_left"), "old side token must render");
+        assert!(dump.contains("new_right"), "new side token must render");
+        assert!(dump.contains("│"), "column separator must render");
+    }
+
+    #[test]
+    fn pair_rows_context_maps_to_both_sides() {
+        let diff = vec![dl(LineKind::Context, "same")];
+        let rows = pair_diff_rows(&diff);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].left, Some(0));
+        assert_eq!(rows[0].right, Some(0));
+        assert_eq!(rows[0].header, None);
+    }
+
+    #[test]
+    fn pair_rows_hunk_is_header() {
+        let diff = vec![dl(LineKind::Hunk, "@@ -1 +1 @@")];
+        let rows = pair_diff_rows(&diff);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].header, Some(0));
+        assert_eq!(rows[0].left, None);
+        assert_eq!(rows[0].right, None);
+    }
+
+    #[test]
+    fn pair_rows_equal_del_add_run_zips() {
+        // del0 del1 add2 add3 -> two rows: (0,2) (1,3)
+        let diff = vec![
+            dl(LineKind::Del, "old0"),
+            dl(LineKind::Del, "old1"),
+            dl(LineKind::Add, "new0"),
+            dl(LineKind::Add, "new1"),
+        ];
+        let rows = pair_diff_rows(&diff);
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].left, rows[0].right), (Some(0), Some(2)));
+        assert_eq!((rows[1].left, rows[1].right), (Some(1), Some(3)));
+    }
+
+    #[test]
+    fn pair_rows_unequal_run_pads_blank() {
+        // 2 dels, 1 add -> rows: (0,2) (1,None)
+        let diff = vec![
+            dl(LineKind::Del, "old0"),
+            dl(LineKind::Del, "old1"),
+            dl(LineKind::Add, "new0"),
+        ];
+        let rows = pair_diff_rows(&diff);
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].left, rows[0].right), (Some(0), Some(2)));
+        assert_eq!((rows[1].left, rows[1].right), (Some(1), None));
+    }
+
+    #[test]
+    fn pair_rows_add_only_run_has_blank_left() {
+        let diff = vec![dl(LineKind::Add, "new0"), dl(LineKind::Add, "new1")];
+        let rows = pair_diff_rows(&diff);
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].left, rows[0].right), (None, Some(0)));
+        assert_eq!((rows[1].left, rows[1].right), (None, Some(1)));
+    }
+
+    #[test]
+    fn pair_rows_del_only_run_has_blank_right() {
+        let diff = vec![dl(LineKind::Del, "old0")];
+        let rows = pair_diff_rows(&diff);
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].left, rows[0].right), (Some(0), None));
+    }
 
     #[test]
     fn wrap_text_wraps_long_lines_on_word_boundaries() {

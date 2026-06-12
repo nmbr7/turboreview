@@ -47,7 +47,9 @@ In both views:
 - **Right pane — Diff.** Syntax-highlighted code with a line-number gutter.
   Added/removed lines are bright with a green/red background; unchanged context
   lines are dimmed so changes stand out. A line cursor (highlighted row) marks
-  where comments attach. The title shows `(ctx N)` or `(full file)`.
+  where comments attach. The title shows `(ctx N)` or `(full file)`. Press `v`
+  for a side-by-side (split) view — old on the left, new on the right — which is
+  remembered across sessions.
 - **Comments pane (toggle with `C`).** An optional third column listing the
   current scope's comments grouped by status (Open / NeedsInfo / Wontfix /
   Resolved). Press `Enter` on a comment to jump to its file and line.
@@ -69,6 +71,7 @@ Press `?` at any time for an in-app keybinding overlay.
 | `h`/`l` `←`/`→`  | scroll the diff horizontally (Diff pane)                        |
 | `+` / `-`        | increase / decrease diff context (step 5; `+` at max → full file) |
 | `F`              | toggle full-file view (shortcut; also reachable via `+`)          |
+| `v`              | toggle side-by-side (split) vs unified diff (persisted)          |
 | `H`              | file-history overlay for the selected file's diff               |
 | `{` / `}`        | step to older / newer revision (in the history overlay)         |
 | `/`              | search within the current diff                                  |

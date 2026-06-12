@@ -32,38 +32,60 @@ struct LogEntry<'a> {
     action: &'a str,
 }
 
-/// Persisted configuration (theme preference).
+/// Persisted configuration. New fields use `#[serde(default)]` so older
+/// config.json files (which may lack them) keep loading.
 #[derive(Serialize, Deserialize, Default)]
 struct Config {
     theme: String, // "dark" | "light"
+    #[serde(default)]
+    split_diff: bool, // side-by-side diff toggle
 }
 
-/// Load the persisted theme from `<repo_root>/.turboreview/config.json`.
-/// Returns `Theme::Dark` if the file is missing or cannot be parsed.
-pub fn load_theme(repo_root: &Path) -> crate::theme::Theme {
+/// Read the whole config (defaults if missing/unparseable).
+fn load_config(repo_root: &Path) -> Config {
     let path = worktree_dir(repo_root).join("config.json");
     let Ok(bytes) = std::fs::read(&path) else {
-        return crate::theme::Theme::Dark;
+        return Config::default();
     };
-    let cfg: Config = serde_json::from_slice(&bytes).unwrap_or_default();
-    match cfg.theme.as_str() {
+    serde_json::from_slice(&bytes).unwrap_or_default()
+}
+
+/// Write the whole config to `<repo_root>/.turboreview/config.json`.
+fn save_config(repo_root: &Path, cfg: &Config) -> Result<()> {
+    let dir = worktree_dir(repo_root);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("config.json"), serde_json::to_vec_pretty(cfg)?)?;
+    Ok(())
+}
+
+/// Load the persisted theme. Returns `Theme::Dark` if missing/unparseable.
+pub fn load_theme(repo_root: &Path) -> crate::theme::Theme {
+    match load_config(repo_root).theme.as_str() {
         "light" => crate::theme::Theme::Light,
         _ => crate::theme::Theme::Dark,
     }
 }
 
-/// Persist the current theme to `<repo_root>/.turboreview/config.json`.
+/// Persist the theme, preserving any other config fields (read-modify-write).
 pub fn save_theme(repo_root: &Path, theme: crate::theme::Theme) -> Result<()> {
-    let dir = worktree_dir(repo_root);
-    std::fs::create_dir_all(&dir)?;
-    let cfg = Config {
-        theme: match theme {
-            crate::theme::Theme::Light => "light".into(),
-            _ => "dark".into(),
-        },
+    let mut cfg = load_config(repo_root);
+    cfg.theme = match theme {
+        crate::theme::Theme::Light => "light".into(),
+        _ => "dark".into(),
     };
-    std::fs::write(dir.join("config.json"), serde_json::to_vec_pretty(&cfg)?)?;
-    Ok(())
+    save_config(repo_root, &cfg)
+}
+
+/// Load the persisted side-by-side diff preference (false if unset).
+pub fn load_split(repo_root: &Path) -> bool {
+    load_config(repo_root).split_diff
+}
+
+/// Persist the side-by-side diff preference, preserving other config fields.
+pub fn save_split(repo_root: &Path, split: bool) -> Result<()> {
+    let mut cfg = load_config(repo_root);
+    cfg.split_diff = split;
+    save_config(repo_root, &cfg)
 }
 
 const ARCHIVE_DAYS: i64 = 14;
@@ -146,6 +168,52 @@ pub fn now_secs() -> i64 {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    // ─── Config: theme + split_diff round-trip, no clobber ───────────────────
+
+    #[test]
+    fn split_round_trips() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert!(!load_split(root)); // default
+        save_split(root, true).unwrap();
+        assert!(load_split(root));
+        save_split(root, false).unwrap();
+        assert!(!load_split(root));
+    }
+
+    #[test]
+    fn saving_theme_preserves_split() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        save_split(root, true).unwrap();
+        save_theme(root, crate::theme::Theme::Light).unwrap();
+        // Theme write must not wipe the split flag.
+        assert!(load_split(root));
+        assert_eq!(load_theme(root), crate::theme::Theme::Light);
+    }
+
+    #[test]
+    fn saving_split_preserves_theme() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        save_theme(root, crate::theme::Theme::Light).unwrap();
+        save_split(root, true).unwrap();
+        assert_eq!(load_theme(root), crate::theme::Theme::Light);
+        assert!(load_split(root));
+    }
+
+    #[test]
+    fn old_theme_only_config_still_loads() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let cfgdir = worktree_dir(root);
+        std::fs::create_dir_all(&cfgdir).unwrap();
+        // A pre-split config.json with only the theme field.
+        std::fs::write(cfgdir.join("config.json"), br#"{"theme":"light"}"#).unwrap();
+        assert_eq!(load_theme(root), crate::theme::Theme::Light);
+        assert!(!load_split(root)); // missing field defaults to false
+    }
 
     // ─── TDD: archive_path, append_archive, archive_cutoff_secs ──────────────
 

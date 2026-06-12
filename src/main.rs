@@ -57,6 +57,7 @@ fn main() -> Result<()> {
     app.commits = repo.log(200).unwrap_or_default();
     // Load persisted theme preference
     app.theme = storage::load_theme(&root);
+    app.split_diff = storage::load_split(&root);
     refresh_diff(&repo, &mut app);
 
     let mut terminal = setup_terminal()?;
@@ -576,6 +577,11 @@ fn run(
                     (KeyCode::Char('T'), _) => {
                         app.toggle_theme();
                         let _ = storage::save_theme(&app.repo_root, app.theme);
+                    }
+                    // v toggles side-by-side / unified diff and persists the choice
+                    (KeyCode::Char('v'), _) => {
+                        app.toggle_split();
+                        let _ = storage::save_split(&app.repo_root, app.split_diff);
                     }
                     // A (capital) — archive all resolved comments in the current scope
                     (KeyCode::Char('A'), _) => {

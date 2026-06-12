@@ -172,6 +172,8 @@ pub struct App {
     pub show_comments: bool,
     pub comment_selected: usize,
     pub theme: crate::theme::Theme,
+    /// false = unified diff (default), true = side-by-side (split) diff.
+    pub split_diff: bool,
     pub history: Option<FileHistory>,
     pub search: Option<SearchState>,
     pub search_input: Option<String>,
@@ -214,6 +216,7 @@ impl App {
             show_comments: false,
             comment_selected: 0,
             theme: crate::theme::Theme::Dark,
+            split_diff: false,
             history: None,
             search: None,
             search_input: None,
@@ -235,6 +238,11 @@ impl App {
             crate::theme::Theme::Dark => crate::theme::Theme::Light,
             crate::theme::Theme::Light => crate::theme::Theme::Dark,
         };
+    }
+
+    /// Toggle side-by-side (split) diff rendering.
+    pub fn toggle_split(&mut self) {
+        self.split_diff = !self.split_diff;
     }
 
     pub fn palette(&self) -> crate::theme::Palette {
@@ -1844,6 +1852,16 @@ mod tests {
         assert_eq!(app.theme, crate::theme::Theme::Light);
         app.toggle_theme();
         assert_eq!(app.theme, crate::theme::Theme::Dark);
+    }
+
+    #[test]
+    fn toggle_split_flips_flag() {
+        let mut app = sample();
+        assert!(!app.split_diff);
+        app.toggle_split();
+        assert!(app.split_diff);
+        app.toggle_split();
+        assert!(!app.split_diff);
     }
 
     #[test]
