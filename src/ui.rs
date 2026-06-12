@@ -718,53 +718,95 @@ fn render_input_modal(frame: &mut Frame, app: &App, input: &InputState) {
     frame.render_widget(para, area);
 }
 
-const HELP_LINES: &[(&str, &str)] = &[
-    ("Tab", "switch focus (Files/Diff/Comments)"),
-    ("j/k, ↑/↓", "move selection / cursor"),
-    ("gg / G", "top / bottom"),
+/// Keybindings grouped by category for the help overlay. Each group is a
+/// (title, &[(key, description)]) pair rendered as a labelled section.
+const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
-        "Enter",
-        "open file diff / open commit / fold dir / jump to comment",
+        "Navigation",
+        &[
+            ("Tab", "switch focus (Files/Diff/Comments)"),
+            ("j/k, ↑/↓", "move selection / cursor"),
+            ("gg / G", "top / bottom"),
+            (
+                "Enter",
+                "open file diff / open commit / fold dir / jump to comment",
+            ),
+            ("Esc", "back / focus files"),
+            ("[ / ]", "switch Changes/Commits view"),
+        ],
     ),
-    ("Esc", "back / focus files"),
-    ("h/l, ←/→", "scroll diff horizontally"),
-    ("+/-", "context lines (±5, + at max → full file)"),
-    ("F", "full-file diff toggle"),
-    ("H", "file-history overlay for the current file diff"),
-    ("{ / }", "older / newer revision (in history overlay)"),
-    ("/", "search within the diff"),
-    ("n / N", "next / previous search match"),
-    ("a", "fold/unfold all directories"),
-    ("z", "hide/show file pane"),
-    ("C", "toggle comment-list pane"),
-    ("< / >", "resize file pane"),
-    ("[ / ]", "switch Changes/Commits view"),
-    ("c", "comment on line"),
-    ("s", "stage / unstage file"),
-    ("Space", "toggle reviewed"),
-    ("R", "hide reviewed files"),
-    ("r", "refresh"),
-    ("T", "toggle light / dark theme"),
-    ("?", "this help"),
-    ("q / Ctrl-C", "quit"),
+    (
+        "Diff view",
+        &[
+            ("h/l, ←/→", "scroll diff horizontally"),
+            ("+/-", "context lines (±5, + at max → full file)"),
+            ("F", "full-file diff toggle"),
+        ],
+    ),
+    (
+        "History & search",
+        &[
+            ("H", "file-history overlay for the current file diff"),
+            ("{ / }", "older / newer revision (in history overlay)"),
+            ("/", "search within the diff"),
+            ("n / N", "next / previous search match"),
+        ],
+    ),
+    (
+        "Layout",
+        &[
+            ("a", "fold/unfold all directories"),
+            ("z", "hide/show file pane"),
+            ("< / >", "resize file pane"),
+            ("C", "toggle comment-list pane"),
+        ],
+    ),
+    (
+        "Review",
+        &[
+            ("c", "comment on line"),
+            ("s", "stage / unstage file"),
+            ("Space", "toggle reviewed"),
+            ("R", "hide reviewed files"),
+        ],
+    ),
+    (
+        "App",
+        &[
+            ("r", "refresh"),
+            ("T", "toggle light / dark theme"),
+            ("?", "this help"),
+            ("q / Ctrl-C", "quit"),
+        ],
+    ),
 ];
 
 fn render_help_modal(frame: &mut Frame, app: &App) {
     let pal = app.palette();
-    let area = centered_rect(60, 70, frame.area());
+    let area = centered_rect(64, 80, frame.area());
     frame.render_widget(Clear, area);
-    let lines: Vec<Line> = HELP_LINES
-        .iter()
-        .map(|(key, desc)| {
-            Line::from(vec![
+    let mut lines: Vec<Line> = Vec::new();
+    for (si, (title, entries)) in HELP_SECTIONS.iter().enumerate() {
+        // Blank separator between sections (not before the first).
+        if si > 0 {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            format!(" {}", title),
+            Style::default()
+                .fg(pal.hunk)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )));
+        for (key, desc) in entries.iter() {
+            lines.push(Line::from(vec![
                 Span::styled(
-                    format!("  {:14}", key),
+                    format!("  {:12}", key),
                     Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(desc.to_string(), Style::default().fg(pal.accent_dim)),
-            ])
-        })
-        .collect();
+            ]));
+        }
+    }
     let para = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
@@ -1789,6 +1831,15 @@ mod tests {
         assert!(
             dump.contains("theme"),
             "help overlay must mention theme toggle"
+        );
+        // Grouped help: category headers must render.
+        assert!(
+            dump.contains("Navigation"),
+            "help overlay must show the Navigation section header"
+        );
+        assert!(
+            dump.contains("History"),
+            "help overlay must show the History & search section header"
         );
     }
 
