@@ -190,6 +190,53 @@ impl Repo {
         collect_diff_lines(&diff)
     }
 
+    /// Commits that touched `file`, newest first, walking from HEAD. Capped at `limit`.
+    /// Empty if HEAD is unborn or the file was never touched in the walked history.
+    pub fn file_history(&self, file: &Path, limit: usize) -> Result<Vec<CommitInfo>> {
+        let mut walk = self.inner.revwalk()?;
+        if walk.push_head().is_err() {
+            return Ok(Vec::new()); // unborn HEAD
+        }
+        walk.set_sorting(git2::Sort::TIME)?;
+        let mut out = Vec::new();
+        for oid in walk {
+            if out.len() >= limit {
+                break;
+            }
+            let oid = oid?;
+            let commit = self.inner.find_commit(oid)?;
+            let tree = commit.tree()?;
+            let parent_tree = if commit.parent_count() > 0 {
+                Some(commit.parent(0)?.tree()?)
+            } else {
+                None
+            };
+            let mut opts = git2::DiffOptions::new();
+            opts.pathspec(file);
+            let diff = self.inner.diff_tree_to_tree(
+                parent_tree.as_ref(),
+                Some(&tree),
+                Some(&mut opts),
+            )?;
+            if diff.deltas().len() == 0 {
+                continue; // this commit did not touch `file`
+            }
+            let id = oid.to_string();
+            let short = id.chars().take(8).collect::<String>();
+            let summary = commit.summary().ok().flatten().unwrap_or("").to_string();
+            let author = commit.author().name().unwrap_or("").to_string();
+            let time = format_date(commit.author().when().seconds());
+            out.push(CommitInfo {
+                id,
+                short,
+                summary,
+                author,
+                time,
+            });
+        }
+        Ok(out)
+    }
+
     /// List changed files for the given mode.
     pub fn changed_files(&self, mode: Mode) -> Result<Vec<FileChange>> {
         let diff = self.build_diff(mode)?;
@@ -402,6 +449,82 @@ mod tests {
         cfg.set_str("user.name", "t").unwrap();
         cfg.set_str("user.email", "t@t").unwrap();
         (dir, repo)
+    }
+
+    /// Build a repo applying each commit's (path, content) writes in order.
+    /// Commit messages are "c1", "c2", ... Returns (tempdir, Repo).
+    fn repo_with_commits(commits: &[&[(&str, &str)]]) -> (tempfile::TempDir, Repo) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(tmp.path()).unwrap();
+        let mut parent: Option<git2::Oid> = None;
+        for (i, writes) in commits.iter().enumerate() {
+            // Distinct author times so TIME-sorted revwalk order is deterministic.
+            let time = git2::Time::new((i + 1) as i64, 0);
+            let sig = git2::Signature::new("t", "t@t", &time).unwrap();
+            for (path, content) in writes.iter() {
+                std::fs::write(tmp.path().join(path), content).unwrap();
+            }
+            let mut index = repo.index().unwrap();
+            for (path, _) in writes.iter() {
+                index.add_path(std::path::Path::new(path)).unwrap();
+            }
+            index.write().unwrap();
+            let tree_oid = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_oid).unwrap();
+            let msg = format!("c{}", i + 1);
+            let parents: Vec<git2::Commit> =
+                parent.iter().map(|oid| repo.find_commit(*oid).unwrap()).collect();
+            let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+            let oid = repo
+                .commit(Some("HEAD"), &sig, &sig, &msg, &tree, &parent_refs)
+                .unwrap();
+            parent = Some(oid);
+        }
+        let r = Repo::discover(tmp.path()).unwrap();
+        (tmp, r)
+    }
+
+    #[test]
+    fn file_history_returns_only_commits_touching_file() {
+        let (_tmp, r) = repo_with_commits(&[
+            &[("a.txt", "a1")], // commit 1: touches a.txt
+            &[("b.txt", "b1")], // commit 2: touches b.txt only
+            &[("a.txt", "a2")], // commit 3: touches a.txt
+        ]);
+        let hist = r.file_history(std::path::Path::new("a.txt"), 50).unwrap();
+        // Newest first: commit 3 then commit 1. Commit 2 excluded.
+        assert_eq!(hist.len(), 2);
+        assert_eq!(hist[0].summary, "c3");
+        assert_eq!(hist[1].summary, "c1");
+    }
+
+    #[test]
+    fn file_history_unborn_head_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        git2::Repository::init(tmp.path()).unwrap();
+        let r = Repo::discover(tmp.path()).unwrap();
+        let hist = r.file_history(std::path::Path::new("a.txt"), 50).unwrap();
+        assert!(hist.is_empty());
+    }
+
+    #[test]
+    fn file_history_untouched_file_is_empty() {
+        let (_tmp, r) = repo_with_commits(&[&[("a.txt", "a1")]]);
+        let hist = r.file_history(std::path::Path::new("never.txt"), 50).unwrap();
+        assert!(hist.is_empty());
+    }
+
+    #[test]
+    fn file_history_respects_limit() {
+        let (_tmp, r) = repo_with_commits(&[
+            &[("a.txt", "1")],
+            &[("a.txt", "2")],
+            &[("a.txt", "3")],
+        ]);
+        let hist = r.file_history(std::path::Path::new("a.txt"), 2).unwrap();
+        assert_eq!(hist.len(), 2); // capped, newest two
+        assert_eq!(hist[0].summary, "c3");
+        assert_eq!(hist[1].summary, "c2");
     }
 
     fn commit_file(repo: &Repository, dir: &Path, name: &str, content: &str) {
