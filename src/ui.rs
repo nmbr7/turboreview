@@ -90,9 +90,14 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 }
 
 pub fn render(frame: &mut Frame, app: &App) {
+    // The bottom status row only exists when it has something to show — a search
+    // input line or a transient message. Otherwise the panes use the full height
+    // (no empty padding line), since the "? help" hint lives in the diff border.
+    let want_status = app.search_input.is_some() || app.status_msg.is_some();
+    let status_h = if want_status { 1 } else { 0 };
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([Constraint::Min(1), Constraint::Length(status_h)])
         .split(frame.area());
 
     let main_area = outer[0];
@@ -150,7 +155,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     } else {
         render_diff(frame, app, main_area);
     }
-    render_status(frame, app, outer[1]);
+    if status_h > 0 {
+        render_status(frame, app, outer[1]);
+    }
     if let Some(input) = &app.input {
         render_input_modal(frame, app, input);
     }
@@ -648,7 +655,15 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(focused_border(app, Pane::Diff))
-            .title(title),
+            .title(title)
+            // Help hint sits in the bottom-right of the diff pane's border.
+            .title_bottom(
+                Line::from(Span::styled(
+                    " ? help ",
+                    Style::default().fg(pal.accent_dim),
+                ))
+                .right_aligned(),
+            ),
     );
     frame.render_widget(para, area);
 }
@@ -662,11 +677,9 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(para, area);
         return;
     }
-    let base = "? for help";
-    let text = match &app.status_msg {
-        Some(msg) => format!("{}   |   {}", base, msg),
-        None => base.to_string(),
-    };
+    // Transient status message only; the "? for help" hint lives in the diff pane's
+    // bottom-right border (see render_diff).
+    let text = app.status_msg.clone().unwrap_or_default();
     let para = Paragraph::new(text).style(Style::default().fg(pal.accent_dim));
     frame.render_widget(para, area);
 }
@@ -1748,6 +1761,29 @@ mod tests {
         assert!(
             dump.contains("a.rs"),
             "file basename must appear in comment list"
+        );
+    }
+
+    #[test]
+    fn help_hint_renders_in_diff_pane_border() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let app = App::new(files, vec![], PathBuf::from("/repo"));
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            dump.contains("? help"),
+            "diff pane border must show the '? help' hint"
         );
     }
 
