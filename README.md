@@ -63,6 +63,7 @@ Press `?` at any time for an in-app keybinding overlay.
 | `[` / `]`        | switch view (Changes ⇆ Commits)                                 |
 | `Tab`            | switch focus across the visible panes                           |
 | `↑`/`↓` `j`/`k`  | move selection / commit / line cursor in the focused pane       |
+| `⇧↑`/`⇧↓` `J`/`K`| jump (fast scroll) in the focused pane                          |
 | mouse wheel      | move the focused pane's cursor                                  |
 | `gg` / `G`       | jump to top / bottom of the focused pane                        |
 | `Enter`          | open commit · focus a file's Diff · fold dir · jump to comment  |

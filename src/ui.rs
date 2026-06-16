@@ -990,6 +990,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Tab", "switch focus (Files/Diff/Comments)"),
             ("j/k, ↑/↓", "move selection / cursor"),
+            ("J/K, ⇧↑/⇧↓", "jump (fast scroll)"),
             ("gg / G", "top / bottom"),
             (
                 "Enter",

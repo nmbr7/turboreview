@@ -18,6 +18,9 @@ use turboreview::comments;
 use turboreview::git::Repo;
 use turboreview::{review, storage, ui};
 
+/// Rows moved per Shift+Up/Down (or J/K) fast-nav step.
+const JUMP_STEP: isize = 10;
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--skill") {
@@ -416,6 +419,13 @@ fn run(
                     (KeyCode::Char('R'), _) => {
                         app.toggle_hide_reviewed();
                         refresh_diff(repo, app);
+                    }
+                    // Shift+Up/Down (or K/J) jump by JUMP_STEP for faster scrolling.
+                    (KeyCode::Up, KeyModifiers::SHIFT) | (KeyCode::Char('K'), _) => {
+                        move_in_focus(repo, app, -JUMP_STEP)
+                    }
+                    (KeyCode::Down, KeyModifiers::SHIFT) | (KeyCode::Char('J'), _) => {
+                        move_in_focus(repo, app, JUMP_STEP)
                     }
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => move_in_focus(repo, app, -1),
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => move_in_focus(repo, app, 1),
