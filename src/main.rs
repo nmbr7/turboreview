@@ -21,6 +21,14 @@ use turboreview::{review, storage, ui};
 /// Rows moved per Shift+Up/Down (or J/K) fast-nav step.
 const JUMP_STEP: isize = 10;
 
+/// Copy text to the system clipboard. A fresh handle is created per call;
+/// arboard advises against holding one long-term on some platforms.
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    arboard::Clipboard::new()
+        .and_then(|mut cb| cb.set_text(text.to_string()))
+        .map_err(|e| e.to_string())
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--skill") {
@@ -473,8 +481,32 @@ fn run(
                             }
                         }
                     }
+                    (KeyCode::Char('V'), _) => {
+                        if app.focus == Pane::Diff && !app.diff.is_empty() {
+                            app.start_select();
+                        }
+                    }
+                    (KeyCode::Char('y'), _) => {
+                        if app.focus == Pane::Diff && !app.diff.is_empty() {
+                            let (lo, hi) = app.select_range();
+                            let n = hi - lo + 1;
+                            match copy_to_clipboard(&app.selection_text()) {
+                                Ok(()) => {
+                                    app.status_msg = Some(if n == 1 {
+                                        "copied line".into()
+                                    } else {
+                                        format!("copied {n} lines")
+                                    })
+                                }
+                                Err(e) => app.status_msg = Some(format!("copy error: {e}")),
+                            }
+                            app.cancel_select();
+                        }
+                    }
                     (KeyCode::Esc, _) => {
-                        if app.history_active() && app.focus == Pane::Diff {
+                        if app.select_active() {
+                            app.cancel_select();
+                        } else if app.history_active() && app.focus == Pane::Diff {
                             app.exit_history();
                             let root = app.repo_root.clone();
                             load_scope(&root, app);

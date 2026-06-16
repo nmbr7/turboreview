@@ -697,13 +697,18 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
         spans
     };
 
+    // A row is highlighted when any of its diff indices fall in the visual-select
+    // range (collapses to the single cursor row when nothing is selected).
+    let (sel_lo, sel_hi) = app.select_range();
+    let in_sel = |di: Option<usize>| matches!(di, Some(i) if i >= sel_lo && i <= sel_hi);
+
     let mut result: Vec<Line<'static>> = Vec::new();
     let mut rendered_rows = 0usize;
-    for (pi, p) in pairs.iter().enumerate().skip(start) {
+    for p in pairs.iter().skip(start) {
         if rendered_rows >= page {
             break;
         }
-        let is_cursor_row = pi == cursor_row;
+        let is_cursor_row = in_sel(p.header) || in_sel(p.left) || in_sel(p.right);
 
         // Hunk header: full width.
         if let Some(hi) = p.header {
@@ -822,13 +827,16 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             diff_scroll_start_follow(app.diff_cursor, page, &rendered_height)
         };
 
+        let (sel_lo, sel_hi) = app.select_range();
         let mut result: Vec<Line> = Vec::new();
         let mut rendered_rows: usize = 0;
         for (idx, dl) in app.diff.iter().enumerate().skip(start) {
             if rendered_rows >= page {
                 break;
             }
-            let is_cursor = idx == app.diff_cursor;
+            // Highlight the whole visual-select range (collapses to the single
+            // cursor line when nothing is selected).
+            let is_cursor = idx >= sel_lo && idx <= sel_hi;
             let bg = match dl.kind {
                 LineKind::Add => Some(pal.add_bg),
                 LineKind::Del => Some(pal.del_bg),
@@ -1007,6 +1015,8 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("+/-", "context lines (±5, + at max → full file)"),
             ("F", "full-file diff toggle"),
             ("v", "side-by-side / unified diff"),
+            ("y", "copy line / selection to clipboard"),
+            ("V", "visual select (move, then y to copy, Esc cancels)"),
         ],
     ),
     (

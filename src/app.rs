@@ -152,6 +152,8 @@ pub struct App {
     pub diff: Vec<DiffLine>,
     pub diff_cursor: usize,
     pub diff_hscroll: usize,
+    /// Some(anchor) when visual-select is active; anchor is a diff index.
+    pub select_anchor: Option<usize>,
     pub reviewed: HashSet<PathBuf>,
     pub status_msg: Option<String>,
     pub collapsed: HashSet<(Section, PathBuf)>,
@@ -196,6 +198,7 @@ impl App {
             diff: Vec::new(),
             diff_cursor: 0,
             diff_hscroll: 0,
+            select_anchor: None,
             reviewed: HashSet::new(),
             status_msg: None,
             collapsed: HashSet::new(),
@@ -436,6 +439,42 @@ impl App {
             pos = next;
         }
         self.diff_cursor = pos as usize;
+    }
+
+    pub fn select_active(&self) -> bool {
+        self.select_anchor.is_some()
+    }
+
+    pub fn start_select(&mut self) {
+        self.select_anchor = Some(self.diff_cursor);
+    }
+
+    pub fn cancel_select(&mut self) {
+        self.select_anchor = None;
+    }
+
+    /// Inclusive (lo, hi) diff-index range of the current selection, or the
+    /// single cursor line when not selecting.
+    pub fn select_range(&self) -> (usize, usize) {
+        match self.select_anchor {
+            Some(a) => (a.min(self.diff_cursor), a.max(self.diff_cursor)),
+            None => (self.diff_cursor, self.diff_cursor),
+        }
+    }
+
+    /// Text of the selected range: each line's clean `text`, '\n'-joined, with a
+    /// trailing '\n'. Hunk headers carry no useful content, so they are skipped.
+    pub fn selection_text(&self) -> String {
+        let (lo, hi) = self.select_range();
+        let mut out = String::new();
+        for dl in &self.diff[lo..=hi] {
+            if dl.kind == LineKind::Hunk {
+                continue;
+            }
+            out.push_str(&dl.text);
+            out.push('\n');
+        }
+        out
     }
 
     pub fn to_top(&mut self) {
@@ -1316,6 +1355,82 @@ mod tests {
         // No non-hunk line exists; must terminate (lands somewhere in range).
         app.move_diff_cursor(1);
         assert!(app.diff_cursor <= 1);
+    }
+
+    fn three_line_diff() -> Vec<DiffLine> {
+        vec![
+            DiffLine {
+                kind: LineKind::Hunk,
+                text: "@@ a @@".into(),
+                old_lineno: None,
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "alpha".into(),
+                old_lineno: None,
+                new_lineno: Some(1),
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "beta".into(),
+                old_lineno: None,
+                new_lineno: Some(2),
+            },
+        ]
+    }
+
+    #[test]
+    fn select_range_single_when_no_anchor() {
+        let mut app = sample();
+        app.set_diff(three_line_diff());
+        app.diff_cursor = 2;
+        assert!(!app.select_active());
+        assert_eq!(app.select_range(), (2, 2));
+    }
+
+    #[test]
+    fn select_range_orders_anchor_and_cursor() {
+        let mut app = sample();
+        app.set_diff(three_line_diff());
+        // Anchor below cursor: anchor=2, cursor=1 -> (1, 2)
+        app.diff_cursor = 2;
+        app.start_select();
+        app.diff_cursor = 1;
+        assert!(app.select_active());
+        assert_eq!(app.select_range(), (1, 2));
+    }
+
+    #[test]
+    fn selection_text_joins_with_trailing_newline() {
+        let mut app = sample();
+        app.set_diff(three_line_diff());
+        app.diff_cursor = 1;
+        app.start_select();
+        app.diff_cursor = 2;
+        assert_eq!(app.selection_text(), "alpha\nbeta\n");
+    }
+
+    #[test]
+    fn selection_text_skips_hunk_lines() {
+        let mut app = sample();
+        app.set_diff(three_line_diff());
+        // Range covers hunk(0)..add(2); hunk text must be omitted.
+        app.diff_cursor = 0;
+        app.start_select();
+        app.diff_cursor = 2;
+        assert_eq!(app.selection_text(), "alpha\nbeta\n");
+    }
+
+    #[test]
+    fn cancel_select_clears_anchor() {
+        let mut app = sample();
+        app.set_diff(three_line_diff());
+        app.start_select();
+        assert!(app.select_active());
+        app.cancel_select();
+        assert!(!app.select_active());
+        assert_eq!(app.select_range(), (app.diff_cursor, app.diff_cursor));
     }
 
     #[test]
