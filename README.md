@@ -19,6 +19,40 @@ fix the code, and respond.
 </p>
 
 
+## Install
+
+**Prerequisites:** a recent stable Rust toolchain (`rustup`), `git`, and a
+[Nerd Font](https://www.nerdfonts.com/) set in your terminal for the file-type
+glyphs.
+
+### From crates.io
+
+```sh
+cargo install turboreview
+```
+
+The `turboreview` binary lands in `~/.cargo/bin` — make sure that's on your
+`PATH`.
+
+### From source
+
+```sh
+git clone https://github.com/nmbr7/turboreview.git
+cd turboreview
+cargo install --path .          # installs the release binary to ~/.cargo/bin
+```
+
+### Developing
+
+```sh
+cargo run -- [REPO_PATH]        # run against a repo (defaults to .)
+cargo test                      # run the test suite
+cargo fmt && cargo clippy       # format + lint
+```
+
+Updating later: re-run `cargo install turboreview` (add `--force` to overwrite
+an older build).
+
 ## Usage
 
 ```
