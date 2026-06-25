@@ -320,6 +320,32 @@ pub fn format_datetime(secs: i64) -> String {
     format!("{} {:02}:{:02}:{:02}", date, h, m, s)
 }
 
+/// Human "time ago" for `then` relative to `now` (both unix epoch seconds).
+/// e.g. "just now", "5m ago", "3h ago", "2d ago", "4w ago", "3mo ago", "1y ago".
+/// Future timestamps render as "just now".
+pub fn relative_time(then: i64, now: i64) -> String {
+    let d = now - then;
+    if d <= 0 {
+        return "just now".to_string();
+    }
+    let (n, unit) = if d < 60 {
+        return "just now".to_string();
+    } else if d < 3600 {
+        (d / 60, "m")
+    } else if d < 86_400 {
+        (d / 3600, "h")
+    } else if d < 604_800 {
+        (d / 86_400, "d")
+    } else if d < 2_592_000 {
+        (d / 604_800, "w")
+    } else if d < 31_536_000 {
+        (d / 2_592_000, "mo")
+    } else {
+        (d / 31_536_000, "y")
+    };
+    format!("{}{} ago", n, unit)
+}
+
 fn map_status(s: git2::Delta) -> Status {
     use git2::Delta::*;
     match s {
@@ -366,6 +392,21 @@ mod tests {
         );
         // Verify exact time
         assert_eq!(&dt[11..], "22:13:20", "time part mismatch");
+    }
+
+    #[test]
+    fn relative_time_buckets() {
+        let now = 1_700_000_000i64;
+        assert_eq!(relative_time(now, now), "just now");
+        assert_eq!(relative_time(now - 30, now), "just now");
+        assert_eq!(relative_time(now - 5 * 60, now), "5m ago");
+        assert_eq!(relative_time(now - 3 * 3600, now), "3h ago");
+        assert_eq!(relative_time(now - 2 * 86_400, now), "2d ago");
+        assert_eq!(relative_time(now - 3 * 604_800, now), "3w ago");
+        assert_eq!(relative_time(now - 2 * 2_592_000, now), "2mo ago");
+        assert_eq!(relative_time(now - 2 * 31_536_000, now), "2y ago");
+        // Future timestamp clamps to "just now".
+        assert_eq!(relative_time(now + 100, now), "just now");
     }
 
     #[test]

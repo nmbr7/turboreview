@@ -483,11 +483,27 @@ fn diff_scroll_start_center(cursor: usize, page: usize, rh: &impl Fn(usize) -> u
 fn comment_box_height(c: &crate::comments::Comment, wrap_w: usize) -> usize {
     let text_lines = wrap_text(&c.text, wrap_w).len().max(1);
     let response_lines = match c.response.as_deref() {
-        Some(r) if !r.trim().is_empty() => 1 + wrap_text(r, wrap_w).len(),
+        Some(r) if !r.trim().is_empty() => 1 + wrap_text(r, response_wrap_w(wrap_w)).len(),
         _ => 0,
     };
     1 + text_lines + response_lines + 1
 }
+
+/// Wrap width for the response block. The response prefix `"    │ ↳ response: "`
+/// is 18 columns vs the body prefix `"    │ "` (6 columns), so response text has
+/// 12 fewer columns than the body. Continuation lines align to the same start.
+/// `wrap_w` is the body wrap width (= inner_w - 6).
+fn response_wrap_w(wrap_w: usize) -> usize {
+    wrap_w.saturating_sub(RESPONSE_PREFIX_W - BODY_PREFIX_W).max(1)
+}
+
+/// Visible width of the body line prefix `"    │ "`.
+const BODY_PREFIX_W: usize = 6;
+/// Right-side breathing room: wrap comment text this many columns short of the
+/// pane edge so text doesn't butt against the border.
+const RIGHT_PAD: usize = 2;
+/// Visible width of the response first-line prefix `"    │ ↳ response: "`.
+const RESPONSE_PREFIX_W: usize = 18;
 
 /// Push an inline comment box (top border, wrapped text, optional response,
 /// bottom border) into `result`, honoring the remaining `page` budget. Shared by
@@ -504,6 +520,7 @@ fn push_comment_box(
         pal.yellow
     } else {
         match c.status {
+            // Open: a subtle dim frame so the header/body colors stand out.
             CommentStatus::Open => pal.accent_dim,
             CommentStatus::Resolved => pal.tick,
             CommentStatus::Wontfix => pal.red,
@@ -514,12 +531,12 @@ fn push_comment_box(
         .fg(border_color)
         .add_modifier(Modifier::ITALIC | Modifier::DIM);
     let body_style = Style::default()
-        .fg(pal.accent_dim)
+        .fg(pal.accent)
         .add_modifier(Modifier::ITALIC);
 
     // Top border line with status badge
     if *rendered_rows < page {
-        let top_label = if c.stale {
+        let mut top_label = if c.stale {
             format!("    ╭─ ⚠ outdated · {}", c.status.label())
         } else {
             match c.status {
@@ -529,6 +546,14 @@ fn push_comment_box(
                 CommentStatus::NeedsInfo => "    ╭─ ? needs-info".to_string(),
             }
         };
+        // Last-edit timestamp (UTC) + relative age. 0 = legacy comment, no stamp.
+        if c.updated > 0 {
+            top_label.push_str(&format!(
+                " · {} ({})",
+                crate::git::format_datetime(c.updated),
+                crate::git::relative_time(c.updated, crate::storage::now_secs())
+            ));
+        }
         result.push(Line::from(Span::styled(top_label, border_style)));
         *rendered_rows += 1;
     }
@@ -537,7 +562,7 @@ fn push_comment_box(
         if *rendered_rows >= page {
             break;
         }
-        let prefix = Span::styled("    │ ", body_style);
+        let prefix = Span::styled("    │ ", border_style);
         let body = Span::styled(comment_line, body_style);
         result.push(Line::from(vec![prefix, body]));
         *rendered_rows += 1;
@@ -548,25 +573,26 @@ fn push_comment_box(
         .map_or(false, |r| !r.trim().is_empty())
     {
         let resp = c.response.as_deref().unwrap();
-        let response_label_style = Style::default()
-            .fg(border_color)
-            .add_modifier(Modifier::ITALIC | Modifier::DIM);
         if *rendered_rows < page {
-            result.push(Line::from(Span::styled("    │ ", body_style)));
+            result.push(Line::from(Span::styled("    │ ", border_style)));
             *rendered_rows += 1;
         }
         let mut first = true;
-        for resp_line in wrap_text(resp, wrap_w) {
+        for resp_line in wrap_text(resp, response_wrap_w(wrap_w)) {
             if *rendered_rows >= page {
                 break;
             }
-            let line_content = if first {
+            // "    │ " is the border; the rest (label + text) uses body color.
+            let border = Span::styled("    │ ", border_style);
+            let text = if first {
                 first = false;
-                format!("    │ ↳ response: {}", resp_line)
+                // "↳ response: " label + text, aligned to 18 cols total prefix.
+                Span::styled(format!("↳ response: {}", resp_line), body_style)
             } else {
-                format!("    │   {}", resp_line)
+                // Align continuation under the first response char.
+                Span::styled(format!("            {}", resp_line), body_style)
             };
-            result.push(Line::from(Span::styled(line_content, response_label_style)));
+            result.push(Line::from(vec![border, text]));
             *rendered_rows += 1;
         }
     }
@@ -591,7 +617,7 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
     let cell_w = inner_w.saturating_sub(sep_w) / 2;
     let gutter_w = 5usize; // matches `gutter()` width
     let text_w = cell_w.saturating_sub(gutter_w).max(1);
-    let wrap_w = inner_w.saturating_sub(6).max(1); // comment box indent "    │ "
+    let wrap_w = inner_w.saturating_sub(BODY_PREFIX_W + RIGHT_PAD).max(1); // indent "    │ " + right pad
 
     let pairs = pair_diff_rows(&app.diff);
     // Which paired row holds the cursor — its header (hunk), left, or right cell.
@@ -794,10 +820,10 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
         let page = area.height.saturating_sub(2) as usize;
 
         // Inline comment box body is indented by "    │ " (6 columns). Wrap comment and
-        // response text to the remaining inner width so long comments don't overflow.
-        let box_indent = 6usize;
+        // response text to the remaining inner width, less RIGHT_PAD, so long comments
+        // don't overflow or butt against the pane border.
         let inner_w = area.width.saturating_sub(2) as usize; // minus the diff pane borders
-        let wrap_w = inner_w.saturating_sub(box_indent).max(1);
+        let wrap_w = inner_w.saturating_sub(BODY_PREFIX_W + RIGHT_PAD).max(1);
 
         // Compute the rendered height (diff line + its inline comment box lines) for a
         // given diff index, so we can scroll in rendered-line space and guarantee the
@@ -811,7 +837,9 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                 .map(|c| {
                     let text_lines = wrap_text(&c.text, wrap_w).len().max(1);
                     let response_lines = match c.response.as_deref() {
-                        Some(r) if !r.trim().is_empty() => 1 + wrap_text(r, wrap_w).len(), // 1 blank separator + wrapped response
+                        Some(r) if !r.trim().is_empty() => {
+                            1 + wrap_text(r, response_wrap_w(wrap_w)).len() // 1 blank separator + wrapped response
+                        }
                         _ => 0,
                     };
                     1 + text_lines + response_lines + 1 // top + text + [blank+response] + bottom
@@ -1280,6 +1308,73 @@ mod tests {
     fn wrap_text_clamps_zero_width_to_one() {
         let lines = wrap_text("ab", 0);
         assert_eq!(lines, vec!["a", "b"]);
+    }
+
+    fn comment_with_response(text: &str, response: &str) -> crate::comments::Comment {
+        crate::comments::Comment {
+            file: PathBuf::from("a.rs"),
+            line: 1,
+            hunk: String::new(),
+            text: text.into(),
+            line_text: String::new(),
+            context_before: vec![],
+            context_after: vec![],
+            orig_line: 0,
+            stale: false,
+            status: CommentStatus::Open,
+            response: Some(response.into()),
+            updated: 0,
+        }
+    }
+
+    /// Render a comment box into plain strings (joining each line's spans).
+    fn render_box(c: &crate::comments::Comment, wrap_w: usize) -> Vec<String> {
+        let pal = Palette::for_theme(crate::theme::Theme::Dark);
+        let mut out = Vec::new();
+        let mut rows = 0usize;
+        push_comment_box(&mut out, &mut rows, usize::MAX, c, wrap_w, &pal);
+        out.iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn response_lines_never_overflow_inner_width() {
+        // inner_w = wrap_w + BODY_PREFIX_W (body prefix is 6 cols).
+        let wrap_w = 30usize;
+        let inner_w = wrap_w + BODY_PREFIX_W;
+        let resp = "this is a fairly long agent response that must wrap across \
+                    several visual lines without spilling past the pane border";
+        let c = comment_with_response("short comment", resp);
+        for line in render_box(&c, wrap_w) {
+            assert!(
+                line.chars().count() <= inner_w,
+                "rendered line {:?} ({} cols) exceeds inner_w {}",
+                line,
+                line.chars().count(),
+                inner_w
+            );
+        }
+    }
+
+    #[test]
+    fn comment_box_height_matches_rendered_line_count() {
+        let wrap_w = 24usize;
+        let resp = "multi line response text long enough to wrap onto several \
+                    lines so the height calc and the renderer must agree exactly";
+        let body = "comment body that itself wraps onto two or more lines here";
+        let c = comment_with_response(body, resp);
+        let rendered = render_box(&c, wrap_w);
+        assert_eq!(
+            rendered.len(),
+            comment_box_height(&c, wrap_w),
+            "height calc must equal rendered line count or scrolling drifts"
+        );
     }
 
     fn app_with_diff() -> App {
