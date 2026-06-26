@@ -5,12 +5,10 @@
 [![UI](https://img.shields.io/badge/UI-Terminal%20TUI-6f42c1)](#)
 
 `turboreview` is a terminal code-review tool for git repositories. Review the
-working tree (unstaged/staged changes) **or** browse the branch's commit history
-and review each commit's diff. The left pane lists files in a directory tree; the
-right pane shows the selected file's diff with syntax highlighting, a line-number
-gutter, and adjustable context. Stage or unstage whole files, mark files
-reviewed, leave line comments — and let an AI coding agent read those comments,
-fix the code, and respond.
+working tree or browse the branch's commit history, with a file tree on the left
+and the selected diff (syntax-highlighted, adjustable context) on the right.
+Stage files, mark them reviewed, leave line comments — and let an AI coding agent
+read those comments, fix the code, and respond.
 
 <p align="center">
   <img width="800" alt="turboreview screenshot" src="https://github.com/user-attachments/assets/69ca499b-052b-47e0-b567-72e123ac4568" />
@@ -69,8 +67,11 @@ Two views, toggled with `[` / `]`:
 - **Changes** — the working tree. Left pane has two sections, `▌ Unstaged (N)`
   and `▌ Staged (N)`, each a collapsible directory tree.
 - **Commits** — the branch history. Left pane lists commits (short hash, summary,
-  author, date). Press `Enter` on a commit to drill into its changed files (diff
-  vs the commit's first parent); `Esc` steps back out.
+  author, date, and per-commit diff stats `N files +ins -del`). Diff stats are
+  computed lazily for the rows in view. The list loads 50 commits at a time;
+  scroll to the bottom and press `L` to load the next page. Press `Enter` on a
+  commit to drill into its changed files (diff vs the commit's first parent);
+  `Esc` steps back out.
 
 In both views:
 
@@ -100,6 +101,7 @@ Press `?` at any time for an in-app keybinding overlay.
 | `⇧↑`/`⇧↓` `J`/`K`| jump (fast scroll) in the focused pane                          |
 | mouse wheel      | move the focused pane's cursor                                  |
 | `gg` / `G`       | jump to top / bottom of the focused pane                        |
+| `L`              | load more commits (Commits view, when more history exists)       |
 | `Enter`          | open commit · focus a file's Diff · fold dir · jump to comment  |
 | `C`              | toggle the comment-list pane                                    |
 | `Esc`            | step back (Diff → files → commit list) / focus the Files pane   |
@@ -120,7 +122,7 @@ Press `?` at any time for an in-app keybinding overlay.
 | `R`              | toggle hiding reviewed files                                    |
 | `r`              | refresh everything from disk / git                              |
 | `?`              | show the keybinding help overlay                                |
-| `q` / `Ctrl-C`   | quit                                                            |
+| `qq` / `Ctrl-C`  | quit (press `q` twice to avoid accidental exits)                |
 
 In the comment input box: type freely, **Enter** for a newline, **Ctrl-S** to
 save, **Esc** to cancel. Saving an empty comment deletes it.
