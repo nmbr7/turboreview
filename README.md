@@ -19,9 +19,17 @@ read those comments, fix the code, and respond.
 
 ## Install
 
-**Prerequisites:** a recent stable Rust toolchain (`rustup`), `git`, and a
-[Nerd Font](https://www.nerdfonts.com/) set in your terminal for the file-type
-glyphs.
+**Prerequisites:**
+
+- A recent stable Rust toolchain (`cargo`) and `git`. Install Rust via
+  [rustup](https://rustup.rs/): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`.
+- A C compiler / build toolchain — `git2` (libgit2) and `libz` are built from
+  source. macOS: Xcode Command Line Tools (`xcode-select --install`). Linux:
+  `build-essential` and `pkg-config`.
+- **Linux only:** X11 clipboard libraries for copy support (`arboard`), e.g. on
+  Debian/Ubuntu: `libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev`.
+- A [Nerd Font](https://www.nerdfonts.com/) set in your terminal for the
+  file-type glyphs.
 
 ### From crates.io
 
