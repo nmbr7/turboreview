@@ -65,7 +65,7 @@ fn main() -> Result<()> {
             }
         }
     }
-    app.commits = repo.log(200).unwrap_or_default();
+    app.commits = repo.log(app.commit_limit).unwrap_or_default();
     // Load persisted theme preference
     app.theme = storage::load_theme(&root);
     app.split_diff = storage::load_split(&root);
@@ -242,8 +242,9 @@ fn reload_everything(repo: &Repo, app: &mut App) {
         Ok(f) => app.staged = f,
         Err(e) => app.status_msg = Some(format!("list error: {e}")),
     }
-    // Reload commits
-    app.commits = repo.log(200).unwrap_or_default();
+    // Reload commits (keep whatever page size the user has scrolled to).
+    app.commits = repo.log(app.commit_limit).unwrap_or_default();
+    app.commit_stats.clear();
     // If in a commit detail view, refresh that commit's files
     if app.in_commit_detail() {
         if let Some(id) = app.open_commit.clone() {
@@ -267,7 +268,14 @@ fn run(
     app: &mut App,
 ) -> Result<()> {
     let mut pending_g = false; // for the `gg` chord
+    let mut pending_q = false; // for the `qq` quit chord (avoid accidental quit on a stray q)
     loop {
+        // Fill diff stats for the visible commit window before drawing (the
+        // renderer only has &App and no repo handle).
+        if app.view == ViewMode::Commits && app.open_commit.is_none() {
+            let h = terminal.size().map(|s| s.height as usize).unwrap_or(40);
+            ensure_visible_commit_stats(repo, app, h);
+        }
         terminal.draw(|f| ui::render(f, app))?;
 
         match event::read()? {
@@ -348,6 +356,18 @@ fn run(
                     continue;
                 }
 
+                // `qq` chord quits; a single `q` only arms the chord, so an
+                // accidental stray `q` does nothing.
+                if matches!(key.code, KeyCode::Char('q')) && key.modifiers.is_empty() {
+                    if pending_q {
+                        return Ok(());
+                    }
+                    pending_q = true;
+                    app.status_msg = Some("Press q again to quit".into());
+                    continue;
+                }
+                pending_q = false;
+
                 if matches!(key.code, KeyCode::Char('g')) && key.modifiers.is_empty() {
                     if pending_g {
                         if app.view == ViewMode::Commits
@@ -369,7 +389,6 @@ fn run(
                 pending_g = false;
 
                 match (key.code, key.modifiers) {
-                    (KeyCode::Char('q'), _) => return Ok(()),
                     (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(()),
                     (KeyCode::Tab, _) => app.toggle_focus(),
                     (KeyCode::Char('s'), _) => {
@@ -421,6 +440,14 @@ fn run(
                             app.comment_selected = len.saturating_sub(1);
                         } else {
                             app.to_bottom();
+                        }
+                    }
+                    (KeyCode::Char('L'), _) => {
+                        if app.view == ViewMode::Commits
+                            && app.open_commit.is_none()
+                            && app.focus == Pane::Files
+                        {
+                            load_more_commits(repo, app);
                         }
                     }
                     (KeyCode::Char('C'), _) => app.toggle_comment_pane(),
@@ -699,12 +726,52 @@ fn run(
     }
 }
 
+/// Compute and cache diff stats for the band of commits around the cursor
+/// (`viewport_h` rows above and below), so the visible rows always have stats.
+fn ensure_visible_commit_stats(repo: &Repo, app: &mut App, viewport_h: usize) {
+    if app.commits.is_empty() {
+        return;
+    }
+    let sel = app.selected_commit;
+    let lo = sel.saturating_sub(viewport_h);
+    let hi = (sel + viewport_h).min(app.commits.len().saturating_sub(1));
+    for i in lo..=hi {
+        let id = app.commits[i].id.clone();
+        if !app.commit_stats.contains_key(&id) {
+            if let Ok(stat) = repo.commit_stat(&id) {
+                app.commit_stats.insert(id, stat);
+            }
+        }
+    }
+}
+
+/// Grow the commit log by one page (`COMMIT_PAGE`) and report the result.
+fn load_more_commits(repo: &Repo, app: &mut App) {
+    let before = app.commits.len();
+    app.commit_limit += turboreview::COMMIT_PAGE;
+    app.commits = repo.log(app.commit_limit).unwrap_or_default();
+    let loaded = app.commits.len();
+    if loaded > before {
+        app.status_msg = Some(format!("Loaded {} commits", loaded));
+    } else {
+        app.status_msg = Some("No more commits to load".into());
+    }
+}
+
 fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
     match app.focus {
         Pane::Files => {
             if app.view == ViewMode::Commits && app.open_commit.is_none() {
-                // Commit list: move commit selection.
-                app.move_commit_selection(delta);
+                // Commit list: move commit selection. At the bottom, prompt to
+                // load more when the page may have been truncated.
+                let at_bottom = app.selected_commit + 1 >= app.commits.len();
+                let maybe_more = app.commits.len() == app.commit_limit;
+                if delta > 0 && at_bottom && maybe_more {
+                    app.status_msg =
+                        Some("End of loaded commits — press L to load more".into());
+                } else {
+                    app.move_commit_selection(delta);
+                }
             } else {
                 // Changes view or commit-detail: move file row selection.
                 if app.history_active() {

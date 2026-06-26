@@ -15,6 +15,14 @@ pub struct CommitInfo {
     pub time: String,    // formatted date "YYYY-MM-DD"
 }
 
+/// Diff stats for a single commit (vs its first parent, or empty tree for a root).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CommitStat {
+    pub files: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+}
+
 pub struct Repo {
     inner: Repository,
 }
@@ -165,6 +173,29 @@ impl Repo {
             }
         }
         Ok(files)
+    }
+
+    /// Diff stats (files changed, insertions, deletions) for a commit vs its
+    /// first parent (or vs the empty tree for a root commit).
+    pub fn commit_stat(&self, commit_id: &str) -> Result<CommitStat> {
+        let oid = git2::Oid::from_str(commit_id)?;
+        let commit = self.inner.find_commit(oid)?;
+        let tree = commit.tree()?;
+        let parent_tree = if commit.parent_count() > 0 {
+            Some(commit.parent(0)?.tree()?)
+        } else {
+            None
+        };
+        let mut opts = git2::DiffOptions::new();
+        let diff =
+            self.inner
+                .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
+        let stats = diff.stats()?;
+        Ok(CommitStat {
+            files: stats.files_changed(),
+            insertions: stats.insertions(),
+            deletions: stats.deletions(),
+        })
     }
 
     /// Diff lines for one file within a commit (commit vs first parent), with `context` context lines.
@@ -478,6 +509,19 @@ mod tests {
         let files = r.commit_files(&commits[0].id).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, std::path::PathBuf::from("root.txt"));
+    }
+
+    #[test]
+    fn commit_stat_counts_insertions_and_files() {
+        let (dir, repo) = init_repo();
+        // Root commit adds one file with two lines.
+        commit_file(&repo, dir.path(), "a.txt", "one\ntwo\n");
+        let r = Repo::discover(dir.path()).unwrap();
+        let commits = r.log(10).unwrap();
+        let stat = r.commit_stat(&commits[0].id).unwrap();
+        assert_eq!(stat.files, 1, "one file changed");
+        assert_eq!(stat.insertions, 2, "two inserted lines");
+        assert_eq!(stat.deletions, 0, "root commit deletes nothing");
     }
 
     /// Init a repo, return (tempdir, Repository). Caller writes files.

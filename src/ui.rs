@@ -392,12 +392,13 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_commits(frame: &mut Frame, app: &App, area: Rect) {
     let pal = app.palette();
-    let items: Vec<ListItem> = app
+    let mut items: Vec<ListItem> = app
         .commits
         .iter()
         .map(|ci| {
-            // Truncate summary to avoid overflow
-            let max_summary = area.width.saturating_sub(30) as usize;
+            // Reserve room for hash + author/date + diff stats so the summary
+            // truncates instead of overflowing.
+            let max_summary = area.width.saturating_sub(48) as usize;
             let summary = if ci.summary.chars().count() > max_summary && max_summary > 3 {
                 format!(
                     "{}…",
@@ -406,17 +407,49 @@ fn render_commits(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 ci.summary.clone()
             };
-            let line = Line::from(vec![
+            let mut spans = vec![
                 Span::styled(format!("{} ", ci.short), Style::default().fg(pal.yellow)),
                 Span::raw(summary),
                 Span::styled(
                     format!("  — {} {}", ci.author, ci.time),
                     Style::default().fg(pal.accent_dim),
                 ),
-            ]);
-            ListItem::new(line)
+            ];
+            // Diff stats: "· N files +ins -del" (green/red), or a placeholder
+            // while the stat is still being computed for this row.
+            match app.commit_stats.get(&ci.id) {
+                Some(s) => {
+                    spans.push(Span::styled(
+                        format!(" · {} files ", s.files),
+                        Style::default().fg(pal.accent_dim),
+                    ));
+                    spans.push(Span::styled(
+                        format!("+{}", s.insertions),
+                        Style::default().fg(pal.tick),
+                    ));
+                    spans.push(Span::styled(
+                        format!(" -{}", s.deletions),
+                        Style::default().fg(pal.red),
+                    ));
+                }
+                None => spans.push(Span::styled(
+                    " · …",
+                    Style::default().fg(pal.accent_dim),
+                )),
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect();
+
+    // Footer hint when the page may have been truncated (more history available).
+    if !app.commits.is_empty() && app.commits.len() == app.commit_limit {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "  … press L to load more",
+            Style::default()
+                .fg(pal.accent_dim)
+                .add_modifier(Modifier::ITALIC),
+        ))));
+    }
 
     let title = " Changes [Commits] ";
     let list = List::new(items)
@@ -1080,7 +1113,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("r", "refresh"),
             ("T", "toggle light / dark theme"),
             ("?", "this help"),
-            ("q / Ctrl-C", "quit"),
+            ("qq / Ctrl-C", "quit"),
         ],
     ),
 ];

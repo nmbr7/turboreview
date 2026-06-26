@@ -1,3 +1,6 @@
+/// Commit-log page size: how many commits to load initially and per "load more".
+pub const COMMIT_PAGE: usize = 50;
+
 pub mod app;
 pub mod comments;
 pub mod git;

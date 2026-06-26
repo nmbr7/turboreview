@@ -167,6 +167,11 @@ pub struct App {
     pub input: Option<InputState>,
     pub commits: Vec<crate::git::CommitInfo>,
     pub selected_commit: usize,
+    /// Number of commits currently requested from git (page size, grows on demand).
+    pub commit_limit: usize,
+    /// Lazily-computed per-commit diff stats, keyed by full oid. Filled for the
+    /// visible window each frame; missing entries render a placeholder.
+    pub commit_stats: std::collections::HashMap<String, crate::git::CommitStat>,
     pub open_commit: Option<String>,
     pub commit_files: Vec<FileChange>,
     pub show_help: bool,
@@ -212,6 +217,8 @@ impl App {
             input: None,
             commits: Vec::new(),
             selected_commit: 0,
+            commit_limit: crate::COMMIT_PAGE,
+            commit_stats: std::collections::HashMap::new(),
             open_commit: None,
             commit_files: Vec::new(),
             show_help: false,
