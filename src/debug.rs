@@ -43,6 +43,9 @@ struct Live {
     /// (frame index, var path, remaining auto-expand depth; 0 = user-initiated).
     var_paths: HashMap<u64, (usize, Vec<usize>, usize)>,
     next_var_key: u64,
+    /// Temp git worktree backing this session (for old-commit debugging), to be
+    /// removed when the session ends.
+    worktree: Option<std::path::PathBuf>,
 }
 
 /// Owns all live debug sessions and the shared event channel.
@@ -53,6 +56,9 @@ pub struct DebugManager {
     /// Per-session launch config (cfg + source root), used by the `initialized`
     /// handler to send `launch`.
     launch_cfg: HashMap<SessionId, (DebugConfig, std::path::PathBuf)>,
+    /// Worktrees of ended sessions awaiting removal (cleaned by the event loop,
+    /// which has the `Repo` handle). See `take_dead_worktrees`.
+    dead_worktrees: Vec<std::path::PathBuf>,
     next_id: SessionId,
 }
 
@@ -64,6 +70,7 @@ impl Default for DebugManager {
             rx,
             live: HashMap::new(),
             launch_cfg: HashMap::new(),
+            dead_worktrees: Vec::new(),
             next_id: 1,
         }
     }
@@ -110,6 +117,49 @@ impl DebugManager {
         source_root: &Path,
         label: String,
     ) -> Result<()> {
+        self.launch_inner(app, cfg, source_root, label, None)
+    }
+
+    /// Debug a past commit: create a detached worktree at `sha`, build + launch
+    /// there, and map the worktree's source paths back to the repo so the diff
+    /// and breakpoints line up. The worktree is cleaned up when the session ends.
+    pub fn launch_commit(
+        &mut self,
+        app: &mut App,
+        cfg: &DebugConfig,
+        repo: &crate::git::Repo,
+        sha: &str,
+        short: &str,
+    ) -> Result<()> {
+        let wt = repo.add_worktree(sha)?;
+        // Source map: frames reported under the worktree map to the repo root so
+        // they resolve to the open diff. (DAP `sourceReference`/paths; we record
+        // it in cfg for adapters that honor source maps, and rely on path
+        // basename matching otherwise.)
+        let mut cfg = cfg.clone();
+        if let Ok(repo_root) = repo.workdir() {
+            cfg.source_map.push((
+                wt.to_string_lossy().into_owned(),
+                repo_root.to_string_lossy().into_owned(),
+            ));
+        }
+        let label = format!("commit {short}");
+        let res = self.launch_inner(app, &cfg, &wt, label, Some(wt.clone()));
+        if res.is_err() {
+            // Build/launch failed — don't leak the worktree.
+            repo.remove_worktree(&wt);
+        }
+        res
+    }
+
+    fn launch_inner(
+        &mut self,
+        app: &mut App,
+        cfg: &DebugConfig,
+        source_root: &Path,
+        label: String,
+        worktree: Option<std::path::PathBuf>,
+    ) -> Result<()> {
         Self::run_build(cfg, source_root)?;
         if cfg.adapter.command.trim().is_empty() {
             anyhow::bail!("no debug adapter configured (set debug.adapter.command)");
@@ -143,6 +193,7 @@ impl DebugManager {
                 top_frame: None,
                 var_paths: HashMap::new(),
                 next_var_key: 1,
+                worktree,
             },
         );
         // Stash the launch config so the `initialized` handler can use it.
@@ -167,7 +218,11 @@ impl DebugManager {
         match msg.kind {
             SessionKind::Closed | SessionKind::Error(_) => {
                 set_state(app, id, SessionState::Exited);
-                self.live.remove(&id);
+                if let Some(l) = self.live.remove(&id) {
+                    if let Some(wt) = l.worktree {
+                        self.dead_worktrees.push(wt);
+                    }
+                }
                 self.launch_cfg.remove(&id);
             }
             SessionKind::Message(m) => self.handle_message(app, id, m),
@@ -265,7 +320,21 @@ impl DebugManager {
                 }
             }
             Pending::StackTrace => {
-                let frames = parse_stack(body);
+                let mut frames = parse_stack(body);
+                // For an old-commit session, rewrite worktree source paths back
+                // to the repo root so frames resolve to the open diff + markers.
+                if let Some(wt) = self.live.get(&id).and_then(|l| l.worktree.clone()) {
+                    let repo_root = app.repo_root.clone();
+                    let wt_str = wt.to_string_lossy().into_owned();
+                    let root_str = repo_root.to_string_lossy().into_owned();
+                    for f in frames.iter_mut() {
+                        if let Some(p) = f.file.as_ref() {
+                            if let Some(rel) = p.strip_prefix(&wt_str) {
+                                f.file = Some(format!("{root_str}{rel}"));
+                            }
+                        }
+                    }
+                }
                 if let Some(sess) = session_mut(app, id) {
                     sess.stack = frames;
                     sess.frame_sel = 0;
@@ -455,7 +524,18 @@ impl DebugManager {
         let Some(l) = self.live.get_mut(&id) else {
             return;
         };
+        let worktree = l.worktree.clone();
+        let repo_root = app.repo_root.clone();
         for (file, lines) in &d.breakpoints {
+            // For an old-commit (worktree) session, the debuggee's source lives
+            // under the worktree, so rewrite repo-rooted breakpoint paths to it.
+            let target: std::path::PathBuf = match &worktree {
+                Some(wt) => match file.strip_prefix(&repo_root) {
+                    Ok(rel) => wt.join(rel),
+                    Err(_) => file.clone(),
+                },
+                None => file.clone(),
+            };
             // Only enabled breakpoints are sent; disabled ones stay in the list
             // but are omitted (sending an empty set clears them in the adapter).
             let bps: Vec<Value> = lines
@@ -466,7 +546,7 @@ impl DebugManager {
             let _ = l.client.send_request(
                 "setBreakpoints",
                 json!({
-                    "source": {"path": file},
+                    "source": {"path": target},
                     "breakpoints": bps,
                 }),
             );
@@ -523,8 +603,17 @@ impl DebugManager {
     pub fn shutdown(&mut self) {
         for (_, mut l) in self.live.drain() {
             l.client.shutdown();
+            if let Some(wt) = l.worktree {
+                self.dead_worktrees.push(wt);
+            }
         }
         self.launch_cfg.clear();
+    }
+
+    /// Take the list of worktrees from ended sessions so the caller (which holds
+    /// the `Repo`) can remove them.
+    pub fn take_dead_worktrees(&mut self) -> Vec<std::path::PathBuf> {
+        std::mem::take(&mut self.dead_worktrees)
     }
 }
 

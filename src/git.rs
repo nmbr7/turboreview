@@ -43,6 +43,51 @@ impl Repo {
             .context("repository has no working directory (bare repo)")
     }
 
+    /// Create a detached git worktree checked out at `sha`, under a fresh temp
+    /// directory, and return its path. Used to debug a past commit's code: the
+    /// worktree is built + debugged in isolation, leaving the main tree alone.
+    /// Caller is responsible for removing it (see [`remove_worktree`]).
+    pub fn add_worktree(&self, sha: &str) -> Result<PathBuf> {
+        let workdir = self.workdir()?;
+        // Unique path under the system temp dir.
+        let short: String = sha.chars().take(8).collect();
+        let dir = std::env::temp_dir().join(format!(
+            "turboreview-wt-{short}-{}",
+            std::process::id()
+        ));
+        let out = std::process::Command::new("git")
+            .current_dir(&workdir)
+            .args([
+                "worktree",
+                "add",
+                "--detach",
+                dir.to_str().context("worktree path not utf-8")?,
+                sha,
+            ])
+            .output()
+            .context("running `git worktree add`")?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "git worktree add failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(dir)
+    }
+
+    /// Remove a worktree previously created by [`add_worktree`] (best effort).
+    pub fn remove_worktree(&self, path: &Path) {
+        if let Ok(workdir) = self.workdir() {
+            let _ = std::process::Command::new("git")
+                .current_dir(&workdir)
+                .args(["worktree", "remove", "--force"])
+                .arg(path)
+                .output();
+        }
+        // Fallback: drop the directory if git left it behind.
+        let _ = std::fs::remove_dir_all(path);
+    }
+
     /// Shared diff builder: runs the mode match with the given pre-configured options.
     fn diff_with_opts<'a>(&'a self, mode: Mode, opts: &mut DiffOptions) -> Result<Diff<'a>> {
         let diff = match mode {
@@ -743,6 +788,20 @@ mod tests {
         let r = Repo::discover(dir.path()).unwrap();
         let lines = r.diff_for(Path::new("f.txt"), Mode::Unstaged, 3).unwrap();
         assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn add_and_remove_worktree_at_commit() {
+        let (dir, repo) = init_repo();
+        commit_file(&repo, dir.path(), "a.txt", "v1\n");
+        let r = Repo::discover(dir.path()).unwrap();
+        let sha = r.log(1).unwrap()[0].id.clone();
+        let wt = r.add_worktree(&sha).unwrap();
+        // Worktree exists with the committed file checked out.
+        assert!(wt.exists());
+        assert_eq!(std::fs::read_to_string(wt.join("a.txt")).unwrap(), "v1\n");
+        r.remove_worktree(&wt);
+        assert!(!wt.exists());
     }
 
     #[test]

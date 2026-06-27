@@ -1577,7 +1577,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "Debug",
         &[
             ("b", "toggle breakpoint on cursor line"),
-            ("D", "launch a debug session"),
+            ("D", "debug: worktree, or selected commit (Commits)"),
             ("c / n / i / o", "continue / over / in / out"),
             ("[ / ]", "right pane: Comments / Debug tab"),
             ("t", "Debug: Vars / Breakpoints"),

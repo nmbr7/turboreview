@@ -302,6 +302,10 @@ fn run(
     loop {
         // Apply any queued debugger events (stops, stack/variables) before draw.
         dbg.drain(app);
+        // Remove worktrees of any sessions that just ended (old-commit debugging).
+        for wt in dbg.take_dead_worktrees() {
+            repo.remove_worktree(&wt);
+        }
 
         // Fill diff stats for the visible commit window before drawing (the
         // renderer only has &App and no repo handle).
@@ -416,6 +420,9 @@ fn run(
                 if matches!(key.code, KeyCode::Char('q')) && key.modifiers.is_empty() {
                     if pending_q {
                         dbg.shutdown();
+                        for wt in dbg.take_dead_worktrees() {
+                            repo.remove_worktree(&wt);
+                        }
                         return Ok(());
                     }
                     pending_q = true;
@@ -447,6 +454,9 @@ fn run(
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                         dbg.shutdown();
+                        for wt in dbg.take_dead_worktrees() {
+                            repo.remove_worktree(&wt);
+                        }
                         return Ok(());
                     }
                     // ── Debugger keys ────────────────────────────────────────
@@ -459,13 +469,25 @@ fn run(
                             if now { "breakpoint set" } else { "breakpoint cleared" }.into(),
                         );
                     }
-                    // `D`: launch a debug session for the current source tree.
+                    // `D`: launch a debug session. In the Commits view (on a
+                    // selected commit), debug that commit via a temp worktree;
+                    // otherwise debug the current working tree.
                     (KeyCode::Char('D'), _) => {
                         let cfg = storage::load_debug_config(&app.repo_root);
-                        let root = app.repo_root.clone();
-                        match dbg.launch(app, &cfg, &root, "worktree".into()) {
+                        let commit = if app.view == ViewMode::Commits && app.open_commit.is_none() {
+                            app.selected_commit_info().map(|c| (c.id.clone(), c.short.clone()))
+                        } else {
+                            None
+                        };
+                        let result = match commit {
+                            Some((id, short)) => dbg.launch_commit(app, &cfg, repo, &id, &short),
+                            None => {
+                                let root = app.repo_root.clone();
+                                dbg.launch(app, &cfg, &root, "worktree".into())
+                            }
+                        };
+                        match result {
                             Ok(()) => {
-                                // Show + focus the Debug tab of the right pane.
                                 app.right_tab = turboreview::app::RightTab::Debug;
                                 app.focus = Pane::Comments;
                                 app.status_msg = Some("debug session launching…".into());
@@ -530,6 +552,9 @@ fn run(
                     // `X`: end all debug sessions and leave debug mode.
                     (KeyCode::Char('X'), _) if app.debug_active() => {
                         dbg.shutdown();
+                        for wt in dbg.take_dead_worktrees() {
+                            repo.remove_worktree(&wt);
+                        }
                         app.exit_debug();
                         app.status_msg = Some("debug sessions ended".into());
                     }
