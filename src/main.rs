@@ -1,5 +1,6 @@
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Result;
 use ratatui::backend::CrosstermBackend;
@@ -14,6 +15,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::Terminal;
 
 use turboreview::app::{App, CommentScope, Mode, Pane, Section, ViewMode};
+use turboreview::debug::DebugManager;
 use turboreview::comments;
 use turboreview::git::Repo;
 use turboreview::{review, storage, ui};
@@ -269,7 +271,11 @@ fn run(
 ) -> Result<()> {
     let mut pending_g = false; // for the `gg` chord
     let mut pending_q = false; // for the `qq` quit chord (avoid accidental quit on a stray q)
+    let mut dbg = DebugManager::new();
     loop {
+        // Apply any queued debugger events (stops, stack/variables) before draw.
+        dbg.drain(app);
+
         // Fill diff stats for the visible commit window before drawing (the
         // renderer only has &App and no repo handle).
         if app.view == ViewMode::Commits && app.open_commit.is_none() {
@@ -278,6 +284,10 @@ fn run(
         }
         terminal.draw(|f| ui::render(f, app))?;
 
+        // Poll so debugger events can be drained even when the user is idle.
+        if !event::poll(Duration::from_millis(50))? {
+            continue;
+        }
         match event::read()? {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
@@ -360,6 +370,7 @@ fn run(
                 // accidental stray `q` does nothing.
                 if matches!(key.code, KeyCode::Char('q')) && key.modifiers.is_empty() {
                     if pending_q {
+                        dbg.shutdown();
                         return Ok(());
                     }
                     pending_q = true;
@@ -389,7 +400,62 @@ fn run(
                 pending_g = false;
 
                 match (key.code, key.modifiers) {
-                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(()),
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                        dbg.shutdown();
+                        return Ok(());
+                    }
+                    // ── Debugger keys ────────────────────────────────────────
+                    // `b`: toggle a breakpoint on the diff line under the cursor
+                    // (Diff pane). Syncs to all live sessions.
+                    (KeyCode::Char('b'), _) if app.focus == Pane::Diff => {
+                        let now = app.toggle_breakpoint_at_cursor();
+                        dbg.sync_breakpoints(app);
+                        app.status_msg = Some(
+                            if now { "breakpoint set" } else { "breakpoint cleared" }.into(),
+                        );
+                    }
+                    // `D`: launch a debug session for the current source tree.
+                    (KeyCode::Char('D'), _) => {
+                        let cfg = storage::load_debug_config(&app.repo_root);
+                        let root = app.repo_root.clone();
+                        match dbg.launch(app, &cfg, &root, "worktree".into()) {
+                            Ok(()) => {
+                                app.focus = Pane::Debug;
+                                app.status_msg = Some("debug session launching…".into());
+                            }
+                            Err(e) => app.status_msg = Some(format!("debug: {e}")),
+                        }
+                    }
+                    // Step / continue — only while the Debug panel is focused so
+                    // they don't shadow diff-pane keys (e.g. `c` = comment).
+                    (KeyCode::Char('c'), _) if app.focus == Pane::Debug => {
+                        dbg.control(app, "continue");
+                    }
+                    (KeyCode::Char('n'), _) if app.focus == Pane::Debug => {
+                        dbg.control(app, "next");
+                    }
+                    (KeyCode::Char('i'), _) if app.focus == Pane::Debug => {
+                        dbg.control(app, "stepIn");
+                    }
+                    (KeyCode::Char('o'), _) if app.focus == Pane::Debug => {
+                        dbg.control(app, "stepOut");
+                    }
+                    // `S`: attach the current stopped stack to a comment on the
+                    // stopped line.
+                    (KeyCode::Char('S'), _) if app.debug_active() => {
+                        if let Some(snap) = dbg.snapshot(app) {
+                            app.attach_debug_snapshot(snap);
+                            app.status_msg = Some("stack attached to comment".into());
+                        } else {
+                            app.status_msg = Some("no stopped session to capture".into());
+                        }
+                    }
+                    // `X`: end all debug sessions and leave debug mode.
+                    (KeyCode::Char('X'), _) if app.debug_active() => {
+                        dbg.shutdown();
+                        app.exit_debug();
+                        app.status_msg = Some("debug sessions ended".into());
+                    }
                     (KeyCode::Tab, _) => app.toggle_focus(),
                     (KeyCode::Char('s'), _) => {
                         if app.focus == Pane::Files {

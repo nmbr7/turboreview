@@ -687,6 +687,60 @@ impl App {
         }
     }
 
+    /// End all debug sessions, keeping any breakpoints. If no breakpoints
+    /// remain, the debug overlay is dropped entirely. Moves focus off the Debug
+    /// pane.
+    pub fn exit_debug(&mut self) {
+        if let Some(d) = self.debug.as_mut() {
+            d.sessions.clear();
+            d.active = 0;
+            d.panel_sel = 0;
+            if d.breakpoints.is_empty() {
+                self.debug = None;
+            }
+        }
+        if self.focus == Pane::Debug {
+            self.focus = Pane::Diff;
+        }
+    }
+
+    /// Attach a captured debug snapshot to the comment at its stopped line,
+    /// creating a placeholder comment there if none exists. The stopped file is
+    /// stored repo-relative to match how comments key their file.
+    pub fn attach_debug_snapshot(&mut self, snap: crate::dap::DebugSnapshot) {
+        // Map the absolute stopped path back to a repo-relative path.
+        let abs = PathBuf::from(&snap.stopped_file);
+        let rel = abs
+            .strip_prefix(&self.repo_root)
+            .map(Path::to_path_buf)
+            .unwrap_or(abs);
+        let line = snap.stopped_line;
+        // Find an existing comment on (file,line), else create a minimal one.
+        if let Some(c) = self
+            .comments
+            .items
+            .iter_mut()
+            .find(|c| c.file == rel && c.line == line)
+        {
+            c.debug_snapshot = Some(snap);
+            c.updated = crate::storage::now_secs();
+        } else {
+            self.comments.set(
+                rel,
+                line,
+                String::new(),
+                String::new(),
+                String::new(),
+                vec![],
+                vec![],
+                crate::storage::now_secs(),
+            );
+            if let Some(c) = self.comments.items.last_mut() {
+                c.debug_snapshot = Some(snap);
+            }
+        }
+    }
+
     /// Toggle the comment pane. If hiding while Comments has focus, move focus to Diff.
     pub fn toggle_comment_pane(&mut self) {
         self.show_comments = !self.show_comments;
@@ -3282,6 +3336,49 @@ mod tests {
         assert_eq!(app.debug.as_ref().unwrap().panel_sel, 2); // clamped
         app.move_debug_panel_selection(-99);
         assert_eq!(app.debug.as_ref().unwrap().panel_sel, 0);
+    }
+
+    #[test]
+    fn attach_snapshot_creates_comment_with_stack() {
+        let mut app = app_on_diff_line();
+        let snap = crate::dap::DebugSnapshot {
+            session_label: "worktree".into(),
+            stopped_file: "/repo/a.rs".into(), // abs; repo_root is /repo
+            stopped_line: 2,
+            stack: vec![crate::dap::Frame {
+                name: "main".into(),
+                file: Some("/repo/a.rs".into()),
+                line: 2,
+            }],
+            locals: vec![],
+            captured: 1,
+        };
+        app.attach_debug_snapshot(snap);
+        let c = app
+            .comments
+            .items
+            .iter()
+            .find(|c| c.file == PathBuf::from("a.rs") && c.line == 2)
+            .expect("comment created at stopped line");
+        assert!(c.debug_snapshot.is_some());
+        assert_eq!(c.debug_snapshot.as_ref().unwrap().stack[0].name, "main");
+    }
+
+    #[test]
+    fn exit_debug_keeps_breakpoints_drops_sessions() {
+        let mut app = app_on_diff_line();
+        app.toggle_breakpoint_at_cursor(); // a breakpoint exists
+        let mut st = app.debug.take().unwrap();
+        st.sessions.push(DebugSession::new(1, "worktree".into()));
+        app.debug = Some(st);
+        app.focus = Pane::Debug;
+
+        app.exit_debug();
+        // Sessions gone, breakpoints kept, debug still active, focus moved.
+        let d = app.debug.as_ref().unwrap();
+        assert!(d.sessions.is_empty());
+        assert!(!d.breakpoints.is_empty());
+        assert_eq!(app.focus, Pane::Diff);
     }
 
     #[test]

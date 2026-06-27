@@ -161,7 +161,17 @@ pub fn render(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Min(1), Constraint::Length(status_h)])
         .split(frame.area());
 
-    let main_area = outer[0];
+    // When debugging, carve a variables/stack panel off the right edge and lay
+    // the normal panes out in the remaining area.
+    let (main_area, debug_area) = if app.debug_active() {
+        let split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+            .split(outer[0]);
+        (split[0], Some(split[1]))
+    } else {
+        (outer[0], None)
+    };
     let comment_pct: u16 = 28;
 
     if app.show_files && app.show_comments {
@@ -215,6 +225,9 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_diff(frame, app, panes[1]);
     } else {
         render_diff(frame, app, main_area);
+    }
+    if let Some(area) = debug_area {
+        render_debug_panel(frame, app, area);
     }
     if status_h > 0 {
         render_status(frame, app, outer[1]);
@@ -310,6 +323,99 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
         state.select(Some(app.comment_selected));
     }
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// The debugger right-hand panel: a session strip, the active session's call
+/// stack, and the selected frame's local variables.
+fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
+    use crate::app::SessionState;
+    let pal = app.palette();
+    let Some(d) = app.debug.as_ref() else { return };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Session strip: one row per session, active one bracketed.
+    for (i, s) in d.sessions.iter().enumerate() {
+        let state = match s.state {
+            SessionState::Starting => "…",
+            SessionState::Running => "▶ running",
+            SessionState::Stopped => "⏸ stopped",
+            SessionState::Exited => "✗ exited",
+        };
+        let marker = if i == d.active { "▌ " } else { "  " };
+        let style = if i == d.active {
+            Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(pal.accent_dim)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{marker}{}  {state}", s.label),
+            style,
+        )));
+    }
+    lines.push(Line::from(""));
+
+    // Active session: call stack then locals. panel_sel indexes stack++locals.
+    if let Some(sess) = d.active_session() {
+        let sel = d.panel_sel;
+        lines.push(Line::from(Span::styled(
+            " Call stack",
+            Style::default().fg(pal.hunk).add_modifier(Modifier::BOLD),
+        )));
+        if sess.stack.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "   (not stopped)",
+                Style::default().fg(pal.accent_dim),
+            )));
+        }
+        for (i, f) in sess.stack.iter().enumerate() {
+            let loc = f
+                .file
+                .as_deref()
+                .map(|p| {
+                    let base = std::path::Path::new(p)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(p);
+                    format!("{base}:{}", f.line)
+                })
+                .unwrap_or_default();
+            let mut st = Style::default().fg(pal.accent_dim);
+            if i == sel {
+                st = st.bg(pal.selected_bg);
+            }
+            lines.push(Line::from(Span::styled(
+                format!("  {}  {loc}", f.name),
+                st,
+            )));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Variables",
+            Style::default().fg(pal.hunk).add_modifier(Modifier::BOLD),
+        )));
+        let base = sess.stack.len();
+        for (i, v) in sess.locals.iter().enumerate() {
+            let mut st = Style::default();
+            if base + i == sel {
+                st = st.bg(pal.selected_bg);
+            }
+            let line = Line::from(vec![
+                Span::styled(format!("  {} = ", v.name), st.fg(pal.accent)),
+                Span::styled(v.value.clone(), st.fg(pal.accent_dim)),
+            ]);
+            lines.push(line);
+        }
+    }
+
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(focused_border(app, Pane::Debug))
+            .title(" Debug "),
+    );
+    frame.render_widget(para, area);
 }
 
 fn render_files(frame: &mut Frame, app: &App, area: Rect) {
@@ -815,6 +921,16 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_string();
+    // Absolute path of the file shown in the diff, for breakpoint lookups.
+    let bp_file = app.selected_path().map(|p| app.repo_root.join(p));
+    // Line where the active session is currently stopped (in this file).
+    let stopped_line = app
+        .debug
+        .as_ref()
+        .and_then(|d| d.active_session())
+        .and_then(|s| s.stopped_at.as_ref())
+        .filter(|(f, _)| bp_file.as_deref() == Some(f.as_path()))
+        .map(|(_, l)| *l);
 
     let ctx_label = if app.full_file {
         "full file".to_string()
@@ -925,6 +1041,28 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(gutter_fg)
             };
+            // Breakpoint marker (●) and current-stop marker (▶) in a 1-col
+            // sidebar before the line-number gutter.
+            let line_no = dl.new_lineno.or(dl.old_lineno);
+            let is_bp = match (&bp_file, line_no) {
+                (Some(f), Some(n)) => app.has_breakpoint(f, n),
+                _ => false,
+            };
+            let is_stopped = stopped_line.is_some() && stopped_line == line_no;
+            let (marker, marker_fg) = if is_stopped {
+                ("▶", pal.tick)
+            } else if is_bp {
+                ("●", pal.red)
+            } else {
+                (" ", pal.accent_dim)
+            };
+            let mut marker_style = Style::default().fg(marker_fg);
+            if is_cursor {
+                marker_style = marker_style.bg(pal.selected_bg);
+            } else if let Some(b) = bg {
+                marker_style = marker_style.bg(b);
+            }
+            let marker_span = Span::styled(marker.to_string(), marker_style);
             let gutter_span = Span::styled(gutter(dl), gutter_style);
             let shifted: String = dl.text.chars().skip(app.diff_hscroll).collect();
             let mut spans: Vec<Span> = highlight_code(&shifted, &ext, app.theme);
@@ -952,7 +1090,8 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                     }
                 }
             }
-            let mut all_spans = Vec::with_capacity(1 + spans.len());
+            let mut all_spans = Vec::with_capacity(2 + spans.len());
+            all_spans.push(marker_span);
             all_spans.push(gutter_span);
             all_spans.extend(spans);
             result.push(Line::from(all_spans));

@@ -4,6 +4,7 @@ pub const COMMIT_PAGE: usize = 50;
 pub mod app;
 pub mod comments;
 pub mod dap;
+pub mod debug;
 pub mod git;
 pub mod highlight;
 pub mod icons;
