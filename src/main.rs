@@ -491,6 +491,15 @@ fn run(
                     (KeyCode::Char('t'), _) if app.is_debug_focused() => {
                         app.toggle_debug_tab();
                     }
+                    // Vars tab: Enter expands/collapses a structured variable
+                    // (String/Vec/struct), fetching its children on first expand.
+                    (KeyCode::Enter, _)
+                        if app.is_debug_focused() && !app.debug_tab_is_breakpoints() =>
+                    {
+                        if let Some((frame, var_ref, path)) = app.toggle_expand_selected_var() {
+                            dbg.request_var_children(app, frame, var_ref, path);
+                        }
+                    }
                     // Breakpoint-list actions (Debug pane, Breakpoints tab):
                     // Enter = jump to it, Space/x = enable-disable, d = delete.
                     (KeyCode::Enter, _)
@@ -735,11 +744,15 @@ fn run(
                     (KeyCode::Char('l'), _) | (KeyCode::Right, _) => {
                         if app.focus == Pane::Diff {
                             app.scroll_h(1);
+                        } else if app.is_debug_focused() {
+                            app.debug_scroll_h(2);
                         }
                     }
                     (KeyCode::Char('h'), _) | (KeyCode::Left, _) => {
                         if app.focus == Pane::Diff {
                             app.scroll_h(-1);
+                        } else if app.is_debug_focused() {
+                            app.debug_scroll_h(-2);
                         }
                     }
                     (KeyCode::Char('+'), _) | (KeyCode::Char('='), _) => {

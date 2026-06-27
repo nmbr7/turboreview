@@ -163,6 +163,12 @@ pub struct VarRow {
     /// values like String/Vec expose this). Runtime only — not persisted.
     #[serde(default, skip)]
     pub memory_ref: Option<String>,
+    /// Whether this (structured) value is currently expanded in the UI.
+    #[serde(default, skip)]
+    pub expanded: bool,
+    /// Child variables, fetched lazily when expanded. Runtime only.
+    #[serde(default, skip)]
+    pub children: Vec<VarRow>,
 }
 
 /// A snapshot of debugger state captured at a stopped point, attachable to a

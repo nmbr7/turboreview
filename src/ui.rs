@@ -394,6 +394,7 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
     use crate::app::{DebugTab, SessionState};
     let pal = app.palette();
     let Some(d) = app.debug.as_ref() else { return };
+    let hscroll = d.hscroll as u16;
 
     let mut lines: Vec<Line<'static>> = Vec::new();
 
@@ -416,12 +417,14 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     if d.tab == DebugTab::Breakpoints {
         render_breakpoint_lines(&mut lines, app, d, &pal);
-        let para = Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(focused_border(app, Pane::Comments))
-                .title(" Debug "),
-        );
+        let para = Paragraph::new(lines)
+            .scroll((0, hscroll))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(focused_border(app, Pane::Comments))
+                    .title(" Debug "),
+            );
         frame.render_widget(para, area);
         return;
     }
@@ -447,12 +450,11 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
     }
     lines.push(Line::from(""));
 
-    // Active session: the call stack, with the selected frame's locals nested
-    // beneath it. panel_sel selects a frame.
+    // Active session: flattened call stack + locals (recursing into expanded
+    // structured values). panel_sel selects a row; Enter expands a var.
     if let Some(sess) = d.active_session() {
-        let sel = d.panel_sel;
         lines.push(Line::from(Span::styled(
-            " Call stack  (locals under selected frame)",
+            " Call stack + locals  (Enter: expand · h/l: scroll)",
             Style::default().fg(pal.hunk).add_modifier(Modifier::BOLD),
         )));
         if sess.stack.is_empty() {
@@ -461,63 +463,71 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(pal.accent_dim),
             )));
         }
-        for (i, f) in sess.stack.iter().enumerate() {
-            let loc = f
-                .file
-                .as_deref()
-                .map(|p| {
-                    let base = std::path::Path::new(p)
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or(p);
-                    format!("{base}:{}", f.line)
-                })
-                .unwrap_or_default();
-            let selected = i == sel;
-            let mut st = Style::default().fg(if selected { pal.accent } else { pal.accent_dim });
-            if selected {
-                st = st.bg(pal.selected_bg).add_modifier(Modifier::BOLD);
-            }
-            lines.push(Line::from(Span::styled(
-                format!("  {} {}  {loc}", if selected { "▾" } else { "▸" }, f.name),
-                st,
-            )));
-            // Nested locals for the selected frame.
-            if selected {
-                if f.locals.is_empty() {
+        for (ri, row) in d.debug_rows().iter().enumerate() {
+            let selected = ri == d.panel_sel;
+            let sel_bg = |st: Style| if selected { st.bg(pal.selected_bg) } else { st };
+            match row {
+                crate::app::DebugRow::Frame(fi) => {
+                    let f = &sess.stack[*fi];
+                    let loc = f
+                        .file
+                        .as_deref()
+                        .map(|p| {
+                            let base = std::path::Path::new(p)
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or(p);
+                            format!("{base}:{}", f.line)
+                        })
+                        .unwrap_or_default();
+                    let mut st = Style::default()
+                        .fg(pal.accent)
+                        .add_modifier(Modifier::BOLD);
+                    st = sel_bg(st);
                     lines.push(Line::from(Span::styled(
-                        "      (no locals)",
-                        Style::default().fg(pal.accent_dim),
+                        format!("  {}  {loc}", f.name),
+                        st,
                     )));
                 }
-                for v in &f.locals {
-                    let mut meta = String::new();
-                    if let Some(t) = v.ty.as_deref() {
-                        meta.push_str(&format!("  : {t}"));
+                crate::app::DebugRow::Var(fi, path) => {
+                    let v = crate::app::var_at_path(&sess.stack[*fi].locals, path);
+                    if let Some(v) = v {
+                        let depth = path.len();
+                        let indent = "  ".repeat(depth + 1);
+                        let marker = if v.var_ref > 0 {
+                            if v.expanded { "▾ " } else { "▸ " }
+                        } else {
+                            "  "
+                        };
+                        let mut meta = String::new();
+                        if let Some(t) = v.ty.as_deref() {
+                            meta.push_str(&format!("  : {t}"));
+                        }
+                        if let Some(addr) = v.memory_ref.as_deref() {
+                            meta.push_str(&format!("  @{addr}"));
+                        }
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{indent}{marker}{} = ", v.name),
+                                sel_bg(Style::default().fg(pal.accent)),
+                            ),
+                            Span::styled(v.value.clone(), sel_bg(Style::default().fg(pal.accent_dim))),
+                            Span::styled(meta, sel_bg(Style::default().fg(pal.blue))),
+                        ]));
                     }
-                    if let Some(addr) = v.memory_ref.as_deref() {
-                        meta.push_str(&format!("  @{addr}"));
-                    }
-                    // Structured (heap) values are expandable via DAP variables.
-                    if v.var_ref > 0 {
-                        meta.push_str("  ▸");
-                    }
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("      {} = ", v.name), Style::default().fg(pal.accent)),
-                        Span::styled(v.value.clone(), Style::default().fg(pal.accent_dim)),
-                        Span::styled(meta, Style::default().fg(pal.blue)),
-                    ]));
                 }
             }
         }
     }
 
-    let para = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(focused_border(app, Pane::Comments))
-            .title(" Debug "),
-    );
+    let para = Paragraph::new(lines)
+        .scroll((0, hscroll))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(focused_border(app, Pane::Comments))
+                .title(" Debug "),
+        );
     frame.render_widget(para, area);
 }
 
@@ -1528,6 +1538,8 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("c / n / i / o", "continue / over / in / out"),
             ("[ / ]", "right pane: Comments / Debug tab"),
             ("t", "Debug: Vars / Breakpoints"),
+            ("Enter", "Vars: expand a variable"),
+            ("h / l", "Debug: scroll horizontally"),
             ("Space / d", "bp list: enable-disable / delete"),
             ("Enter", "bp list: jump to breakpoint"),
             ("Ctrl-D", "comment box: attach stack"),

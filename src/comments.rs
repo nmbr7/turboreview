@@ -633,6 +633,8 @@ mod tests {
                 ty: Some("i32".into()),
                 var_ref: 0,
                 memory_ref: None,
+                expanded: false,
+                children: vec![],
             }],
             captured: 1000,
         });

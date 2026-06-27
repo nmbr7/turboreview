@@ -25,6 +25,8 @@ enum Pending {
     StackTrace,
     Scopes(usize),
     Variables(usize),
+    /// Children of an expanded structured var: (frame index, path key).
+    VarChildren(usize, u64),
 }
 
 /// One live adapter connection plus its in-flight request bookkeeping.
@@ -36,6 +38,10 @@ struct Live {
     bp_sent: bool,
     /// Frame id of the top frame at the last stop (for scopes/variables).
     top_frame: Option<i64>,
+    /// Var-expansion paths, keyed by an id stored in `Pending::VarChildren`
+    /// (since `Pending` is `Copy` and can't hold a `Vec`).
+    var_paths: HashMap<u64, (usize, Vec<usize>)>,
+    next_var_key: u64,
 }
 
 /// Owns all live debug sessions and the shared event channel.
@@ -134,6 +140,8 @@ impl DebugManager {
                 pending,
                 bp_sent: false,
                 top_frame: None,
+                var_paths: HashMap::new(),
+                next_var_key: 1,
             },
         );
         // Stash the launch config so the `initialized` handler can use it.
@@ -329,6 +337,14 @@ impl DebugManager {
                     }
                 }
             }
+            Pending::VarChildren(_frame, key) => {
+                let children = parse_variables(body);
+                if let Some((frame, path)) =
+                    self.live.get_mut(&id).and_then(|l| l.var_paths.remove(&key))
+                {
+                    app.set_var_children(frame, &path, children);
+                }
+            }
         }
     }
 
@@ -347,6 +363,26 @@ impl DebugManager {
         if let Some(l) = self.live.get_mut(&sid) {
             if let Ok(seq) = l.client.send_request("scopes", json!({"frameId": fid})) {
                 l.pending.insert(seq, Pending::Scopes(idx));
+            }
+        }
+    }
+
+    /// Request the children of a structured variable (`var_ref`) so an expanded
+    /// String/Vec/struct shows its contents. `path` identifies the var in the
+    /// active session's frame `frame_idx`.
+    pub fn request_var_children(&mut self, app: &App, frame_idx: usize, var_ref: i64, path: Vec<usize>) {
+        let Some(sid) = app.debug.as_ref().and_then(|d| d.active_session()).map(|s| s.id) else {
+            return;
+        };
+        if let Some(l) = self.live.get_mut(&sid) {
+            let key = l.next_var_key;
+            l.next_var_key += 1;
+            l.var_paths.insert(key, (frame_idx, path));
+            if let Ok(seq) = l
+                .client
+                .send_request("variables", json!({"variablesReference": var_ref}))
+            {
+                l.pending.insert(seq, Pending::VarChildren(frame_idx, key));
             }
         }
     }
@@ -504,6 +540,8 @@ fn parse_variables(body: &Value) -> Vec<crate::dap::VarRow> {
                         .get("memoryReference")
                         .and_then(Value::as_str)
                         .map(str::to_string),
+                    expanded: false,
+                    children: Vec::new(),
                 })
                 .collect()
         })

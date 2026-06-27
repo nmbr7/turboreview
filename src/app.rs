@@ -101,6 +101,54 @@ pub enum SessionState {
     Exited,
 }
 
+/// Recursively flatten `vars` into [`DebugRow::Var`] rows, descending into the
+/// children of any var that is currently `expanded`.
+fn push_var_rows(
+    vars: &[crate::dap::VarRow],
+    frame: usize,
+    prefix: &mut Vec<usize>,
+    out: &mut Vec<DebugRow>,
+) {
+    for (i, v) in vars.iter().enumerate() {
+        prefix.push(i);
+        out.push(DebugRow::Var(frame, prefix.clone()));
+        if v.expanded {
+            push_var_rows(&v.children, frame, prefix, out);
+        }
+        prefix.pop();
+    }
+}
+
+/// Walk a `path` of child indices into a nested var list, returning a shared
+/// reference to the target var.
+pub fn var_at_path<'a>(
+    vars: &'a [crate::dap::VarRow],
+    path: &[usize],
+) -> Option<&'a crate::dap::VarRow> {
+    let (first, rest) = path.split_first()?;
+    let v = vars.get(*first)?;
+    if rest.is_empty() {
+        Some(v)
+    } else {
+        var_at_path(&v.children, rest)
+    }
+}
+
+/// Walk a `path` of child indices into a nested var list, returning a mutable
+/// reference to the target var.
+fn var_at_path_mut<'a>(
+    vars: &'a mut [crate::dap::VarRow],
+    path: &[usize],
+) -> Option<&'a mut crate::dap::VarRow> {
+    let (first, rest) = path.split_first()?;
+    let v = vars.get_mut(*first)?;
+    if rest.is_empty() {
+        Some(v)
+    } else {
+        var_at_path_mut(&mut v.children, rest)
+    }
+}
+
 /// One debug session's UI-facing state. The live adapter handle (process +
 /// request channel) is attached by the threaded client layer; this struct holds
 /// only what the UI renders so it stays `Clone`/testable.
@@ -169,9 +217,33 @@ pub struct DebugState {
     pub hscroll: usize,
 }
 
+/// A flattened, selectable row in the Vars panel: either a stack frame, or a
+/// variable belonging to a frame (identified by a path of child indices for
+/// nested/expanded values). Indentation = path depth.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DebugRow {
+    Frame(usize),
+    /// (frame index, path of indices from the frame's locals down to this var).
+    Var(usize, Vec<usize>),
+}
+
 impl DebugState {
     pub fn active_session(&self) -> Option<&DebugSession> {
         self.sessions.get(self.active)
+    }
+
+    /// Flatten the active session into selectable rows: every frame followed by
+    /// its locals, recursing into expanded structured values.
+    pub fn debug_rows(&self) -> Vec<DebugRow> {
+        let mut rows = Vec::new();
+        let Some(sess) = self.active_session() else {
+            return rows;
+        };
+        for (fi, frame) in sess.stack.iter().enumerate() {
+            rows.push(DebugRow::Frame(fi));
+            push_var_rows(&frame.locals, fi, &mut Vec::new(), &mut rows);
+        }
+        rows
     }
 
     /// Flat, ordered list of all breakpoints as `(file, line, enabled)`. Order
@@ -681,6 +753,13 @@ impl App {
         self.focus = panes[(current + 1) % panes.len()];
     }
 
+    /// Horizontally scroll the debug pane content (clamped at 0).
+    pub fn debug_scroll_h(&mut self, delta: isize) {
+        if let Some(d) = self.debug.as_mut() {
+            d.hscroll = (d.hscroll as isize + delta).max(0) as usize;
+        }
+    }
+
     /// Whether the Debug tab of the right pane is focused.
     pub fn is_debug_focused(&self) -> bool {
         self.focus == Pane::Comments && self.right_tab == RightTab::Debug
@@ -868,13 +947,10 @@ impl App {
         }
     }
 
-    /// Number of selectable rows in the Vars panel = the stack frames. The
-    /// selected frame's locals are shown nested beneath it.
+    /// Number of selectable rows in the Vars panel (frames + their locals,
+    /// recursing into expanded values).
     pub fn debug_panel_len(&self) -> usize {
-        match self.debug.as_ref().and_then(|d| d.active_session()) {
-            Some(s) => s.stack.len(),
-            None => 0,
-        }
+        self.debug.as_ref().map_or(0, |d| d.debug_rows().len())
     }
 
     /// Move the selection within the debug panel, clamped to its row count.
@@ -885,11 +961,42 @@ impl App {
         }
         let max = len as isize - 1;
         if let Some(d) = self.debug.as_mut() {
-            let next = ((d.panel_sel as isize + delta).clamp(0, max)) as usize;
-            d.panel_sel = next;
-            // The Vars panel selection is a stack-frame selection.
-            if let Some(s) = d.sessions.get_mut(d.active) {
-                s.frame_sel = next;
+            d.panel_sel = ((d.panel_sel as isize + delta).clamp(0, max)) as usize;
+        }
+    }
+
+    /// Toggle expansion of the selected variable (if structured). When expanding
+    /// a value that has no children yet, returns `(frame_idx, var_ref, path)` so
+    /// the caller can fetch them; otherwise returns None.
+    pub fn toggle_expand_selected_var(&mut self) -> Option<(usize, i64, Vec<usize>)> {
+        let d = self.debug.as_mut()?;
+        let row = d.debug_rows().get(d.panel_sel).cloned()?;
+        let DebugRow::Var(fi, path) = row else {
+            return None;
+        };
+        let sess = d.sessions.get_mut(d.active)?;
+        let v = var_at_path_mut(&mut sess.stack.get_mut(fi)?.locals, &path)?;
+        if v.var_ref == 0 {
+            return None; // scalar, nothing to expand
+        }
+        v.expanded = !v.expanded;
+        if v.expanded && v.children.is_empty() {
+            Some((fi, v.var_ref, path))
+        } else {
+            None
+        }
+    }
+
+    /// Store fetched children onto the var at `(frame, path)` in the active
+    /// session.
+    pub fn set_var_children(&mut self, frame: usize, path: &[usize], children: Vec<crate::dap::VarRow>) {
+        if let Some(d) = self.debug.as_mut() {
+            if let Some(sess) = d.sessions.get_mut(d.active) {
+                if let Some(f) = sess.stack.get_mut(frame) {
+                    if let Some(v) = var_at_path_mut(&mut f.locals, path) {
+                        v.children = children;
+                    }
+                }
             }
         }
     }
@@ -3588,6 +3695,8 @@ mod tests {
                 ty: None,
                 var_ref: 0,
                 memory_ref: None,
+                expanded: false,
+                children: vec![],
             },
             crate::dap::VarRow {
                 name: "y".into(),
@@ -3595,6 +3704,8 @@ mod tests {
                 ty: None,
                 var_ref: 0,
                 memory_ref: None,
+                expanded: false,
+                children: vec![],
             },
         ];
         // Three frames; selection is over frames (locals nest under the selected).
@@ -3609,15 +3720,54 @@ mod tests {
         st.sessions.push(sess);
         app.debug = Some(st);
 
-        assert_eq!(app.debug_panel_len(), 3); // 3 frames
+        assert_eq!(app.debug_panel_len(), 3); // 3 frames, no locals
         app.focus = Pane::Comments;
         app.right_tab = RightTab::Debug;
         app.move_debug_panel_selection(99);
-        assert_eq!(app.debug.as_ref().unwrap().panel_sel, 2); // clamped to last frame
-        // Frame selection mirrors panel selection.
-        assert_eq!(app.debug.as_ref().unwrap().sessions[0].frame_sel, 2);
+        assert_eq!(app.debug.as_ref().unwrap().panel_sel, 2); // clamped to last row
         app.move_debug_panel_selection(-99);
         assert_eq!(app.debug.as_ref().unwrap().panel_sel, 0);
+    }
+
+    #[test]
+    fn expand_var_flattens_children_and_requests_fetch() {
+        let mut app = app_on_diff_line();
+        let mut st = DebugState::default();
+        let mut sess = DebugSession::new(1, "s".into());
+        let var = |name: &str, vref: i64| crate::dap::VarRow {
+            name: name.into(),
+            value: "..".into(),
+            ty: None,
+            var_ref: vref,
+            memory_ref: None,
+            expanded: false,
+            children: vec![],
+        };
+        sess.stack = vec![crate::dap::Frame {
+            name: "f".into(),
+            file: None,
+            line: 0,
+            id: 7,
+            locals: vec![var("s", 1004)], // expandable String
+        }];
+        st.sessions.push(sess);
+        app.debug = Some(st);
+
+        // Rows: frame + 1 var = 2.
+        assert_eq!(app.debug_panel_len(), 2);
+        // Select the var (row 1) and expand it.
+        app.debug.as_mut().unwrap().panel_sel = 1;
+        let req = app.toggle_expand_selected_var();
+        assert_eq!(req, Some((0, 1004, vec![0]))); // needs a fetch
+
+        // Supply children → they flatten in (frame + var + 2 children = 4).
+        app.set_var_children(0, &[0], vec![var("[0]", 0), var("[1]", 0)]);
+        assert_eq!(app.debug_panel_len(), 4);
+
+        // Collapsing hides them again (no fetch needed).
+        app.debug.as_mut().unwrap().panel_sel = 1;
+        assert_eq!(app.toggle_expand_selected_var(), None);
+        assert_eq!(app.debug_panel_len(), 2);
     }
 
     #[test]
