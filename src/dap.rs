@@ -164,10 +164,11 @@ pub struct VarRow {
     #[serde(default, skip)]
     pub memory_ref: Option<String>,
     /// Whether this (structured) value is currently expanded in the UI.
-    #[serde(default, skip)]
+    #[serde(default)]
     pub expanded: bool,
-    /// Child variables, fetched lazily when expanded. Runtime only.
-    #[serde(default, skip)]
+    /// Child variables, fetched lazily when expanded (or eagerly before a
+    /// snapshot). Persisted so an attached snapshot keeps the resolved tree.
+    #[serde(default)]
     pub children: Vec<VarRow>,
 }
 

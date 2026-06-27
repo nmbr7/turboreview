@@ -987,6 +987,19 @@ impl App {
         }
     }
 
+    /// Set the expanded flag on the var at `(frame, path)` in the active session.
+    pub fn set_var_expanded(&mut self, frame: usize, path: &[usize], expanded: bool) {
+        if let Some(d) = self.debug.as_mut() {
+            if let Some(sess) = d.sessions.get_mut(d.active) {
+                if let Some(f) = sess.stack.get_mut(frame) {
+                    if let Some(v) = var_at_path_mut(&mut f.locals, path) {
+                        v.expanded = expanded;
+                    }
+                }
+            }
+        }
+    }
+
     /// Store fetched children onto the var at `(frame, path)` in the active
     /// session.
     pub fn set_var_children(&mut self, frame: usize, path: &[usize], children: Vec<crate::dap::VarRow>) {

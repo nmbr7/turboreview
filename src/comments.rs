@@ -628,13 +628,21 @@ mod tests {
                 locals: vec![],
             }],
             locals: vec![VarRow {
-                name: "x".into(),
-                value: "1".into(),
-                ty: Some("i32".into()),
-                var_ref: 0,
+                name: "s".into(),
+                value: "\"hi\"".into(),
+                ty: Some("String".into()),
+                var_ref: 0, // skipped on serialize; keep 0 so round-trip eq holds
                 memory_ref: None,
-                expanded: false,
-                children: vec![],
+                expanded: true,
+                children: vec![VarRow {
+                    name: "[0]".into(),
+                    value: "104".into(),
+                    ty: Some("u8".into()),
+                    var_ref: 0,
+                    memory_ref: None,
+                    expanded: false,
+                    children: vec![],
+                }],
             }],
             captured: 1000,
         });
@@ -644,7 +652,10 @@ mod tests {
         let snap = back.debug_snapshot.unwrap();
         assert_eq!(snap.stopped_line, 42);
         assert_eq!(snap.stack[0].name, "main");
-        assert_eq!(snap.locals[0].value, "1");
+        // Expanded children persist through serialization.
+        assert!(snap.locals[0].expanded);
+        assert_eq!(snap.locals[0].children[0].name, "[0]");
+        assert_eq!(snap.locals[0].children[0].value, "104");
     }
 
     // ─── TDD: drain_resolved ─────────────────────────────────────────────────

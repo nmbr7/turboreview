@@ -39,8 +39,9 @@ struct Live {
     /// Frame id of the top frame at the last stop (for scopes/variables).
     top_frame: Option<i64>,
     /// Var-expansion paths, keyed by an id stored in `Pending::VarChildren`
-    /// (since `Pending` is `Copy` and can't hold a `Vec`).
-    var_paths: HashMap<u64, (usize, Vec<usize>)>,
+    /// (since `Pending` is `Copy` and can't hold a `Vec`). Value =
+    /// (frame index, var path, remaining auto-expand depth; 0 = user-initiated).
+    var_paths: HashMap<u64, (usize, Vec<usize>, usize)>,
     next_var_key: u64,
 }
 
@@ -318,6 +319,9 @@ impl DebugManager {
                     }
                     sess.stack.len()
                 });
+                // Eagerly resolve this frame's structured vars so a captured
+                // snapshot includes the full heap contents.
+                self.auto_expand_frame(app, id, frame_idx);
                 // Chain to the next frame (serially, to avoid lldb-dap's stateful
                 // variablesReference race) so all frames' locals are eventually
                 // populated and can be captured into a comment snapshot.
@@ -339,10 +343,26 @@ impl DebugManager {
             }
             Pending::VarChildren(_frame, key) => {
                 let children = parse_variables(body);
-                if let Some((frame, path)) =
+                if let Some((frame, path, depth)) =
                     self.live.get_mut(&id).and_then(|l| l.var_paths.remove(&key))
                 {
-                    app.set_var_children(frame, &path, children);
+                    // Auto-expanded vars (depth > 0) are marked expanded so the
+                    // resolved tree shows + persists.
+                    if depth > 0 {
+                        app.set_var_expanded(frame, &path, true);
+                    }
+                    app.set_var_children(frame, &path, children.clone());
+                    // Recurse into structured grandchildren while depth remains.
+                    if depth > 1 {
+                        let sid = id;
+                        for (ci, c) in children.iter().enumerate() {
+                            if c.var_ref > 0 {
+                                let mut cpath = path.clone();
+                                cpath.push(ci);
+                                self.fire_var_request(sid, frame, c.var_ref, cpath, depth - 1);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -374,10 +394,52 @@ impl DebugManager {
         let Some(sid) = app.debug.as_ref().and_then(|d| d.active_session()).map(|s| s.id) else {
             return;
         };
+        self.fire_var_request(sid, frame_idx, var_ref, path, 0);
+    }
+
+    /// Maximum auto-expand depth when eagerly resolving a frame's structured
+    /// vars (so a captured snapshot holds the heap contents). Bounds work on
+    /// large/cyclic structures.
+    const AUTO_EXPAND_DEPTH: usize = 3;
+
+    /// Eagerly request children for every structured variable in `frame_idx`'s
+    /// locals so the full value tree is resolved (for snapshot capture). Marks
+    /// the vars expanded as their children arrive.
+    fn auto_expand_frame(&mut self, app: &App, sid: SessionId, frame_idx: usize) {
+        let reqs: Vec<(i64, Vec<usize>)> = app
+            .debug
+            .as_ref()
+            .and_then(|d| d.active_session())
+            .and_then(|s| s.stack.get(frame_idx))
+            .map(|f| {
+                f.locals
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, v)| v.var_ref > 0 && v.children.is_empty())
+                    .map(|(i, v)| (v.var_ref, vec![i]))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (var_ref, path) in reqs {
+            self.fire_var_request(sid, frame_idx, var_ref, path, Self::AUTO_EXPAND_DEPTH);
+        }
+    }
+
+    /// Send a `variables` request for `var_ref`, tagging it with the path +
+    /// remaining auto-expand depth so the response can be routed and (if depth
+    /// remains) recurse into structured children.
+    fn fire_var_request(
+        &mut self,
+        sid: SessionId,
+        frame_idx: usize,
+        var_ref: i64,
+        path: Vec<usize>,
+        depth: usize,
+    ) {
         if let Some(l) = self.live.get_mut(&sid) {
             let key = l.next_var_key;
             l.next_var_key += 1;
-            l.var_paths.insert(key, (frame_idx, path));
+            l.var_paths.insert(key, (frame_idx, path, depth));
             if let Ok(seq) = l
                 .client
                 .send_request("variables", json!({"variablesReference": var_ref}))
