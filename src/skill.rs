@@ -73,6 +73,7 @@ Each element of the `comments.json` array is a comment object:
 | `status`         | string          | one of `open`, `resolved`, `wontfix`, `needs_info`             |
 | `response`       | string or null  | your reply to the reviewer                                     |
 | `updated`        | number          | unix epoch seconds of the last edit (0 for legacy comments without it) |
+| `debug_snapshot` | object or null  | read-only: call stack + locals captured at a breakpoint (do not edit) |
 
 ## Archive
 
@@ -108,7 +109,9 @@ need the active `comments.json`; the archive is historical only.
 ## Rules
 
 - NEVER delete a comment object or change `file`, `line`, `text`, `line_text`,
-  `context_*`, `orig_line`, or `hunk`. Only set `response` and `status`.
+  `context_*`, `orig_line`, `hunk`, or `debug_snapshot`. Only set `response` and
+  `status`. (`debug_snapshot`, when present, is captured runtime state — useful
+  context for understanding the comment; leave it untouched.)
 - Preserve the JSON array structure and all comments you are not responding to.
 - Keep `response` concise (1–3 sentences). It is shown to the reviewer in the TUI.
 - The reviewer re-opens turboreview to see your `response` and `status` inline in

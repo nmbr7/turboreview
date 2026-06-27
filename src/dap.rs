@@ -126,6 +126,50 @@ fn str_field(v: &Value, key: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("DAP message missing string field {key:?}"))
 }
 
+/// One call-stack frame, as surfaced to the UI and persisted in a comment
+/// snapshot. Derived from a DAP `stackTrace` frame.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Frame {
+    pub name: String,
+    /// Source file path (as reported by the adapter), if any.
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub line: u32,
+}
+
+/// One variable row (name = value), as surfaced to the UI and persisted in a
+/// comment snapshot. `variables_reference` > 0 means the value is structured and
+/// can be expanded with a further DAP `variables` request (not persisted).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VarRow {
+    pub name: String,
+    pub value: String,
+    #[serde(default, rename = "type")]
+    pub ty: Option<String>,
+}
+
+/// A snapshot of debugger state captured at a stopped point, attachable to a
+/// review comment so a reviewer can leave a note *with* the runtime state that
+/// prompted it. Stored on `Comment` as an optional, backward-compatible field.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DebugSnapshot {
+    /// Which session it came from (e.g. "worktree", "commit a1b2c3").
+    pub session_label: String,
+    /// File + line where execution was stopped.
+    pub stopped_file: String,
+    pub stopped_line: u32,
+    /// Call stack at capture time (innermost first).
+    #[serde(default)]
+    pub stack: Vec<Frame>,
+    /// Locals of the stopped frame at capture time.
+    #[serde(default)]
+    pub locals: Vec<VarRow>,
+    /// Unix epoch seconds when captured.
+    #[serde(default)]
+    pub captured: i64,
+}
+
 /// A `stopped` event payload (the fields we care about). Emitted when the
 /// debuggee halts at a breakpoint/step; `thread_id` is needed for follow-up
 /// `stackTrace`/`scopes` requests.

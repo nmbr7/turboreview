@@ -1357,6 +1357,7 @@ mod tests {
             status: CommentStatus::Open,
             response: Some(response.into()),
             updated: 0,
+            debug_snapshot: None,
         }
     }
 
@@ -2445,6 +2446,7 @@ mod tests {
             status: crate::comments::CommentStatus::Open,
             response: Some(String::new()),
             updated: 0,
+            debug_snapshot: None,
         });
         app.set_diff(vec![DiffLine {
             kind: LineKind::Add,

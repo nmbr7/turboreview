@@ -45,6 +45,8 @@ pub struct Comment {
     pub response: Option<String>, // agent's reply when addressing the comment
     #[serde(default)]
     pub updated: i64, // unix epoch seconds when the comment was last set/edited; 0 for legacy
+    #[serde(default)]
+    pub debug_snapshot: Option<crate::dap::DebugSnapshot>, // call stack + locals captured at a breakpoint
 }
 
 #[derive(Clone, Debug, Default)]
@@ -114,6 +116,7 @@ impl Comments {
                 status: CommentStatus::Open,
                 response: None,
                 updated: now,
+                debug_snapshot: None,
             });
         }
     }
@@ -316,6 +319,7 @@ mod tests {
             status: CommentStatus::Open,
             response: None,
             updated: 0,
+            debug_snapshot: None,
         }
     }
 
@@ -598,6 +602,43 @@ mod tests {
         let old_json = r#"[{"file":"a.rs","line":1,"hunk":"@@","text":"t","line_text":"x","context_before":[],"context_after":[],"orig_line":1,"stale":false}]"#;
         let items: Vec<Comment> = serde_json::from_str(old_json).unwrap();
         assert_eq!(items[0].updated, 0);
+    }
+
+    #[test]
+    fn old_json_without_debug_snapshot_deserializes_to_none() {
+        // Legacy file predating the debug_snapshot field must still load.
+        let old_json = r#"[{"file":"a.rs","line":1,"hunk":"@@","text":"t","line_text":"x","context_before":[],"context_after":[],"orig_line":1,"stale":false,"updated":5}]"#;
+        let items: Vec<Comment> = serde_json::from_str(old_json).unwrap();
+        assert_eq!(items[0].debug_snapshot, None);
+    }
+
+    #[test]
+    fn debug_snapshot_round_trips_through_json() {
+        use crate::dap::{DebugSnapshot, Frame, VarRow};
+        let mut c = make_comment(1, "x", vec![], vec![], 1);
+        c.debug_snapshot = Some(DebugSnapshot {
+            session_label: "worktree".into(),
+            stopped_file: "src/main.rs".into(),
+            stopped_line: 42,
+            stack: vec![Frame {
+                name: "main".into(),
+                file: Some("src/main.rs".into()),
+                line: 42,
+            }],
+            locals: vec![VarRow {
+                name: "x".into(),
+                value: "1".into(),
+                ty: Some("i32".into()),
+            }],
+            captured: 1000,
+        });
+        let json = serde_json::to_string(&c).unwrap();
+        let back: Comment = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, c);
+        let snap = back.debug_snapshot.unwrap();
+        assert_eq!(snap.stopped_line, 42);
+        assert_eq!(snap.stack[0].name, "main");
+        assert_eq!(snap.locals[0].value, "1");
     }
 
     // ─── TDD: drain_resolved ─────────────────────────────────────────────────

@@ -32,6 +32,37 @@ struct LogEntry<'a> {
     action: &'a str,
 }
 
+/// The debug-adapter command and its arguments (e.g. `codelldb`, `lldb-dap`,
+/// `debugpy`). Spawned with stdin/stdout piped to speak DAP.
+#[derive(Clone, Serialize, Deserialize, Default, Debug, PartialEq)]
+pub struct AdapterConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+/// Per-repo debug configuration: how to build the debuggee, which binary to run,
+/// and which adapter to drive. Source map handles old-commit / remote paths.
+#[derive(Clone, Serialize, Deserialize, Default, Debug, PartialEq)]
+pub struct DebugConfig {
+    #[serde(default)]
+    pub adapter: AdapterConfig,
+    /// Shell command run before launch (e.g. `cargo build`). Empty = skip.
+    #[serde(default)]
+    pub build: String,
+    /// Path to the built binary, relative to the source root.
+    #[serde(default)]
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Working directory for the debuggee (relative to source root). Empty = ".".
+    #[serde(default)]
+    pub cwd: String,
+    /// `[[from, to]]` source path remaps for remote / old-commit debugging.
+    #[serde(default)]
+    pub source_map: Vec<(String, String)>,
+}
+
 /// Persisted configuration. New fields use `#[serde(default)]` so older
 /// config.json files (which may lack them) keep loading.
 #[derive(Serialize, Deserialize, Default)]
@@ -39,6 +70,8 @@ struct Config {
     theme: String, // "dark" | "light"
     #[serde(default)]
     split_diff: bool, // side-by-side diff toggle
+    #[serde(default)]
+    debug: DebugConfig, // debugger build/adapter/program config
 }
 
 /// Read the whole config (defaults if missing/unparseable).
@@ -86,6 +119,11 @@ pub fn save_split(repo_root: &Path, split: bool) -> Result<()> {
     let mut cfg = load_config(repo_root);
     cfg.split_diff = split;
     save_config(repo_root, &cfg)
+}
+
+/// Load the persisted debug configuration (defaults if unset/unparseable).
+pub fn load_debug_config(repo_root: &Path) -> DebugConfig {
+    load_config(repo_root).debug
 }
 
 const ARCHIVE_DAYS: i64 = 14;
@@ -169,6 +207,51 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    #[test]
+    fn debug_config_round_trips_and_preserves_other_fields() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // Seed other config fields first.
+        save_theme(root, crate::theme::Theme::Light).unwrap();
+        save_split(root, true).unwrap();
+        // Write a debug block (no public setter yet — go through save_config).
+        let mut cfg = load_config(root);
+        cfg.debug = DebugConfig {
+            adapter: AdapterConfig {
+                command: "lldb-dap".into(),
+                args: vec!["--port".into(), "0".into()],
+            },
+            build: "cargo build".into(),
+            program: "target/debug/app".into(),
+            args: vec!["--flag".into()],
+            cwd: ".".into(),
+            source_map: vec![("/old".into(), "/new".into())],
+        };
+        save_config(root, &cfg).unwrap();
+
+        let loaded = load_debug_config(root);
+        assert_eq!(loaded.adapter.command, "lldb-dap");
+        assert_eq!(loaded.build, "cargo build");
+        assert_eq!(loaded.source_map, vec![("/old".into(), "/new".into())]);
+        // Other fields untouched.
+        assert_eq!(load_theme(root), crate::theme::Theme::Light);
+        assert!(load_split(root));
+    }
+
+    #[test]
+    fn missing_debug_block_loads_default() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // Config with only a theme, no debug block.
+        std::fs::create_dir_all(worktree_dir(root)).unwrap();
+        std::fs::write(
+            worktree_dir(root).join("config.json"),
+            br#"{"theme":"dark"}"#,
+        )
+        .unwrap();
+        assert_eq!(load_debug_config(root), DebugConfig::default());
+    }
+
     // ─── Config: theme + split_diff round-trip, no clobber ───────────────────
 
     #[test]
@@ -247,6 +330,7 @@ mod tests {
                 status: CommentStatus::Resolved,
                 response: None,
                 updated: 1000,
+                debug_snapshot: None,
             },
             Comment {
                 file: std::path::PathBuf::from("b.rs"),
@@ -261,6 +345,7 @@ mod tests {
                 status: CommentStatus::Resolved,
                 response: None,
                 updated: 2000,
+                debug_snapshot: None,
             },
         ];
 
@@ -298,6 +383,7 @@ mod tests {
             status: CommentStatus::Resolved,
             response: None,
             updated: 100,
+            debug_snapshot: None,
         };
         let c2 = Comment {
             file: std::path::PathBuf::from("b.rs"),
@@ -312,6 +398,7 @@ mod tests {
             status: CommentStatus::Resolved,
             response: None,
             updated: 200,
+            debug_snapshot: None,
         };
 
         append_archive(root, &[c1]).unwrap();
@@ -345,6 +432,7 @@ mod tests {
             status: CommentStatus::Resolved,
             response: None,
             updated: 1000,
+            debug_snapshot: None,
         };
         let res = append_archive(dir.path(), &[c]);
         assert!(
