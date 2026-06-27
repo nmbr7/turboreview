@@ -82,6 +82,23 @@ pub fn build_commit_rows(
     rows
 }
 
+/// Build rows for the "view all files" mode (Section::All): a single header
+/// followed by the tree of every tracked file. Nothing is hidden here.
+pub fn build_all_rows(files: &[FileChange], collapsed: &HashSet<(Section, PathBuf)>) -> Vec<Row> {
+    let mut rows = Vec::new();
+    rows.push(Row {
+        depth: 0,
+        name: "All files".to_string(),
+        kind: RowKind::Header {
+            section: Section::All,
+            count: files.len(),
+        },
+    });
+    let empty = HashSet::new();
+    build_section_rows(files, Section::All, collapsed, &empty, &mut rows);
+    rows
+}
+
 fn build_section_rows(
     files: &[FileChange],
     section: Section,

@@ -47,6 +47,8 @@ pub enum Section {
     Unstaged,
     Staged,
     Commit,
+    /// All tracked files ("view all" mode), not just changed ones.
+    All,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -260,6 +262,10 @@ pub struct App {
     pub view: ViewMode,
     pub unstaged: Vec<FileChange>,
     pub staged: Vec<FileChange>,
+    /// All tracked files (populated lazily when "view all" is toggled on).
+    pub all_files: Vec<FileChange>,
+    /// When true the file pane lists all tracked files instead of just changes.
+    pub show_all_files: bool,
     pub selected: usize,
     pub diff: Vec<DiffLine>,
     pub diff_cursor: usize,
@@ -315,6 +321,8 @@ impl App {
             view: ViewMode::Changes,
             unstaged,
             staged,
+            all_files: Vec::new(),
+            show_all_files: false,
             selected: 0,
             diff: Vec::new(),
             diff_cursor: 0,
@@ -411,6 +419,8 @@ impl App {
         };
         self.rows = if self.view == ViewMode::Commits && self.open_commit.is_some() {
             crate::tree::build_commit_rows(&self.commit_files, &self.collapsed, hidden)
+        } else if self.show_all_files {
+            crate::tree::build_all_rows(&self.all_files, &self.collapsed)
         } else {
             crate::tree::build_rows(&self.unstaged, &self.staged, &self.collapsed, hidden)
         };
@@ -459,11 +469,21 @@ impl App {
         })
     }
 
+    /// Whether the selected row is a file in the "view all" file list.
+    pub fn selected_is_all_file(&self) -> bool {
+        self.show_all_files
+            && matches!(
+                self.rows.get(self.selected).map(|r| &r.kind),
+                Some(RowKind::File { section: Section::All, .. })
+            )
+    }
+
     pub fn section_files(&self, section: Section) -> &[FileChange] {
         match section {
             Section::Unstaged => &self.unstaged,
             Section::Staged => &self.staged,
             Section::Commit => &self.commit_files,
+            Section::All => &self.all_files,
         }
     }
 

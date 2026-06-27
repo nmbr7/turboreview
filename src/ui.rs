@@ -537,6 +537,7 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
                             let short = app.open_commit_short().unwrap_or("commit");
                             format!("{}▌ Commit {} ({})", indent, short, count)
                         }
+                        Section::All => format!("{}▌ All files ({})", indent, count),
                     };
                     let line = Line::from(Span::styled(
                         label,
@@ -1504,6 +1505,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "Layout",
         &[
             ("a", "fold/unfold all directories"),
+            ("O", "view all files / changes only"),
             ("z", "hide/show file pane"),
             ("< / >", "resize file pane"),
             ("C", "toggle comment-list pane"),

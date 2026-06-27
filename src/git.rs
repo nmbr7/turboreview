@@ -79,6 +79,51 @@ impl Repo {
         collect_diff_lines(&diff)
     }
 
+    /// All files tracked by git in the current index, repo-relative, sorted.
+    /// Used by the "view all files" mode so any source file can be opened and
+    /// debugged, not just the changed ones.
+    pub fn list_tracked_files(&self) -> Result<Vec<PathBuf>> {
+        let index = self.inner.index()?;
+        let mut out: Vec<PathBuf> = index
+            .iter()
+            .filter_map(|e| {
+                std::str::from_utf8(&e.path)
+                    .ok()
+                    .map(|p| PathBuf::from(p))
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
+    /// Read a working-tree file as diff lines: every line is a `Context` line
+    /// numbered from 1, so the existing gutter / breakpoint / highlight
+    /// rendering works for an unchanged file in "view all" mode.
+    pub fn file_lines(&self, file: &Path) -> Result<Vec<DiffLine>> {
+        let abs = self
+            .inner
+            .workdir()
+            .map(|w| w.join(file))
+            .unwrap_or_else(|| file.to_path_buf());
+        let content = std::fs::read_to_string(&abs)
+            .with_context(|| format!("reading {}", abs.display()))?;
+        let lines = content
+            .lines()
+            .enumerate()
+            .map(|(i, text)| {
+                let n = (i + 1) as u32;
+                DiffLine {
+                    kind: LineKind::Context,
+                    text: text.to_string(),
+                    old_lineno: Some(n),
+                    new_lineno: Some(n),
+                }
+            })
+            .collect();
+        Ok(lines)
+    }
+
     /// Stage the given path: copy its working-tree state into the index.
     /// For a deleted file this removes it from the index; otherwise adds it.
     pub fn stage_file(&self, path: &Path) -> Result<()> {
@@ -698,6 +743,32 @@ mod tests {
         let r = Repo::discover(dir.path()).unwrap();
         let lines = r.diff_for(Path::new("f.txt"), Mode::Unstaged, 3).unwrap();
         assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn list_tracked_files_returns_committed_files_sorted() {
+        let (dir, repo) = init_repo();
+        commit_file(&repo, dir.path(), "b.txt", "b\n");
+        commit_file(&repo, dir.path(), "a.txt", "a\n");
+        let r = Repo::discover(dir.path()).unwrap();
+        let files = r.list_tracked_files().unwrap();
+        assert_eq!(
+            files,
+            vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")]
+        );
+    }
+
+    #[test]
+    fn file_lines_yields_all_context_lines_numbered() {
+        let (dir, repo) = init_repo();
+        commit_file(&repo, dir.path(), "f.txt", "one\ntwo\nthree\n");
+        let r = Repo::discover(dir.path()).unwrap();
+        let lines = r.file_lines(Path::new("f.txt")).unwrap();
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|l| l.kind == crate::app::LineKind::Context));
+        assert_eq!(lines[0].new_lineno, Some(1));
+        assert_eq!(lines[2].text, "three");
+        assert_eq!(lines[2].new_lineno, Some(3));
     }
 
     #[test]

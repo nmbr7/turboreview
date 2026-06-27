@@ -180,6 +180,32 @@ fn refresh_diff(repo: &Repo, app: &mut App) {
         return;
     }
 
+    // "View all" mode: show the selected file's full content (all context
+    // lines) so breakpoints can be set anywhere.
+    if app.selected_is_all_file() {
+        if let Some(path) = app.selected_path().cloned() {
+            match repo.file_lines(&path) {
+                Ok(lines) => {
+                    app.status_msg = None;
+                    app.set_diff(lines);
+                    let candidates: Vec<(u32, String)> = app
+                        .diff
+                        .iter()
+                        .filter_map(|l| l.new_lineno.map(|n| (n, l.text.trim().to_string())))
+                        .collect();
+                    app.comments.relocate_file(&path, &candidates);
+                }
+                Err(e) => {
+                    app.status_msg = Some(format!("read error: {e}"));
+                    app.set_diff(Vec::new());
+                }
+            }
+        } else {
+            app.set_diff(Vec::new());
+        }
+        return;
+    }
+
     // Working-tree diff.
     match (app.selected_path(), app.selected_section()) {
         (Some(path), Some(section)) => {
@@ -188,6 +214,7 @@ fn refresh_diff(repo: &Repo, app: &mut App) {
                 Section::Unstaged => Mode::Unstaged,
                 Section::Staged => Mode::Staged,
                 Section::Commit => return, // unreachable in working-tree branch
+                Section::All => return,    // handled above
             };
             match repo.diff_for(&path, mode, app.effective_context()) {
                 Ok(lines) => {
@@ -506,8 +533,8 @@ fn run(
                                 let result = match section {
                                     Section::Unstaged => repo.stage_file(&path),
                                     Section::Staged => repo.unstage_file(&path),
-                                    // Commit-detail files cannot be staged/unstaged.
-                                    Section::Commit => continue,
+                                    // Commit-detail / view-all files aren't staged.
+                                    Section::Commit | Section::All => continue,
                                 };
                                 match result {
                                     Ok(()) => {
@@ -757,6 +784,12 @@ fn run(
                         app.toggle_fold_all();
                         refresh_diff(repo, app);
                     }
+                    // O — toggle "view all files" (every tracked file, not just
+                    // changed ones) so any source file can be opened/debugged.
+                    (KeyCode::Char('O'), _) => {
+                        toggle_all_files(repo, app);
+                        refresh_diff(repo, app);
+                    }
                     (KeyCode::Char('z'), _) => app.toggle_files(),
                     (KeyCode::Char('>'), _) | (KeyCode::Char('.'), _) => app.widen_files(),
                     (KeyCode::Char('<'), _) | (KeyCode::Char(','), _) => app.narrow_files(),
@@ -886,6 +919,38 @@ fn fetch_selected_frame_locals(app: &App, dbg: &mut DebugManager) {
             dbg.request_frame_locals(app, d.panel_sel);
         }
     }
+}
+
+/// Toggle the "view all files" mode. On enabling, load the tracked-file list
+/// (once) into `app.all_files`. Rebuilds the file rows and resets selection.
+fn toggle_all_files(repo: &Repo, app: &mut App) {
+    app.show_all_files = !app.show_all_files;
+    if app.show_all_files {
+        // Leave any commit-detail view; this lists working-tree files.
+        if app.all_files.is_empty() {
+            match repo.list_tracked_files() {
+                Ok(files) => {
+                    app.all_files = files
+                        .into_iter()
+                        .map(|path| turboreview::app::FileChange {
+                            path,
+                            status: turboreview::app::Status::Other,
+                        })
+                        .collect();
+                }
+                Err(e) => {
+                    app.show_all_files = false;
+                    app.status_msg = Some(format!("list files error: {e}"));
+                    return;
+                }
+            }
+        }
+        app.status_msg = Some(format!("view all files ({})", app.all_files.len()));
+    } else {
+        app.status_msg = Some("view changes".into());
+    }
+    app.selected = 0;
+    app.rebuild_rows();
 }
 
 fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
