@@ -424,11 +424,12 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
     }
     lines.push(Line::from(""));
 
-    // Active session: call stack then locals. panel_sel indexes stack++locals.
+    // Active session: the call stack, with the selected frame's locals nested
+    // beneath it. panel_sel selects a frame.
     if let Some(sess) = d.active_session() {
         let sel = d.panel_sel;
         lines.push(Line::from(Span::styled(
-            " Call stack",
+            " Call stack  (locals under selected frame)",
             Style::default().fg(pal.hunk).add_modifier(Modifier::BOLD),
         )));
         if sess.stack.is_empty() {
@@ -449,32 +450,42 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
                     format!("{base}:{}", f.line)
                 })
                 .unwrap_or_default();
-            let mut st = Style::default().fg(pal.accent_dim);
-            if i == sel {
-                st = st.bg(pal.selected_bg);
+            let selected = i == sel;
+            let mut st = Style::default().fg(if selected { pal.accent } else { pal.accent_dim });
+            if selected {
+                st = st.bg(pal.selected_bg).add_modifier(Modifier::BOLD);
             }
             lines.push(Line::from(Span::styled(
-                format!("  {}  {loc}", f.name),
+                format!("  {} {}  {loc}", if selected { "▾" } else { "▸" }, f.name),
                 st,
             )));
-        }
-
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            " Variables",
-            Style::default().fg(pal.hunk).add_modifier(Modifier::BOLD),
-        )));
-        let base = sess.stack.len();
-        for (i, v) in sess.locals.iter().enumerate() {
-            let mut st = Style::default();
-            if base + i == sel {
-                st = st.bg(pal.selected_bg);
+            // Nested locals for the selected frame.
+            if selected {
+                if f.locals.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        "      (no locals)",
+                        Style::default().fg(pal.accent_dim),
+                    )));
+                }
+                for v in &f.locals {
+                    let mut meta = String::new();
+                    if let Some(t) = v.ty.as_deref() {
+                        meta.push_str(&format!("  : {t}"));
+                    }
+                    if let Some(addr) = v.memory_ref.as_deref() {
+                        meta.push_str(&format!("  @{addr}"));
+                    }
+                    // Structured (heap) values are expandable via DAP variables.
+                    if v.var_ref > 0 {
+                        meta.push_str("  ▸");
+                    }
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("      {} = ", v.name), Style::default().fg(pal.accent)),
+                        Span::styled(v.value.clone(), Style::default().fg(pal.accent_dim)),
+                        Span::styled(meta, Style::default().fg(pal.blue)),
+                    ]));
+                }
             }
-            let line = Line::from(vec![
-                Span::styled(format!("  {} = ", v.name), st.fg(pal.accent)),
-                Span::styled(v.value.clone(), st.fg(pal.accent_dim)),
-            ]);
-            lines.push(line);
         }
     }
 

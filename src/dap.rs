@@ -136,6 +136,13 @@ pub struct Frame {
     pub file: Option<String>,
     #[serde(default)]
     pub line: u32,
+    /// DAP frame id, used to request this frame's scopes/variables. Runtime
+    /// only — not persisted in comment snapshots.
+    #[serde(default, skip)]
+    pub id: i64,
+    /// Locals for this frame, populated lazily after a stop.
+    #[serde(default)]
+    pub locals: Vec<VarRow>,
 }
 
 /// One variable row (name = value), as surfaced to the UI and persisted in a
@@ -147,6 +154,15 @@ pub struct VarRow {
     pub value: String,
     #[serde(default, rename = "type")]
     pub ty: Option<String>,
+    /// DAP `variablesReference`: > 0 means the value is structured (e.g. a
+    /// String/Vec/struct) and can be expanded with a further `variables`
+    /// request. Runtime only — not persisted.
+    #[serde(default, skip)]
+    pub var_ref: i64,
+    /// Memory address of the value, when the adapter reports one (heap-allocated
+    /// values like String/Vec expose this). Runtime only — not persisted.
+    #[serde(default, skip)]
+    pub memory_ref: Option<String>,
 }
 
 /// A snapshot of debugger state captured at a stopped point, attachable to a

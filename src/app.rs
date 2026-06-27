@@ -815,11 +815,11 @@ impl App {
         }
     }
 
-    /// Number of rows in the active session's variables/stack panel (stack frames
-    /// + locals of the selected frame). Used to clamp panel selection.
+    /// Number of selectable rows in the Vars panel = the stack frames. The
+    /// selected frame's locals are shown nested beneath it.
     pub fn debug_panel_len(&self) -> usize {
         match self.debug.as_ref().and_then(|d| d.active_session()) {
-            Some(s) => s.stack.len() + s.locals.len(),
+            Some(s) => s.stack.len(),
             None => 0,
         }
     }
@@ -832,8 +832,12 @@ impl App {
         }
         let max = len as isize - 1;
         if let Some(d) = self.debug.as_mut() {
-            let next = (d.panel_sel as isize + delta).clamp(0, max);
-            d.panel_sel = next as usize;
+            let next = ((d.panel_sel as isize + delta).clamp(0, max)) as usize;
+            d.panel_sel = next;
+            // The Vars panel selection is a stack-frame selection.
+            if let Some(s) = d.sessions.get_mut(d.active) {
+                s.frame_sel = next;
+            }
         }
     }
 
@@ -3513,26 +3517,43 @@ mod tests {
             name: "main".into(),
             file: None,
             line: 0,
+            id: 0,
+            locals: vec![],
         }];
         sess.locals = vec![
             crate::dap::VarRow {
                 name: "x".into(),
                 value: "1".into(),
                 ty: None,
+                var_ref: 0,
+                memory_ref: None,
             },
             crate::dap::VarRow {
                 name: "y".into(),
                 value: "2".into(),
                 ty: None,
+                var_ref: 0,
+                memory_ref: None,
             },
         ];
+        // Three frames; selection is over frames (locals nest under the selected).
+        let frame = |n: &str| crate::dap::Frame {
+            name: n.into(),
+            file: None,
+            line: 0,
+            id: 0,
+            locals: vec![],
+        };
+        sess.stack = vec![frame("a"), frame("b"), frame("c")];
         st.sessions.push(sess);
         app.debug = Some(st);
 
-        assert_eq!(app.debug_panel_len(), 3); // 1 frame + 2 locals
+        assert_eq!(app.debug_panel_len(), 3); // 3 frames
         app.focus = Pane::Debug;
         app.move_debug_panel_selection(99);
-        assert_eq!(app.debug.as_ref().unwrap().panel_sel, 2); // clamped
+        assert_eq!(app.debug.as_ref().unwrap().panel_sel, 2); // clamped to last frame
+        // Frame selection mirrors panel selection.
+        assert_eq!(app.debug.as_ref().unwrap().sessions[0].frame_sel, 2);
         app.move_debug_panel_selection(-99);
         assert_eq!(app.debug.as_ref().unwrap().panel_sel, 0);
     }
@@ -3548,6 +3569,8 @@ mod tests {
                 name: "main".into(),
                 file: Some("/repo/a.rs".into()),
                 line: 2,
+                id: 0,
+                locals: vec![],
             }],
             locals: vec![],
             captured: 1,

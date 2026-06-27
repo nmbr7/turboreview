@@ -563,8 +563,14 @@ fn run(
                     (KeyCode::Down, KeyModifiers::SHIFT) | (KeyCode::Char('J'), _) => {
                         move_in_focus(repo, app, JUMP_STEP)
                     }
-                    (KeyCode::Up, _) | (KeyCode::Char('k'), _) => move_in_focus(repo, app, -1),
-                    (KeyCode::Down, _) | (KeyCode::Char('j'), _) => move_in_focus(repo, app, 1),
+                    (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                        move_in_focus(repo, app, -1);
+                        fetch_selected_frame_locals(app, &mut dbg);
+                    }
+                    (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                        move_in_focus(repo, app, 1);
+                        fetch_selected_frame_locals(app, &mut dbg);
+                    }
                     (KeyCode::Enter, _) => {
                         if app.focus == Pane::Comments {
                             // Jump to the selected comment's file and line in the diff.
@@ -863,6 +869,16 @@ fn load_more_commits(repo: &Repo, app: &mut App) {
         app.status_msg = Some(format!("Loaded {} commits", loaded));
     } else {
         app.status_msg = Some("No more commits to load".into());
+    }
+}
+
+/// When the Debug Vars panel is focused, fetch the now-selected frame's locals
+/// on demand (lldb-dap requires per-frame, one-at-a-time scope requests).
+fn fetch_selected_frame_locals(app: &App, dbg: &mut DebugManager) {
+    if app.focus == Pane::Debug && !app.debug_tab_is_breakpoints() {
+        if let Some(d) = app.debug.as_ref() {
+            dbg.request_frame_locals(app, d.panel_sel);
+        }
     }
 }
 

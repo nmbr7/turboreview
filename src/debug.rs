@@ -18,12 +18,13 @@ use crate::dap::{DapClient, Message, SessionId, SessionKind, SessionMsg};
 use crate::storage::DebugConfig;
 
 /// What a pending request was for, so the matching response can be routed.
+/// Scopes/Variables carry the index of the stack frame they belong to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pending {
     Initialize,
     StackTrace,
-    Scopes,
-    Variables,
+    Scopes(usize),
+    Variables(usize),
 }
 
 /// One live adapter connection plus its in-flight request bookkeeping.
@@ -256,28 +257,30 @@ impl DebugManager {
             }
             Pending::StackTrace => {
                 let frames = parse_stack(body);
-                let top_id = body
-                    .get("stackFrames")
-                    .and_then(Value::as_array)
-                    .and_then(|a| a.first())
-                    .and_then(|f| f.get("id"))
-                    .and_then(Value::as_i64);
                 if let Some(sess) = session_mut(app, id) {
                     sess.stack = frames;
                     sess.frame_sel = 0;
+                    sess.locals.clear();
                     sess.stopped_at = sess
                         .stack
                         .first()
                         .and_then(|f| f.file.clone().map(|p| (p.into(), f.line)));
                 }
-                if let (Some(l), Some(fid)) = (self.live.get_mut(&id), top_id) {
+                // Fetch locals for the top frame only. lldb-dap's scope
+                // `variablesReference` is stateful (tied to the last-selected
+                // frame), so parallel per-frame requests race and return the
+                // same locals — we fetch one frame at a time, on demand
+                // (see `request_frame_locals`, called when the selection moves).
+                let top = session_mut(app, id)
+                    .and_then(|s| s.stack.first().map(|f| f.id));
+                if let (Some(l), Some(fid)) = (self.live.get_mut(&id), top) {
                     l.top_frame = Some(fid);
                     if let Ok(seq) = l.client.send_request("scopes", json!({"frameId": fid})) {
-                        l.pending.insert(seq, Pending::Scopes);
+                        l.pending.insert(seq, Pending::Scopes(0));
                     }
                 }
             }
-            Pending::Scopes => {
+            Pending::Scopes(frame_idx) => {
                 // Use the first scope's variablesReference (usually "Locals").
                 let var_ref = body
                     .get("scopes")
@@ -290,15 +293,60 @@ impl DebugManager {
                         .client
                         .send_request("variables", json!({"variablesReference": vr}))
                     {
-                        l.pending.insert(seq, Pending::Variables);
+                        l.pending.insert(seq, Pending::Variables(frame_idx));
                     }
                 }
             }
-            Pending::Variables => {
+            Pending::Variables(frame_idx) => {
                 let vars = parse_variables(body);
-                if let Some(sess) = session_mut(app, id) {
-                    sess.locals = vars;
+                let next = session_mut(app, id).map(|sess| {
+                    if let Some(f) = sess.stack.get_mut(frame_idx) {
+                        f.locals = vars.clone();
+                    }
+                    // Mirror the top frame's locals into the session-level field
+                    // used by the snapshot + the simple variables view.
+                    if frame_idx == 0 {
+                        sess.locals = vars;
+                    }
+                    sess.stack.len()
+                });
+                // Chain to the next frame (serially, to avoid lldb-dap's stateful
+                // variablesReference race) so all frames' locals are eventually
+                // populated and can be captured into a comment snapshot.
+                const MAX_FRAMES_WITH_LOCALS: usize = 8;
+                if let Some(stack_len) = next {
+                    let next_idx = frame_idx + 1;
+                    if next_idx < stack_len.min(MAX_FRAMES_WITH_LOCALS) {
+                        let fid = session_mut(app, id)
+                            .and_then(|s| s.stack.get(next_idx).map(|f| f.id));
+                        if let (Some(l), Some(fid)) = (self.live.get_mut(&id), fid) {
+                            if let Ok(seq) =
+                                l.client.send_request("scopes", json!({"frameId": fid}))
+                            {
+                                l.pending.insert(seq, Pending::Scopes(next_idx));
+                            }
+                        }
+                    }
                 }
+            }
+        }
+    }
+
+    /// Request locals for the active session's frame `idx`, if not already
+    /// fetched. lldb-dap resolves a scope's `variablesReference` against the
+    /// last-selected frame, so we request scopes for exactly this frame, one at
+    /// a time, when the user navigates to it.
+    pub fn request_frame_locals(&mut self, app: &App, idx: usize) {
+        let Some(d) = app.debug.as_ref() else { return };
+        let Some(sess) = d.active_session() else { return };
+        let Some(frame) = sess.stack.get(idx) else { return };
+        if !frame.locals.is_empty() {
+            return; // already have them
+        }
+        let (sid, fid) = (sess.id, frame.id);
+        if let Some(l) = self.live.get_mut(&sid) {
+            if let Ok(seq) = l.client.send_request("scopes", json!({"frameId": fid})) {
+                l.pending.insert(seq, Pending::Scopes(idx));
             }
         }
     }
@@ -416,6 +464,8 @@ fn parse_stack(body: &Value) -> Vec<crate::dap::Frame> {
                         .and_then(Value::as_str)
                         .map(str::to_string),
                     line: f.get("line").and_then(Value::as_i64).unwrap_or(0) as u32,
+                    id: f.get("id").and_then(Value::as_i64).unwrap_or(0),
+                    locals: Vec::new(),
                 })
                 .collect()
         })
@@ -427,6 +477,13 @@ fn parse_variables(body: &Value) -> Vec<crate::dap::VarRow> {
         .and_then(Value::as_array)
         .map(|vars| {
             vars.iter()
+                // Drop adapter error pseudo-variables (e.g. lldb's "<error>" with
+                // "no variable information available") so they don't show as junk.
+                .filter(|v| {
+                    let name = v.get("name").and_then(Value::as_str).unwrap_or("");
+                    let val = v.get("value").and_then(Value::as_str).unwrap_or("");
+                    name != "<error>" && !val.contains("no variable information")
+                })
                 .map(|v| crate::dap::VarRow {
                     name: v
                         .get("name")
@@ -439,6 +496,14 @@ fn parse_variables(body: &Value) -> Vec<crate::dap::VarRow> {
                         .unwrap_or("")
                         .to_string(),
                     ty: v.get("type").and_then(Value::as_str).map(str::to_string),
+                    var_ref: v
+                        .get("variablesReference")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0),
+                    memory_ref: v
+                        .get("memoryReference")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                 })
                 .collect()
         })
@@ -477,6 +542,47 @@ mod tests {
         assert_eq!(vars[0].name, "x");
         assert_eq!(vars[0].ty.as_deref(), Some("i32"));
         assert_eq!(vars[1].ty, None);
+    }
+
+    #[test]
+    fn parse_variables_captures_ref_and_address() {
+        // A heap value (String) typically has a variablesReference (expandable)
+        // and a memoryReference (address).
+        let body = json!({
+            "variables": [
+                {"name": "s", "value": "\"hi\"", "type": "alloc::string::String",
+                 "variablesReference": 1004, "memoryReference": "0x16fdff2a0"}
+            ]
+        });
+        let vars = parse_variables(&body);
+        assert_eq!(vars[0].var_ref, 1004);
+        assert_eq!(vars[0].memory_ref.as_deref(), Some("0x16fdff2a0"));
+        assert_eq!(vars[0].ty.as_deref(), Some("alloc::string::String"));
+    }
+
+    #[test]
+    fn parse_variables_drops_error_pseudovars() {
+        let body = json!({
+            "variables": [
+                {"name": "<error>", "value": "no variable information is available", "type": "const char *"},
+                {"name": "n", "value": "10", "type": "u32"}
+            ]
+        });
+        let vars = parse_variables(&body);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].name, "n");
+    }
+
+    #[test]
+    fn parse_stack_sets_frame_id() {
+        let body = json!({
+            "stackFrames": [
+                {"id": 9, "name": "f", "line": 1, "source": {"path": "/a.rs"}}
+            ]
+        });
+        let frames = parse_stack(&body);
+        assert_eq!(frames[0].id, 9);
+        assert!(frames[0].locals.is_empty());
     }
 
     #[test]

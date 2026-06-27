@@ -624,11 +624,15 @@ mod tests {
                 name: "main".into(),
                 file: Some("src/main.rs".into()),
                 line: 42,
+                id: 0,
+                locals: vec![],
             }],
             locals: vec![VarRow {
                 name: "x".into(),
                 value: "1".into(),
                 ty: Some("i32".into()),
+                var_ref: 0,
+                memory_ref: None,
             }],
             captured: 1000,
         });
