@@ -353,6 +353,8 @@ pub struct App {
     pub full_file: bool,
     pub show_files: bool,
     pub file_pane_pct: u16,
+    /// Width (% of the main area) of the right pane (comments / debug).
+    pub right_pane_pct: u16,
     pub comments: Comments,
     pub input: Option<InputState>,
     pub commits: Vec<crate::git::CommitInfo>,
@@ -409,6 +411,7 @@ impl App {
             full_file: false,
             show_files: true,
             file_pane_pct: 25,
+            right_pane_pct: 30,
             comments: Comments::default(),
             input: None,
             commits: Vec::new(),
@@ -471,6 +474,30 @@ impl App {
 
     pub fn narrow_files(&mut self) {
         self.file_pane_pct = self.file_pane_pct.saturating_sub(5).max(10);
+    }
+
+    pub fn widen_right(&mut self) {
+        self.right_pane_pct = (self.right_pane_pct + 5).min(60);
+    }
+
+    pub fn narrow_right(&mut self) {
+        self.right_pane_pct = self.right_pane_pct.saturating_sub(5).max(15);
+    }
+
+    /// Resize the pane relevant to the current focus: the right pane when it's
+    /// focused, otherwise the file pane. `widen` true = wider, false = narrower.
+    pub fn resize_focused_pane(&mut self, widen: bool) {
+        if self.focus == Pane::Comments {
+            if widen {
+                self.widen_right();
+            } else {
+                self.narrow_right();
+            }
+        } else if widen {
+            self.widen_files();
+        } else {
+            self.narrow_files();
+        }
     }
 
     pub fn effective_context(&self) -> u32 {
@@ -2417,6 +2444,24 @@ mod tests {
         app.dec_context();
         assert!(!app.full_file);
         assert_eq!(app.context_lines, 8);
+    }
+
+    #[test]
+    fn resize_targets_right_pane_when_focused() {
+        let mut app = sample();
+        let f0 = app.file_pane_pct;
+        let r0 = app.right_pane_pct;
+        // Focus the right pane → resize affects it, not files.
+        app.focus = Pane::Comments;
+        app.resize_focused_pane(true);
+        assert_eq!(app.right_pane_pct, r0 + 5);
+        assert_eq!(app.file_pane_pct, f0);
+        app.resize_focused_pane(false);
+        assert_eq!(app.right_pane_pct, r0);
+        // Focus files → resize affects files.
+        app.focus = Pane::Files;
+        app.resize_focused_pane(true);
+        assert_eq!(app.file_pane_pct, f0 + 5);
     }
 
     #[test]

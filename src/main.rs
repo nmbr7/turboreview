@@ -804,8 +804,12 @@ fn run(
                         refresh_diff(repo, app);
                     }
                     (KeyCode::Char('z'), _) => app.toggle_files(),
-                    (KeyCode::Char('>'), _) | (KeyCode::Char('.'), _) => app.widen_files(),
-                    (KeyCode::Char('<'), _) | (KeyCode::Char(','), _) => app.narrow_files(),
+                    (KeyCode::Char('>'), _) | (KeyCode::Char('.'), _) => {
+                        app.resize_focused_pane(true)
+                    }
+                    (KeyCode::Char('<'), _) | (KeyCode::Char(','), _) => {
+                        app.resize_focused_pane(false)
+                    }
                     // r (lowercase) refreshes everything from disk/git; R (uppercase) hides reviewed.
                     (KeyCode::Char('r'), KeyModifiers::NONE) => reload_everything(repo, app),
                     // T toggles light / dark theme and persists the choice

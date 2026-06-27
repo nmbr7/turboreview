@@ -165,7 +165,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     // The right pane (tabbed Comments / Debug) shows when comments are enabled
     // or a debug session is active.
     let show_right = app.right_pane_visible();
-    let right_pct: u16 = 30;
+    let right_pct: u16 = app.right_pane_pct;
 
     let render_files_or_commits = |frame: &mut Frame, app: &App, area: Rect| match app.view {
         ViewMode::Changes => render_files(frame, app, area),
@@ -1517,7 +1517,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("a", "fold/unfold all directories"),
             ("O", "view all files / changes only"),
             ("z", "hide/show file pane"),
-            ("< / >", "resize file pane"),
+            ("< / >", "resize focused pane (files / right)"),
             ("C", "toggle comment-list pane"),
         ],
     ),
