@@ -458,10 +458,6 @@ fn run(
                     (KeyCode::Char('o'), _) if app.focus == Pane::Debug => {
                         dbg.control(app, "stepOut");
                     }
-                    // `t`: switch the debug pane between Vars and Breakpoints tabs.
-                    (KeyCode::Char('t'), _) if app.focus == Pane::Debug => {
-                        app.toggle_debug_tab();
-                    }
                     // Breakpoint-list actions (Debug pane, Breakpoints tab):
                     // Enter = jump to it, Space/x = enable-disable, d = delete.
                     (KeyCode::Enter, _)
@@ -714,6 +710,13 @@ fn run(
                     (KeyCode::Char('-'), _) => {
                         app.dec_context();
                         refresh_diff(repo, app);
+                    }
+                    // [ / ]: switch the debug pane's tab when it's focused,
+                    // otherwise switch the Changes/Commits view.
+                    (KeyCode::Char('[') | KeyCode::Char(']'), _)
+                        if app.focus == Pane::Debug =>
+                    {
+                        app.toggle_debug_tab();
                     }
                     (KeyCode::Char(']'), _) => {
                         if app.history_active() {

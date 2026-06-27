@@ -387,7 +387,7 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
         tab_span("Vars", d.tab == DebugTab::Vars),
         Span::raw(" "),
         tab_span("Breakpoints", d.tab == DebugTab::Breakpoints),
-        Span::styled("   (t: switch)", Style::default().fg(pal.accent_dim)),
+        Span::styled("   ([ ]: switch)", Style::default().fg(pal.accent_dim)),
     ]));
     lines.push(Line::from(""));
 
@@ -1490,7 +1490,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("b", "toggle breakpoint on cursor line"),
             ("D", "launch a debug session"),
             ("c / n / i / o", "continue / over / in / out"),
-            ("t", "switch Vars / Breakpoints tab"),
+            ("[ / ]", "switch Vars / Breakpoints tab"),
             ("Space / d", "bp list: enable-disable / delete"),
             ("Enter", "bp list: jump to breakpoint"),
             ("Ctrl-D", "comment box: attach stack"),
