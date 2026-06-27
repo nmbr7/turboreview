@@ -625,9 +625,17 @@ fn comment_box_height(c: &crate::comments::Comment, wrap_w: usize) -> usize {
         Some(r) if !r.trim().is_empty() => 1 + wrap_text(r, response_wrap_w(wrap_w)).len(),
         _ => 0,
     };
-    // Debug snapshot: 1 header line + one line per stack frame.
+    // Debug snapshot: 1 stack header + frames, then (if any locals) 1 header +
+    // one line per local.
     let snapshot_lines = match &c.debug_snapshot {
-        Some(s) => 1 + s.stack.len(),
+        Some(s) => {
+            let locals = if s.locals.is_empty() {
+                0
+            } else {
+                1 + s.locals.len()
+            };
+            1 + s.stack.len() + locals
+        }
         None => 0,
     };
     1 + text_lines + response_lines + snapshot_lines + 1
@@ -780,6 +788,24 @@ fn push_comment_box(
                 Span::styled(format!("    {}  {loc}", f.name), body_style),
             ]));
             *rendered_rows += 1;
+        }
+        // Captured locals of the stopped frame.
+        if !snap.locals.is_empty() && *rendered_rows < page {
+            result.push(Line::from(vec![
+                Span::styled("    │ ", border_style),
+                Span::styled("  locals:", label_style),
+            ]));
+            *rendered_rows += 1;
+            for v in &snap.locals {
+                if *rendered_rows >= page {
+                    break;
+                }
+                result.push(Line::from(vec![
+                    Span::styled("    │ ", border_style),
+                    Span::styled(format!("    {} = {}", v.name, v.value), body_style),
+                ]));
+                *rendered_rows += 1;
+            }
         }
     }
     // Bottom border line
@@ -1238,15 +1264,15 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 fn render_input_modal(frame: &mut Frame, app: &App, input: &InputState) {
     let pal = app.palette();
-    let area = centered_rect(60, 40, frame.area());
+    let has_snap = input.debug_snapshot.is_some();
+    // Taller modal when a debug snapshot is shown alongside the text field.
+    let area = centered_rect(64, if has_snap { 70 } else { 40 }, frame.area());
     frame.render_widget(Clear, area);
     let title = format!(
         " Comment line {} (Ctrl-S save · Esc cancel) ",
         input.target_line
     );
-    // Append a cursor block indicator to the buffer text.
     let display_text = format!("{}▏", input.buffer);
-    // Enhancement 5b: rounded border, accent color, horizontal padding for clearer text field.
     let para = Paragraph::new(display_text)
         .block(
             Block::default()
@@ -1257,7 +1283,74 @@ fn render_input_modal(frame: &mut Frame, app: &App, input: &InputState) {
                 .title(title),
         )
         .wrap(Wrap { trim: false });
-    frame.render_widget(para, area);
+
+    let Some(snap) = input.debug_snapshot.as_ref() else {
+        frame.render_widget(para, area);
+        return;
+    };
+
+    // Split: text field on top, debug stack/locals below.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(area);
+    frame.render_widget(para, rows[0]);
+
+    let on = input.attach_debug;
+    let dbg_title = format!(
+        " Debug stack — Ctrl-D: attach [{}] ",
+        if on { "x" } else { " " }
+    );
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("@ {} ({})", snap.session_label, snap.stopped_line),
+        Style::default().fg(pal.tick).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        " call stack:",
+        Style::default().fg(pal.hunk),
+    )));
+    for f in &snap.stack {
+        let loc = f
+            .file
+            .as_deref()
+            .map(|p| {
+                let base = std::path::Path::new(p)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(p);
+                format!("{base}:{}", f.line)
+            })
+            .unwrap_or_default();
+        lines.push(Line::from(Span::styled(
+            format!("   {}  {loc}", f.name),
+            Style::default().fg(pal.accent_dim),
+        )));
+    }
+    if !snap.locals.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " locals:",
+            Style::default().fg(pal.hunk),
+        )));
+        for v in &snap.locals {
+            lines.push(Line::from(vec![
+                Span::styled(format!("   {} = ", v.name), Style::default().fg(pal.accent)),
+                Span::styled(v.value.clone(), Style::default().fg(pal.accent_dim)),
+            ]));
+        }
+    }
+    let dim = if on { pal.accent } else { pal.accent_dim };
+    let dbg = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(dim))
+                .padding(Padding::horizontal(1))
+                .title(dbg_title),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(dbg, rows[1]);
 }
 
 /// Keybindings grouped by category for the help overlay. Each group is a
@@ -2155,6 +2248,8 @@ mod tests {
             anchor_line_text: String::new(),
             anchor_before: vec![],
             anchor_after: vec![],
+            debug_snapshot: None,
+            attach_debug: false,
         });
         terminal.draw(|f| render(f, &app)).unwrap();
         let dump: String = terminal

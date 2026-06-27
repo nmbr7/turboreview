@@ -299,6 +299,10 @@ fn run(
                 if app.input_active() {
                     match key.code {
                         KeyCode::Esc => app.input_cancel(),
+                        // Ctrl-D toggles attaching the captured debug stack.
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.input_toggle_attach_debug();
+                        }
                         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             // FIX 4: anchor comes from CommittedComment (captured at start_comment time).
                             if let Some(committed) = app.input_commit() {
@@ -317,6 +321,20 @@ fn run(
                                         committed.context_after.clone(),
                                         storage::now_secs(),
                                     );
+                                    // Attach the captured debug snapshot, if kept.
+                                    if let Some(snap) = committed.debug_snapshot.clone() {
+                                        if let Some(c) = app
+                                            .comments
+                                            .items
+                                            .iter_mut()
+                                            .find(|c| {
+                                                c.file == committed.file
+                                                    && c.line == committed.line
+                                            })
+                                        {
+                                            c.debug_snapshot = Some(snap);
+                                        }
+                                    }
                                 }
                                 // Save to the current scope directory
                                 let scope_dir =
@@ -440,26 +458,9 @@ fn run(
                     (KeyCode::Char('o'), _) if app.focus == Pane::Debug => {
                         dbg.control(app, "stepOut");
                     }
-                    // `S`: attach the current stopped stack to a comment on the
-                    // stopped line.
-                    (KeyCode::Char('S'), _) if app.debug_active() => {
-                        if let Some(snap) = dbg.snapshot(app) {
-                            app.attach_debug_snapshot(snap);
-                            let dir =
-                                storage::scope_dir(&app.repo_root, &app.comment_scope);
-                            match app.comments.save(&dir) {
-                                Ok(()) => {
-                                    app.rebuild_rows();
-                                    app.status_msg = Some("stack attached to comment".into());
-                                }
-                                Err(e) => {
-                                    app.status_msg = Some(format!("attach save error: {e}"))
-                                }
-                            }
-                        } else {
-                            app.status_msg = Some("no stopped session to capture".into());
-                        }
-                    }
+                    // (Attaching the debug stack to a comment is now done from
+                    // the comment modal: press `c` on a line while stopped, then
+                    // Ctrl-D to toggle attaching the captured stack.)
                     // `X`: end all debug sessions and leave debug mode.
                     (KeyCode::Char('X'), _) if app.debug_active() => {
                         dbg.shutdown();

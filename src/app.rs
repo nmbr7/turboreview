@@ -201,6 +201,11 @@ pub struct InputState {
     pub anchor_line_text: String,
     pub anchor_before: Vec<String>,
     pub anchor_after: Vec<String>,
+    /// Debug snapshot available to attach (set when a session is stopped at this
+    /// line). Shown in the modal; only saved onto the comment when `attach_debug`.
+    pub debug_snapshot: Option<crate::dap::DebugSnapshot>,
+    /// Whether the snapshot will be attached on save (toggled with Ctrl-D).
+    pub attach_debug: bool,
 }
 
 /// Result of committing a comment input (returned by `input_commit`).
@@ -212,6 +217,8 @@ pub struct CommittedComment {
     pub line_text: String,
     pub context_before: Vec<String>,
     pub context_after: Vec<String>,
+    /// Debug snapshot to attach to the comment (None unless the user kept it on).
+    pub debug_snapshot: Option<crate::dap::DebugSnapshot>,
 }
 
 pub struct App {
@@ -707,6 +714,32 @@ impl App {
     /// Attach a captured debug snapshot to the comment at its stopped line,
     /// creating a placeholder comment there if none exists. The stopped file is
     /// stored repo-relative to match how comments key their file.
+    /// Build a debug snapshot from the active session if it is currently stopped
+    /// (call stack + locals at the stop). Used to offer attaching runtime state
+    /// to a comment from the comment modal. Caps the stack depth.
+    pub fn current_debug_snapshot(&self) -> Option<crate::dap::DebugSnapshot> {
+        let sess = self.debug.as_ref()?.active_session()?;
+        if sess.state != SessionState::Stopped {
+            return None;
+        }
+        let (file, line) = sess.stopped_at.clone()?;
+        const MAX_SNAPSHOT_FRAMES: usize = 8;
+        let stack = sess
+            .stack
+            .iter()
+            .take(MAX_SNAPSHOT_FRAMES)
+            .cloned()
+            .collect();
+        Some(crate::dap::DebugSnapshot {
+            session_label: sess.label.clone(),
+            stopped_file: file.to_string_lossy().into_owned(),
+            stopped_line: line,
+            stack,
+            locals: sess.locals.clone(),
+            captured: crate::storage::now_secs(),
+        })
+    }
+
     pub fn attach_debug_snapshot(&mut self, snap: crate::dap::DebugSnapshot) {
         // Map the absolute stopped path back to a repo-relative path.
         let abs = PathBuf::from(&snap.stopped_file);
@@ -1232,6 +1265,15 @@ impl App {
             .unwrap_or_default();
         // FIX 4: capture the anchor at the time the modal is opened, not at Ctrl-S time.
         let (anchor_line_text, anchor_before, anchor_after) = self.comment_anchor();
+        // If debugging and stopped, offer the current stack/locals for attaching.
+        // Prefer a snapshot already on the existing comment so re-editing keeps it.
+        let existing_snap = self
+            .comments
+            .get(&file, line_no)
+            .and_then(|c| c.debug_snapshot.clone());
+        let live_snap = self.current_debug_snapshot();
+        let debug_snapshot = existing_snap.or(live_snap);
+        let attach_debug = debug_snapshot.is_some();
         self.input = Some(InputState {
             buffer: existing,
             target_file: file,
@@ -1240,6 +1282,8 @@ impl App {
             anchor_line_text,
             anchor_before,
             anchor_after,
+            debug_snapshot,
+            attach_debug,
         });
     }
 
@@ -1278,6 +1322,7 @@ impl App {
     /// The anchor fields come from the InputState (captured at `start_comment` time, Fix 4).
     pub fn input_commit(&mut self) -> Option<CommittedComment> {
         let s = self.input.take()?;
+        let debug_snapshot = if s.attach_debug { s.debug_snapshot } else { None };
         Some(CommittedComment {
             file: s.target_file,
             line: s.target_line,
@@ -1286,7 +1331,18 @@ impl App {
             line_text: s.anchor_line_text,
             context_before: s.anchor_before,
             context_after: s.anchor_after,
+            debug_snapshot,
         })
+    }
+
+    /// Toggle whether the captured debug snapshot will be attached on save.
+    /// No-op when there's no snapshot to attach.
+    pub fn input_toggle_attach_debug(&mut self) {
+        if let Some(s) = self.input.as_mut() {
+            if s.debug_snapshot.is_some() {
+                s.attach_debug = !s.attach_debug;
+            }
+        }
     }
 
     /// Build the anchor (line_text, context_before, context_after) for the current cursor line.

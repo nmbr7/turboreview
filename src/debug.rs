@@ -214,7 +214,17 @@ impl DebugManager {
                     }
                 }
             }
-            "terminated" | "exited" => set_state(app, id, SessionState::Exited),
+            "terminated" | "exited" => {
+                // Debuggee finished: clear the stop so the ▶ marker and stale
+                // stack/locals disappear.
+                if let Some(sess) = session_mut(app, id) {
+                    sess.state = SessionState::Exited;
+                    sess.stopped_thread = None;
+                    sess.stopped_at = None;
+                    sess.stack.clear();
+                    sess.locals.clear();
+                }
+            }
             _ => {}
         }
     }
@@ -343,11 +353,15 @@ impl DebugManager {
             return None;
         }
         let (file, line) = sess.stopped_at.clone()?;
+        // Cap the captured stack so runtime/startup frames don't bloat the
+        // comment; the innermost frames are what the reviewer cares about.
+        const MAX_SNAPSHOT_FRAMES: usize = 8;
+        let stack: Vec<_> = sess.stack.iter().take(MAX_SNAPSHOT_FRAMES).cloned().collect();
         Some(crate::dap::DebugSnapshot {
             session_label: sess.label.clone(),
             stopped_file: file.to_string_lossy().into_owned(),
             stopped_line: line,
-            stack: sess.stack.clone(),
+            stack,
             locals: sess.locals.clone(),
             captured: crate::storage::now_secs(),
         })
