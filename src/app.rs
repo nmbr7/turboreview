@@ -60,6 +60,9 @@ pub enum Pane {
     Files,
     Diff,
     Comments,
+    /// The debugger variables/stack panel (only in the focus cycle while a
+    /// debug session is active).
+    Debug,
 }
 
 /// A row in the comment-list pane.
@@ -75,6 +78,75 @@ pub enum CommentRow {
 pub enum ViewMode {
     Changes,
     Commits,
+}
+
+/// Run-state of a single debug session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionState {
+    /// Launching / building, no adapter responses yet.
+    Starting,
+    /// Debuggee running (not at a breakpoint).
+    Running,
+    /// Stopped at a breakpoint/step; stack + variables are populated.
+    Stopped,
+    /// Debuggee exited or adapter terminated.
+    Exited,
+}
+
+/// One debug session's UI-facing state. The live adapter handle (process +
+/// request channel) is attached by the threaded client layer; this struct holds
+/// only what the UI renders so it stays `Clone`/testable.
+#[derive(Clone, Debug)]
+pub struct DebugSession {
+    /// Stable id assigned at spawn (also tags incoming events).
+    pub id: u64,
+    /// Human label, e.g. "worktree" or "commit a1b2c3".
+    pub label: String,
+    pub state: SessionState,
+    /// Thread the adapter last reported stopped on (for follow-up requests).
+    pub stopped_thread: Option<i64>,
+    /// File + line where it stopped (absolute path), if known.
+    pub stopped_at: Option<(PathBuf, u32)>,
+    /// Current call stack (innermost first).
+    pub stack: Vec<crate::dap::Frame>,
+    /// Index of the selected stack frame.
+    pub frame_sel: usize,
+    /// Locals for the selected frame.
+    pub locals: Vec<crate::dap::VarRow>,
+}
+
+impl DebugSession {
+    pub fn new(id: u64, label: String) -> Self {
+        DebugSession {
+            id,
+            label,
+            state: SessionState::Starting,
+            stopped_thread: None,
+            stopped_at: None,
+            stack: Vec::new(),
+            frame_sel: 0,
+            locals: Vec::new(),
+        }
+    }
+}
+
+/// Top-level debugger overlay state. Present (`Some`) only while debugging.
+/// Breakpoints are keyed by absolute source path → set of 1-based line numbers,
+/// shared across all sessions.
+#[derive(Clone, Debug, Default)]
+pub struct DebugState {
+    pub sessions: Vec<DebugSession>,
+    /// Index into `sessions` of the active session (panel focus).
+    pub active: usize,
+    pub breakpoints: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<u32>>,
+    /// Selection index within the active session's variables/stack panel.
+    pub panel_sel: usize,
+}
+
+impl DebugState {
+    pub fn active_session(&self) -> Option<&DebugSession> {
+        self.sessions.get(self.active)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,6 +256,8 @@ pub struct App {
     pub history: Option<FileHistory>,
     pub search: Option<SearchState>,
     pub search_input: Option<String>,
+    /// Debugger overlay state; `Some` only while debugging.
+    pub debug: Option<DebugState>,
 }
 
 enum RowId {
@@ -230,6 +304,7 @@ impl App {
             history: None,
             search: None,
             search_input: None,
+            debug: None,
         };
         app.rebuild_rows();
         app
@@ -489,6 +564,11 @@ impl App {
             Pane::Files => self.selected = 0,
             Pane::Diff => self.diff_cursor = 0,
             Pane::Comments => self.comment_selected = 0,
+            Pane::Debug => {
+                if let Some(d) = self.debug.as_mut() {
+                    d.panel_sel = 0;
+                }
+            }
         }
     }
 
@@ -500,19 +580,27 @@ impl App {
                 let len = self.comment_rows().len();
                 self.comment_selected = len.saturating_sub(1);
             }
+            Pane::Debug => {
+                let len = self.debug_panel_len();
+                if let Some(d) = self.debug.as_mut() {
+                    d.panel_sel = len.saturating_sub(1);
+                }
+            }
         }
     }
 
-    /// Cycle focus through the VISIBLE panes in order: Files -> Diff -> Comments -> Files.
-    /// Skips Files when !show_files, skips Comments when !show_comments.
+    /// Cycle focus through the VISIBLE panes: Files -> Diff -> Comments ->
+    /// Debug -> Files. Skips Files when !show_files, Comments when
+    /// !show_comments, and Debug unless a debug session is active.
     pub fn toggle_focus(&mut self) {
-        let panes: Vec<Pane> = [Pane::Files, Pane::Diff, Pane::Comments]
+        let panes: Vec<Pane> = [Pane::Files, Pane::Diff, Pane::Comments, Pane::Debug]
             .iter()
             .copied()
             .filter(|&p| match p {
                 Pane::Files => self.show_files,
                 Pane::Diff => true,
                 Pane::Comments => self.show_comments,
+                Pane::Debug => self.debug_active(),
             })
             .collect();
         if panes.len() <= 1 {
@@ -520,6 +608,83 @@ impl App {
         }
         let current = panes.iter().position(|&p| p == self.focus).unwrap_or(0);
         self.focus = panes[(current + 1) % panes.len()];
+    }
+
+    // ─── Debugger ────────────────────────────────────────────────────────────
+
+    /// Whether a debug session/overlay is active.
+    pub fn debug_active(&self) -> bool {
+        self.debug.is_some()
+    }
+
+    /// Absolute path + 1-based line of the diff line under the cursor, if it maps
+    /// to a real source line (skips hunk headers and pure-deletion lines that have
+    /// no new-side line number). Used to anchor breakpoints to disk locations.
+    pub fn cursor_source_loc(&self) -> Option<(PathBuf, u32)> {
+        let file = self.selected_path()?;
+        let line = self.cursor_lineno()?;
+        Some((self.repo_root.join(file), line))
+    }
+
+    /// Whether `(abs_file, line)` currently has a breakpoint.
+    pub fn has_breakpoint(&self, file: &Path, line: u32) -> bool {
+        self.debug
+            .as_ref()
+            .and_then(|d| d.breakpoints.get(file))
+            .is_some_and(|lines| lines.contains(&line))
+    }
+
+    /// Toggle a breakpoint on the diff line under the cursor. Lazily creates the
+    /// `DebugState` so breakpoints can be set before any session is launched.
+    /// Returns `true` if a breakpoint now exists at that line, `false` if it was
+    /// removed (or there was no valid source line under the cursor).
+    pub fn toggle_breakpoint_at_cursor(&mut self) -> bool {
+        let Some((file, line)) = self.cursor_source_loc() else {
+            return false;
+        };
+        let d = self.debug.get_or_insert_with(DebugState::default);
+        let lines = d.breakpoints.entry(file.clone()).or_default();
+        let now_set = if lines.contains(&line) {
+            lines.remove(&line);
+            false
+        } else {
+            lines.insert(line);
+            true
+        };
+        // Drop empty file entries to keep the map tidy.
+        if lines.is_empty() {
+            d.breakpoints.remove(&file);
+        }
+        // If we created an empty DebugState only to remove the last breakpoint
+        // and there are no sessions, leave it — it's harmless and cheap, and the
+        // gutter still needs the (now-empty) map. (debug_active stays true only
+        // while breakpoints or sessions exist; tidy that here.)
+        if d.breakpoints.is_empty() && d.sessions.is_empty() {
+            self.debug = None;
+        }
+        now_set
+    }
+
+    /// Number of rows in the active session's variables/stack panel (stack frames
+    /// + locals of the selected frame). Used to clamp panel selection.
+    pub fn debug_panel_len(&self) -> usize {
+        match self.debug.as_ref().and_then(|d| d.active_session()) {
+            Some(s) => s.stack.len() + s.locals.len(),
+            None => 0,
+        }
+    }
+
+    /// Move the selection within the debug panel, clamped to its row count.
+    pub fn move_debug_panel_selection(&mut self, delta: isize) {
+        let len = self.debug_panel_len();
+        if len == 0 {
+            return;
+        }
+        let max = len as isize - 1;
+        if let Some(d) = self.debug.as_mut() {
+            let next = (d.panel_sel as isize + delta).clamp(0, max);
+            d.panel_sel = next as usize;
+        }
     }
 
     /// Toggle the comment pane. If hiding while Comments has focus, move focus to Diff.
@@ -3038,5 +3203,100 @@ mod tests {
         let files = make_commit_files(&["a.rs"]);
         app.open_commit("abc123def456".to_string(), files);
         assert_eq!(app.scope_label(), "commit:abc123def456");
+    }
+
+    // ─── Debugger: breakpoint toggle + panel ─────────────────────────────────
+
+    /// App with file `a.rs` selected and a diff whose cursor sits on new line 2.
+    fn app_on_diff_line() -> App {
+        let mut app = sample();
+        app.selected = 1; // a.rs (row 0 is the Unstaged header)
+        app.focus = Pane::Diff;
+        app.set_diff(vec![
+            DiffLine {
+                kind: LineKind::Add,
+                text: "let x = 1;".into(),
+                old_lineno: None,
+                new_lineno: Some(2),
+            },
+            DiffLine::context("ctx", 3, 3),
+        ]);
+        app.diff_cursor = 0; // on new line 2
+        app
+    }
+
+    #[test]
+    fn toggle_breakpoint_adds_then_removes() {
+        let mut app = app_on_diff_line();
+        let abs = PathBuf::from("/repo").join("a.rs");
+        assert!(!app.has_breakpoint(&abs, 2));
+
+        // First toggle sets it.
+        assert!(app.toggle_breakpoint_at_cursor());
+        assert!(app.has_breakpoint(&abs, 2));
+        assert!(app.debug_active());
+
+        // Second toggle clears it; with no sessions/bps left, debug state drops.
+        assert!(!app.toggle_breakpoint_at_cursor());
+        assert!(!app.has_breakpoint(&abs, 2));
+        assert!(!app.debug_active());
+    }
+
+    #[test]
+    fn toggle_breakpoint_noop_without_source_line() {
+        let mut app = sample();
+        app.focus = Pane::Diff;
+        // No file selected / no diff → no source loc.
+        assert!(!app.toggle_breakpoint_at_cursor());
+        assert!(!app.debug_active());
+    }
+
+    #[test]
+    fn debug_panel_selection_clamps_to_rows() {
+        let mut app = app_on_diff_line();
+        let mut st = DebugState::default();
+        let mut sess = DebugSession::new(1, "worktree".into());
+        sess.stack = vec![crate::dap::Frame {
+            name: "main".into(),
+            file: None,
+            line: 0,
+        }];
+        sess.locals = vec![
+            crate::dap::VarRow {
+                name: "x".into(),
+                value: "1".into(),
+                ty: None,
+            },
+            crate::dap::VarRow {
+                name: "y".into(),
+                value: "2".into(),
+                ty: None,
+            },
+        ];
+        st.sessions.push(sess);
+        app.debug = Some(st);
+
+        assert_eq!(app.debug_panel_len(), 3); // 1 frame + 2 locals
+        app.focus = Pane::Debug;
+        app.move_debug_panel_selection(99);
+        assert_eq!(app.debug.as_ref().unwrap().panel_sel, 2); // clamped
+        app.move_debug_panel_selection(-99);
+        assert_eq!(app.debug.as_ref().unwrap().panel_sel, 0);
+    }
+
+    #[test]
+    fn focus_cycle_includes_debug_only_when_active() {
+        let mut app = sample();
+        app.show_comments = false; // simplify cycle: Files <-> Diff
+        app.toggle_focus();
+        assert_eq!(app.focus, Pane::Diff);
+        app.toggle_focus();
+        assert_eq!(app.focus, Pane::Files); // no Debug in cycle yet
+
+        // Activate debug; Debug joins the cycle.
+        app.debug = Some(DebugState::default());
+        app.focus = Pane::Diff;
+        app.toggle_focus();
+        assert_eq!(app.focus, Pane::Debug);
     }
 }

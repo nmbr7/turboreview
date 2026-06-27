@@ -785,6 +785,7 @@ fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
         }
         Pane::Diff => app.move_diff_cursor(delta),
         Pane::Comments => app.move_comment_selection(delta),
+        Pane::Debug => app.move_debug_panel_selection(delta),
     }
 }
 
