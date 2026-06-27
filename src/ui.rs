@@ -480,12 +480,12 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
                             format!("  {base}:{}", f.line)
                         })
                         .unwrap_or_default();
-                    // Frame name (accent, bold) vs location (cyan/hunk) in
-                    // distinct colors.
+                    // Frame header: name (yellow, bold) clearly separate from
+                    // the variable subtree below; location in cyan.
                     lines.push(Line::from(vec![
                         Span::styled(
                             format!("  {}", f.name),
-                            sel_bg(Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
+                            sel_bg(Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
                         ),
                         Span::styled(loc, sel_bg(Style::default().fg(pal.hunk))),
                     ]));
@@ -950,10 +950,14 @@ fn push_comment_box(
                     format!("  {base}:{}", f.line)
                 })
                 .unwrap_or_default();
-            // Frame line: name (italic body) + location (cyan).
+            // Frame line: name (yellow, italic) + location (cyan), distinct
+            // from the variable subtree below.
             result.push(Line::from(vec![
                 Span::styled("    │ ", border_style),
-                Span::styled(format!("  {}", f.name), label_style),
+                Span::styled(
+                    format!("  {}", f.name),
+                    Style::default().fg(pal.yellow).add_modifier(Modifier::ITALIC | Modifier::BOLD),
+                ),
                 Span::styled(loc, Style::default().fg(pal.hunk).add_modifier(Modifier::ITALIC)),
             ]));
             *rendered_rows += 1;
