@@ -445,7 +445,17 @@ fn run(
                     (KeyCode::Char('S'), _) if app.debug_active() => {
                         if let Some(snap) = dbg.snapshot(app) {
                             app.attach_debug_snapshot(snap);
-                            app.status_msg = Some("stack attached to comment".into());
+                            let dir =
+                                storage::scope_dir(&app.repo_root, &app.comment_scope);
+                            match app.comments.save(&dir) {
+                                Ok(()) => {
+                                    app.rebuild_rows();
+                                    app.status_msg = Some("stack attached to comment".into());
+                                }
+                                Err(e) => {
+                                    app.status_msg = Some(format!("attach save error: {e}"))
+                                }
+                            }
                         } else {
                             app.status_msg = Some("no stopped session to capture".into());
                         }

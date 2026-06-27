@@ -625,7 +625,12 @@ fn comment_box_height(c: &crate::comments::Comment, wrap_w: usize) -> usize {
         Some(r) if !r.trim().is_empty() => 1 + wrap_text(r, response_wrap_w(wrap_w)).len(),
         _ => 0,
     };
-    1 + text_lines + response_lines + 1
+    // Debug snapshot: 1 header line + one line per stack frame.
+    let snapshot_lines = match &c.debug_snapshot {
+        Some(s) => 1 + s.stack.len(),
+        None => 0,
+    };
+    1 + text_lines + response_lines + snapshot_lines + 1
 }
 
 /// Wrap width for the response block. The response prefix `"    │ ↳ response: "`
@@ -732,6 +737,48 @@ fn push_comment_box(
                 Span::styled(format!("            {}", resp_line), body_style)
             };
             result.push(Line::from(vec![border, text]));
+            *rendered_rows += 1;
+        }
+    }
+    // Debug snapshot: a captured call stack attached at a breakpoint.
+    if let Some(snap) = &c.debug_snapshot {
+        let label_style = Style::default()
+            .fg(pal.tick)
+            .add_modifier(Modifier::ITALIC);
+        if *rendered_rows < page {
+            result.push(Line::from(vec![
+                Span::styled("    │ ", border_style),
+                Span::styled(
+                    format!("↳ stack @ {} ({}:{})", snap.session_label, {
+                        std::path::Path::new(&snap.stopped_file)
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or(&snap.stopped_file)
+                    }, snap.stopped_line),
+                    label_style,
+                ),
+            ]));
+            *rendered_rows += 1;
+        }
+        for f in &snap.stack {
+            if *rendered_rows >= page {
+                break;
+            }
+            let loc = f
+                .file
+                .as_deref()
+                .map(|p| {
+                    let base = std::path::Path::new(p)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(p);
+                    format!("{base}:{}", f.line)
+                })
+                .unwrap_or_default();
+            result.push(Line::from(vec![
+                Span::styled("    │ ", border_style),
+                Span::styled(format!("    {}  {loc}", f.name), body_style),
+            ]));
             *rendered_rows += 1;
         }
     }
@@ -1015,16 +1062,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             let dl = &app.diff[i];
             let comment_lines = app
                 .comment_for(dl)
-                .map(|c| {
-                    let text_lines = wrap_text(&c.text, wrap_w).len().max(1);
-                    let response_lines = match c.response.as_deref() {
-                        Some(r) if !r.trim().is_empty() => {
-                            1 + wrap_text(r, response_wrap_w(wrap_w)).len() // 1 blank separator + wrapped response
-                        }
-                        _ => 0,
-                    };
-                    1 + text_lines + response_lines + 1 // top + text + [blank+response] + bottom
-                })
+                .map(|c| comment_box_height(c, wrap_w))
                 .unwrap_or(0);
             1 + comment_lines
         };
