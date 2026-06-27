@@ -1410,10 +1410,20 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "Debug",
+        &[
+            ("b", "toggle breakpoint on the cursor line (Diff)"),
+            ("D", "launch a debug session"),
+            ("c / n / i / o", "continue / step over / in / out (Debug pane)"),
+            ("Ctrl-D", "in the comment box: attach the stopped stack"),
+            ("X", "end debug sessions"),
+        ],
+    ),
+    (
         "App",
         &[
             ("r", "refresh"),
-            ("T", "toggle light / dark theme"),
+            ("T", "toggle theme"),
             ("?", "this help"),
             ("qq / Ctrl-C", "quit"),
         ],
@@ -1422,38 +1432,53 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
 
 fn render_help_modal(frame: &mut Frame, app: &App) {
     let pal = app.palette();
-    let area = centered_rect(64, 80, frame.area());
+    let area = centered_rect(92, 80, frame.area());
     frame.render_widget(Clear, area);
-    let mut lines: Vec<Line> = Vec::new();
-    for (si, (title, entries)) in HELP_SECTIONS.iter().enumerate() {
-        // Blank separator between sections (not before the first).
-        if si > 0 {
-            lines.push(Line::from(""));
+
+    // Build the rendered lines for a slice of sections.
+    let build = |sections: &[(&str, &[(&str, &str)])]| -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for (si, (title, entries)) in sections.iter().enumerate() {
+            if si > 0 {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(Span::styled(
+                format!(" {}", title),
+                Style::default()
+                    .fg(pal.hunk)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            )));
+            for (key, desc) in entries.iter() {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {:14}", key),
+                        Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(desc.to_string(), Style::default().fg(pal.accent_dim)),
+                ]));
+            }
         }
-        lines.push(Line::from(Span::styled(
-            format!(" {}", title),
-            Style::default()
-                .fg(pal.hunk)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        )));
-        for (key, desc) in entries.iter() {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  {:12}", key),
-                    Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(desc.to_string(), Style::default().fg(pal.accent_dim)),
-            ]));
-        }
-    }
-    let para = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(pal.accent))
-            .title(" Keybindings (? or Esc to close) "),
-    );
-    frame.render_widget(para, area);
+        lines
+    };
+
+    // Split sections across two columns so the overlay never clips vertically.
+    let mid = HELP_SECTIONS.len().div_ceil(2);
+    let (left, right) = HELP_SECTIONS.split_at(mid);
+
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(pal.accent))
+        .title(" Keybindings (? or Esc to close) ");
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner);
+    frame.render_widget(Paragraph::new(build(left)), cols[0]);
+    frame.render_widget(Paragraph::new(build(right)), cols[1]);
 }
 
 #[cfg(test)]
