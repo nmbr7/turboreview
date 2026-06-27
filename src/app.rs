@@ -59,9 +59,15 @@ pub enum Mode {
 pub enum Pane {
     Files,
     Diff,
+    /// The right pane. It is tabbed (see `RightTab`): Comments or Debug.
     Comments,
-    /// The debugger variables/stack panel (only in the focus cycle while a
-    /// debug session is active).
+}
+
+/// Which tab the right pane shows. Switched with `[` / `]` when focused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RightTab {
+    #[default]
+    Comments,
     Debug,
 }
 
@@ -157,6 +163,8 @@ pub struct DebugState {
     pub panel_sel: usize,
     /// Selection index within the breakpoint-list pane.
     pub bp_sel: usize,
+    /// Horizontal scroll offset (chars) for the debug pane's content.
+    pub hscroll: usize,
 }
 
 impl DebugState {
@@ -290,6 +298,8 @@ pub struct App {
     pub search_input: Option<String>,
     /// Debugger overlay state; `Some` only while debugging.
     pub debug: Option<DebugState>,
+    /// Which tab the right pane shows (Comments or Debug).
+    pub right_tab: RightTab,
 }
 
 enum RowId {
@@ -337,6 +347,7 @@ impl App {
             search: None,
             search_input: None,
             debug: None,
+            right_tab: RightTab::Comments,
         };
         app.rebuild_rows();
         app
@@ -595,12 +606,14 @@ impl App {
         match self.focus {
             Pane::Files => self.selected = 0,
             Pane::Diff => self.diff_cursor = 0,
-            Pane::Comments => self.comment_selected = 0,
-            Pane::Debug => {
-                if let Some(d) = self.debug.as_mut() {
-                    d.panel_sel = 0;
+            Pane::Comments => match self.right_tab {
+                RightTab::Comments => self.comment_selected = 0,
+                RightTab::Debug => {
+                    if let Some(d) = self.debug.as_mut() {
+                        d.panel_sel = 0;
+                    }
                 }
-            }
+            },
         }
     }
 
@@ -608,31 +621,37 @@ impl App {
         match self.focus {
             Pane::Files => self.selected = self.rows.len().saturating_sub(1),
             Pane::Diff => self.diff_cursor = self.diff.len().saturating_sub(1),
-            Pane::Comments => {
-                let len = self.comment_rows().len();
-                self.comment_selected = len.saturating_sub(1);
-            }
-            Pane::Debug => {
-                let len = self.debug_panel_len();
-                if let Some(d) = self.debug.as_mut() {
-                    d.panel_sel = len.saturating_sub(1);
+            Pane::Comments => match self.right_tab {
+                RightTab::Comments => {
+                    let len = self.comment_rows().len();
+                    self.comment_selected = len.saturating_sub(1);
                 }
-            }
+                RightTab::Debug => {
+                    let len = self.debug_panel_len();
+                    if let Some(d) = self.debug.as_mut() {
+                        d.panel_sel = len.saturating_sub(1);
+                    }
+                }
+            },
         }
     }
 
-    /// Cycle focus through the VISIBLE panes: Files -> Diff -> Comments ->
-    /// Debug -> Files. Skips Files when !show_files, Comments when
-    /// !show_comments, and Debug unless a debug session is active.
+    /// Whether the right pane is visible (the Comments tab is enabled, or a
+    /// debug session is active so the Debug tab has content).
+    pub fn right_pane_visible(&self) -> bool {
+        self.show_comments || self.debug_active()
+    }
+
+    /// Cycle focus Files -> Diff -> Right -> Files. Skips Files when
+    /// !show_files and the Right pane when it isn't visible.
     pub fn toggle_focus(&mut self) {
-        let panes: Vec<Pane> = [Pane::Files, Pane::Diff, Pane::Comments, Pane::Debug]
+        let panes: Vec<Pane> = [Pane::Files, Pane::Diff, Pane::Comments]
             .iter()
             .copied()
             .filter(|&p| match p {
                 Pane::Files => self.show_files,
                 Pane::Diff => true,
-                Pane::Comments => self.show_comments,
-                Pane::Debug => self.debug_active(),
+                Pane::Comments => self.right_pane_visible(),
             })
             .collect();
         if panes.len() <= 1 {
@@ -640,6 +659,20 @@ impl App {
         }
         let current = panes.iter().position(|&p| p == self.focus).unwrap_or(0);
         self.focus = panes[(current + 1) % panes.len()];
+    }
+
+    /// Whether the Debug tab of the right pane is focused.
+    pub fn is_debug_focused(&self) -> bool {
+        self.focus == Pane::Comments && self.right_tab == RightTab::Debug
+    }
+
+    /// Switch the right-pane tab (Comments <-> Debug). Debug only when active.
+    pub fn toggle_right_tab(&mut self) {
+        self.right_tab = match self.right_tab {
+            RightTab::Comments if self.debug_active() => RightTab::Debug,
+            RightTab::Debug => RightTab::Comments,
+            other => other,
+        };
     }
 
     // ─── Debugger ────────────────────────────────────────────────────────────
@@ -853,7 +886,15 @@ impl App {
                 self.debug = None;
             }
         }
-        if self.focus == Pane::Debug {
+        // If the Debug tab was showing, fall back to the Comments tab (and move
+        // focus off the right pane if it's no longer useful).
+        if self.right_tab == RightTab::Debug {
+            self.right_tab = RightTab::Comments;
+            if self.is_debug_focused() {
+                self.focus = Pane::Diff;
+            }
+        }
+        if self.focus == Pane::Comments && !self.right_pane_visible() {
             self.focus = Pane::Diff;
         }
     }
@@ -3549,7 +3590,8 @@ mod tests {
         app.debug = Some(st);
 
         assert_eq!(app.debug_panel_len(), 3); // 3 frames
-        app.focus = Pane::Debug;
+        app.focus = Pane::Comments;
+        app.right_tab = RightTab::Debug;
         app.move_debug_panel_selection(99);
         assert_eq!(app.debug.as_ref().unwrap().panel_sel, 2); // clamped to last frame
         // Frame selection mirrors panel selection.
@@ -3628,29 +3670,47 @@ mod tests {
         let mut st = app.debug.take().unwrap();
         st.sessions.push(DebugSession::new(1, "worktree".into()));
         app.debug = Some(st);
-        app.focus = Pane::Debug;
+        app.focus = Pane::Comments;
+        app.right_tab = RightTab::Debug;
 
         app.exit_debug();
-        // Sessions gone, breakpoints kept, debug still active, focus moved.
+        // Sessions gone, breakpoints kept, debug overlay still present, the
+        // right tab fell back to Comments and focus moved off the Debug tab.
         let d = app.debug.as_ref().unwrap();
         assert!(d.sessions.is_empty());
         assert!(!d.breakpoints.is_empty());
-        assert_eq!(app.focus, Pane::Diff);
+        assert_eq!(app.right_tab, RightTab::Comments);
+        assert!(!app.is_debug_focused());
     }
 
     #[test]
-    fn focus_cycle_includes_debug_only_when_active() {
+    fn right_pane_joins_focus_cycle_when_active() {
         let mut app = sample();
-        app.show_comments = false; // simplify cycle: Files <-> Diff
+        app.show_comments = false; // right pane hidden unless debugging
         app.toggle_focus();
         assert_eq!(app.focus, Pane::Diff);
         app.toggle_focus();
-        assert_eq!(app.focus, Pane::Files); // no Debug in cycle yet
+        assert_eq!(app.focus, Pane::Files); // no right pane in cycle yet
 
-        // Activate debug; Debug joins the cycle.
+        // Activate debug → the right pane (Debug tab) joins the cycle.
         app.debug = Some(DebugState::default());
+        app.right_tab = RightTab::Debug;
         app.focus = Pane::Diff;
         app.toggle_focus();
-        assert_eq!(app.focus, Pane::Debug);
+        assert_eq!(app.focus, Pane::Comments);
+        assert!(app.is_debug_focused());
+    }
+
+    #[test]
+    fn toggle_right_tab_only_to_debug_when_active() {
+        let mut app = sample();
+        assert_eq!(app.right_tab, RightTab::Comments);
+        app.toggle_right_tab(); // no debug → stays on Comments
+        assert_eq!(app.right_tab, RightTab::Comments);
+        app.debug = Some(DebugState::default());
+        app.toggle_right_tab();
+        assert_eq!(app.right_tab, RightTab::Debug);
+        app.toggle_right_tab();
+        assert_eq!(app.right_tab, RightTab::Comments);
     }
 }

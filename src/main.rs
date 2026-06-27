@@ -438,7 +438,9 @@ fn run(
                         let root = app.repo_root.clone();
                         match dbg.launch(app, &cfg, &root, "worktree".into()) {
                             Ok(()) => {
-                                app.focus = Pane::Debug;
+                                // Show + focus the Debug tab of the right pane.
+                                app.right_tab = turboreview::app::RightTab::Debug;
+                                app.focus = Pane::Comments;
                                 app.status_msg = Some("debug session launching…".into());
                             }
                             Err(e) => app.status_msg = Some(format!("debug: {e}")),
@@ -446,27 +448,31 @@ fn run(
                     }
                     // Step / continue — only while the Debug panel is focused so
                     // they don't shadow diff-pane keys (e.g. `c` = comment).
-                    (KeyCode::Char('c'), _) if app.focus == Pane::Debug => {
+                    (KeyCode::Char('c'), _) if app.is_debug_focused() => {
                         dbg.control(app, "continue");
                     }
-                    (KeyCode::Char('n'), _) if app.focus == Pane::Debug => {
+                    (KeyCode::Char('n'), _) if app.is_debug_focused() => {
                         dbg.control(app, "next");
                     }
-                    (KeyCode::Char('i'), _) if app.focus == Pane::Debug => {
+                    (KeyCode::Char('i'), _) if app.is_debug_focused() => {
                         dbg.control(app, "stepIn");
                     }
-                    (KeyCode::Char('o'), _) if app.focus == Pane::Debug => {
+                    (KeyCode::Char('o'), _) if app.is_debug_focused() => {
                         dbg.control(app, "stepOut");
+                    }
+                    // `t`: switch the Debug tab's nested Vars / Breakpoints view.
+                    (KeyCode::Char('t'), _) if app.is_debug_focused() => {
+                        app.toggle_debug_tab();
                     }
                     // Breakpoint-list actions (Debug pane, Breakpoints tab):
                     // Enter = jump to it, Space/x = enable-disable, d = delete.
                     (KeyCode::Enter, _)
-                        if app.focus == Pane::Debug && app.debug_tab_is_breakpoints() =>
+                        if app.is_debug_focused() && app.debug_tab_is_breakpoints() =>
                     {
                         app.jump_to_selected_breakpoint();
                     }
                     (KeyCode::Char(' ') | KeyCode::Char('x'), _)
-                        if app.focus == Pane::Debug && app.debug_tab_is_breakpoints() =>
+                        if app.is_debug_focused() && app.debug_tab_is_breakpoints() =>
                     {
                         if let Some(on) = app.toggle_selected_breakpoint() {
                             dbg.sync_breakpoints(app);
@@ -475,7 +481,7 @@ fn run(
                         }
                     }
                     (KeyCode::Char('d') | KeyCode::Delete, _)
-                        if app.focus == Pane::Debug && app.debug_tab_is_breakpoints() =>
+                        if app.is_debug_focused() && app.debug_tab_is_breakpoints() =>
                     {
                         if app.delete_selected_breakpoint() {
                             dbg.sync_breakpoints(app);
@@ -717,12 +723,12 @@ fn run(
                         app.dec_context();
                         refresh_diff(repo, app);
                     }
-                    // [ / ]: switch the debug pane's tab when it's focused,
-                    // otherwise switch the Changes/Commits view.
+                    // [ / ]: when the right pane is focused, switch its tab
+                    // (Comments <-> Debug); otherwise switch the Changes/Commits view.
                     (KeyCode::Char('[') | KeyCode::Char(']'), _)
-                        if app.focus == Pane::Debug =>
+                        if app.focus == Pane::Comments =>
                     {
-                        app.toggle_debug_tab();
+                        app.toggle_right_tab();
                     }
                     (KeyCode::Char(']'), _) => {
                         if app.history_active() {
@@ -875,7 +881,7 @@ fn load_more_commits(repo: &Repo, app: &mut App) {
 /// When the Debug Vars panel is focused, fetch the now-selected frame's locals
 /// on demand (lldb-dap requires per-frame, one-at-a-time scope requests).
 fn fetch_selected_frame_locals(app: &App, dbg: &mut DebugManager) {
-    if app.focus == Pane::Debug && !app.debug_tab_is_breakpoints() {
+    if app.is_debug_focused() && !app.debug_tab_is_breakpoints() {
         if let Some(d) = app.debug.as_ref() {
             dbg.request_frame_locals(app, d.panel_sel);
         }
@@ -908,8 +914,10 @@ fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
             }
         }
         Pane::Diff => app.move_diff_cursor(delta),
-        Pane::Comments => app.move_comment_selection(delta),
-        Pane::Debug => app.move_debug_selection(delta),
+        Pane::Comments => match app.right_tab {
+            turboreview::app::RightTab::Comments => app.move_comment_selection(delta),
+            turboreview::app::RightTab::Debug => app.move_debug_selection(delta),
+        },
     }
 }
 

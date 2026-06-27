@@ -161,54 +161,46 @@ pub fn render(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Min(1), Constraint::Length(status_h)])
         .split(frame.area());
 
-    // When debugging, carve a variables/stack panel off the right edge and lay
-    // the normal panes out in the remaining area.
-    let (main_area, debug_area) = if app.debug_active() {
-        let split = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
-            .split(outer[0]);
-        (split[0], Some(split[1]))
-    } else {
-        (outer[0], None)
-    };
-    let comment_pct: u16 = 28;
+    let main_area = outer[0];
+    // The right pane (tabbed Comments / Debug) shows when comments are enabled
+    // or a debug session is active.
+    let show_right = app.right_pane_visible();
+    let right_pct: u16 = 30;
 
-    if app.show_files && app.show_comments {
-        // Three columns: [Files | Diff | Comments]
-        // Ensure middle (diff) is at least 20%
+    let render_files_or_commits = |frame: &mut Frame, app: &App, area: Rect| match app.view {
+        ViewMode::Changes => render_files(frame, app, area),
+        ViewMode::Commits if app.open_commit.is_none() => render_commits(frame, app, area),
+        ViewMode::Commits => render_files(frame, app, area),
+    };
+
+    if app.show_files && show_right {
         let diff_pct = 100u16
             .saturating_sub(app.file_pane_pct)
-            .saturating_sub(comment_pct)
+            .saturating_sub(right_pct)
             .max(20);
-        let actual_files_pct = 100u16.saturating_sub(diff_pct).saturating_sub(comment_pct);
+        let files_pct = 100u16.saturating_sub(diff_pct).saturating_sub(right_pct);
         let panes = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(actual_files_pct),
+                Constraint::Percentage(files_pct),
                 Constraint::Percentage(diff_pct),
-                Constraint::Percentage(comment_pct),
+                Constraint::Percentage(right_pct),
             ])
             .split(main_area);
-        match app.view {
-            ViewMode::Changes => render_files(frame, app, panes[0]),
-            ViewMode::Commits if app.open_commit.is_none() => render_commits(frame, app, panes[0]),
-            ViewMode::Commits => render_files(frame, app, panes[0]),
-        }
+        render_files_or_commits(frame, app, panes[0]);
         render_diff(frame, app, panes[1]);
-        render_comment_list(frame, app, panes[2]);
-    } else if !app.show_files && app.show_comments {
-        // Two columns: [Diff | Comments]
-        let diff_pct = 100u16.saturating_sub(comment_pct).max(20);
+        render_right_pane(frame, app, panes[2]);
+    } else if show_right {
+        let diff_pct = 100u16.saturating_sub(right_pct).max(20);
         let panes = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Percentage(diff_pct),
-                Constraint::Percentage(comment_pct),
+                Constraint::Percentage(right_pct),
             ])
             .split(main_area);
         render_diff(frame, app, panes[0]);
-        render_comment_list(frame, app, panes[1]);
+        render_right_pane(frame, app, panes[1]);
     } else if app.show_files {
         let panes = Layout::default()
             .direction(Direction::Horizontal)
@@ -217,17 +209,10 @@ pub fn render(frame: &mut Frame, app: &App) {
                 Constraint::Percentage(100 - app.file_pane_pct),
             ])
             .split(main_area);
-        match app.view {
-            ViewMode::Changes => render_files(frame, app, panes[0]),
-            ViewMode::Commits if app.open_commit.is_none() => render_commits(frame, app, panes[0]),
-            ViewMode::Commits => render_files(frame, app, panes[0]),
-        }
+        render_files_or_commits(frame, app, panes[0]);
         render_diff(frame, app, panes[1]);
     } else {
         render_diff(frame, app, main_area);
-    }
-    if let Some(area) = debug_area {
-        render_debug_panel(frame, app, area);
     }
     if status_h > 0 {
         render_status(frame, app, outer[1]);
@@ -325,6 +310,44 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+/// The tabbed right pane: a tab header (Comments | Debug) plus the active tab's
+/// content. The Debug tab only appears while a session is active.
+fn render_right_pane(frame: &mut Frame, app: &App, area: Rect) {
+    use crate::app::RightTab;
+    let pal = app.palette();
+    // 1-row tab header, then the content area.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+
+    let focused = app.focus == Pane::Comments;
+    let tab = |label: &str, active: bool| {
+        let st = if active {
+            Style::default()
+                .fg(if focused { pal.accent } else { pal.accent_dim })
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default().fg(pal.accent_dim)
+        };
+        Span::styled(format!(" {label} "), st)
+    };
+    let mut header = vec![
+        tab("Comments", app.right_tab == RightTab::Comments),
+        Span::raw(" "),
+    ];
+    if app.debug_active() {
+        header.push(tab("Debug", app.right_tab == RightTab::Debug));
+    }
+    header.push(Span::styled("  [ ]", Style::default().fg(pal.accent_dim)));
+    frame.render_widget(Paragraph::new(Line::from(header)), rows[0]);
+
+    match app.right_tab {
+        RightTab::Comments => render_comment_list(frame, app, rows[1]),
+        RightTab::Debug => render_debug_panel(frame, app, rows[1]),
+    }
+}
+
 /// Render the breakpoint list into `lines`: one row per breakpoint, with an
 /// enabled marker (● red / ○ dim), file:line, and the selected row highlighted.
 fn render_breakpoint_lines(
@@ -387,7 +410,7 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
         tab_span("Vars", d.tab == DebugTab::Vars),
         Span::raw(" "),
         tab_span("Breakpoints", d.tab == DebugTab::Breakpoints),
-        Span::styled("   ([ ]: switch)", Style::default().fg(pal.accent_dim)),
+        Span::styled("   (t: switch)", Style::default().fg(pal.accent_dim)),
     ]));
     lines.push(Line::from(""));
 
@@ -396,7 +419,7 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
         let para = Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(focused_border(app, Pane::Debug))
+                .border_style(focused_border(app, Pane::Comments))
                 .title(" Debug "),
         );
         frame.render_widget(para, area);
@@ -492,7 +515,7 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
     let para = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(focused_border(app, Pane::Debug))
+            .border_style(focused_border(app, Pane::Comments))
             .title(" Debug "),
     );
     frame.render_widget(para, area);
@@ -1501,7 +1524,8 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("b", "toggle breakpoint on cursor line"),
             ("D", "launch a debug session"),
             ("c / n / i / o", "continue / over / in / out"),
-            ("[ / ]", "switch Vars / Breakpoints tab"),
+            ("[ / ]", "right pane: Comments / Debug tab"),
+            ("t", "Debug: Vars / Breakpoints"),
             ("Space / d", "bp list: enable-disable / delete"),
             ("Enter", "bp list: jump to breakpoint"),
             ("Ctrl-D", "comment box: attach stack"),
