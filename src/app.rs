@@ -133,19 +133,44 @@ impl DebugSession {
 /// Top-level debugger overlay state. Present (`Some`) only while debugging.
 /// Breakpoints are keyed by absolute source path → set of 1-based line numbers,
 /// shared across all sessions.
+/// Which tab the right-hand debug pane is showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DebugTab {
+    /// Call stack + variables of the active session.
+    #[default]
+    Vars,
+    /// The breakpoint list (navigate / enable / delete).
+    Breakpoints,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DebugState {
     pub sessions: Vec<DebugSession>,
     /// Index into `sessions` of the active session (panel focus).
     pub active: usize,
-    pub breakpoints: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<u32>>,
+    /// Which tab the debug pane shows.
+    pub tab: DebugTab,
+    /// Breakpoints: absolute source path → (1-based line → enabled). Disabled
+    /// breakpoints are kept (greyed in the list) but not sent to adapters.
+    pub breakpoints: std::collections::BTreeMap<PathBuf, std::collections::BTreeMap<u32, bool>>,
     /// Selection index within the active session's variables/stack panel.
     pub panel_sel: usize,
+    /// Selection index within the breakpoint-list pane.
+    pub bp_sel: usize,
 }
 
 impl DebugState {
     pub fn active_session(&self) -> Option<&DebugSession> {
         self.sessions.get(self.active)
+    }
+
+    /// Flat, ordered list of all breakpoints as `(file, line, enabled)`. Order
+    /// matches the breakpoint pane (by path, then line).
+    pub fn breakpoint_list(&self) -> Vec<(PathBuf, u32, bool)> {
+        self.breakpoints
+            .iter()
+            .flat_map(|(f, lines)| lines.iter().map(move |(l, on)| (f.clone(), *l, *on)))
+            .collect()
     }
 }
 
@@ -633,12 +658,22 @@ impl App {
         Some((self.repo_root.join(file), line))
     }
 
-    /// Whether `(abs_file, line)` currently has a breakpoint.
+    /// Whether `(abs_file, line)` currently has a breakpoint (enabled or not).
     pub fn has_breakpoint(&self, file: &Path, line: u32) -> bool {
         self.debug
             .as_ref()
             .and_then(|d| d.breakpoints.get(file))
-            .is_some_and(|lines| lines.contains(&line))
+            .is_some_and(|lines| lines.contains_key(&line))
+    }
+
+    /// Whether `(abs_file, line)` has an ENABLED breakpoint (drives the marker).
+    pub fn breakpoint_enabled(&self, file: &Path, line: u32) -> bool {
+        self.debug
+            .as_ref()
+            .and_then(|d| d.breakpoints.get(file))
+            .and_then(|lines| lines.get(&line))
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Toggle a breakpoint on the diff line under the cursor. Lazily creates the
@@ -651,11 +686,11 @@ impl App {
         };
         let d = self.debug.get_or_insert_with(DebugState::default);
         let lines = d.breakpoints.entry(file.clone()).or_default();
-        let now_set = if lines.contains(&line) {
+        let now_set = if lines.contains_key(&line) {
             lines.remove(&line);
             false
         } else {
-            lines.insert(line);
+            lines.insert(line, true); // new breakpoints start enabled
             true
         };
         // Drop empty file entries to keep the map tidy.
@@ -670,6 +705,114 @@ impl App {
             self.debug = None;
         }
         now_set
+    }
+
+    // ─── Breakpoint pane ─────────────────────────────────────────────────────
+
+    /// Number of breakpoints (for clamping the pane selection).
+    pub fn breakpoint_count(&self) -> usize {
+        self.debug.as_ref().map_or(0, |d| {
+            d.breakpoints.values().map(|m| m.len()).sum()
+        })
+    }
+
+    /// Move the selection within the breakpoint pane, clamped.
+    pub fn move_breakpoint_selection(&mut self, delta: isize) {
+        let len = self.breakpoint_count();
+        if len == 0 {
+            return;
+        }
+        let max = len as isize - 1;
+        if let Some(d) = self.debug.as_mut() {
+            d.bp_sel = (d.bp_sel as isize + delta).clamp(0, max) as usize;
+        }
+    }
+
+    /// The selected breakpoint `(abs_file, line, enabled)`, if any.
+    pub fn selected_breakpoint(&self) -> Option<(PathBuf, u32, bool)> {
+        let d = self.debug.as_ref()?;
+        d.breakpoint_list().into_iter().nth(d.bp_sel)
+    }
+
+    /// Toggle enabled/disabled for the selected breakpoint. Returns the new
+    /// enabled state, or None if there's no selection.
+    pub fn toggle_selected_breakpoint(&mut self) -> Option<bool> {
+        let (file, line, _) = self.selected_breakpoint()?;
+        let d = self.debug.as_mut()?;
+        let on = d.breakpoints.get_mut(&file)?.get_mut(&line)?;
+        *on = !*on;
+        Some(*on)
+    }
+
+    /// Delete the selected breakpoint entirely. Returns true if one was removed.
+    pub fn delete_selected_breakpoint(&mut self) -> bool {
+        let Some((file, line, _)) = self.selected_breakpoint() else {
+            return false;
+        };
+        let Some(d) = self.debug.as_mut() else {
+            return false;
+        };
+        if let Some(lines) = d.breakpoints.get_mut(&file) {
+            lines.remove(&line);
+            if lines.is_empty() {
+                d.breakpoints.remove(&file);
+            }
+        }
+        let len = self.breakpoint_count();
+        if let Some(d) = self.debug.as_mut() {
+            d.bp_sel = d.bp_sel.min(len.saturating_sub(1));
+        }
+        true
+    }
+
+    /// Jump the diff cursor to the selected breakpoint's file+line. Requires the
+    /// file to be the one currently shown in the diff; returns true on success.
+    pub fn jump_to_selected_breakpoint(&mut self) -> bool {
+        let Some((file, line, _)) = self.selected_breakpoint() else {
+            return false;
+        };
+        // Only jump within the currently-open file's diff.
+        let cur_abs = self.selected_path().map(|p| self.repo_root.join(p));
+        if cur_abs.as_deref() != Some(file.as_path()) {
+            self.status_msg =
+                Some("breakpoint is in another file — open it first".into());
+            return false;
+        }
+        if let Some(idx) = self
+            .diff
+            .iter()
+            .position(|dl| dl.new_lineno == Some(line) || dl.old_lineno == Some(line))
+        {
+            self.diff_cursor = idx;
+            self.focus = Pane::Diff;
+            true
+        } else {
+            self.status_msg = Some("breakpoint line not visible in this diff".into());
+            false
+        }
+    }
+
+    /// Whether the debug pane is currently on the Breakpoints tab.
+    pub fn debug_tab_is_breakpoints(&self) -> bool {
+        self.debug.as_ref().map(|d| d.tab) == Some(DebugTab::Breakpoints)
+    }
+
+    /// Switch the debug pane between the Vars and Breakpoints tabs.
+    pub fn toggle_debug_tab(&mut self) {
+        if let Some(d) = self.debug.as_mut() {
+            d.tab = match d.tab {
+                DebugTab::Vars => DebugTab::Breakpoints,
+                DebugTab::Breakpoints => DebugTab::Vars,
+            };
+        }
+    }
+
+    /// Move selection in whichever debug tab is active.
+    pub fn move_debug_selection(&mut self, delta: isize) {
+        match self.debug.as_ref().map(|d| d.tab) {
+            Some(DebugTab::Breakpoints) => self.move_breakpoint_selection(delta),
+            _ => self.move_debug_panel_selection(delta),
+        }
     }
 
     /// Number of rows in the active session's variables/stack panel (stack frames
@@ -3418,6 +3561,41 @@ mod tests {
             .expect("comment created at stopped line");
         assert!(c.debug_snapshot.is_some());
         assert_eq!(c.debug_snapshot.as_ref().unwrap().stack[0].name, "main");
+    }
+
+    #[test]
+    fn breakpoint_list_toggle_and_delete() {
+        let mut app = app_on_diff_line();
+        app.toggle_breakpoint_at_cursor(); // /repo/a.rs:2, enabled
+        let abs = PathBuf::from("/repo").join("a.rs");
+        assert!(app.breakpoint_enabled(&abs, 2));
+        assert_eq!(app.breakpoint_count(), 1);
+
+        // Select it and disable.
+        let on = app.toggle_selected_breakpoint();
+        assert_eq!(on, Some(false));
+        assert!(app.has_breakpoint(&abs, 2)); // still present
+        assert!(!app.breakpoint_enabled(&abs, 2)); // but disabled
+
+        // Re-enable.
+        assert_eq!(app.toggle_selected_breakpoint(), Some(true));
+        assert!(app.breakpoint_enabled(&abs, 2));
+
+        // Delete removes it entirely.
+        assert!(app.delete_selected_breakpoint());
+        assert_eq!(app.breakpoint_count(), 0);
+        assert!(!app.has_breakpoint(&abs, 2));
+    }
+
+    #[test]
+    fn debug_tab_toggles() {
+        let mut app = app_on_diff_line();
+        app.toggle_breakpoint_at_cursor();
+        assert!(!app.debug_tab_is_breakpoints());
+        app.toggle_debug_tab();
+        assert!(app.debug_tab_is_breakpoints());
+        app.toggle_debug_tab();
+        assert!(!app.debug_tab_is_breakpoints());
     }
 
     #[test]

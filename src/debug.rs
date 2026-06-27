@@ -310,7 +310,13 @@ impl DebugManager {
             return;
         };
         for (file, lines) in &d.breakpoints {
-            let bps: Vec<Value> = lines.iter().map(|ln| json!({"line": ln})).collect();
+            // Only enabled breakpoints are sent; disabled ones stay in the list
+            // but are omitted (sending an empty set clears them in the adapter).
+            let bps: Vec<Value> = lines
+                .iter()
+                .filter(|(_, on)| **on)
+                .map(|(ln, _)| json!({"line": ln}))
+                .collect();
             let _ = l.client.send_request(
                 "setBreakpoints",
                 json!({

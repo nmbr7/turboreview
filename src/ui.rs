@@ -325,14 +325,83 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+/// Render the breakpoint list into `lines`: one row per breakpoint, with an
+/// enabled marker (● red / ○ dim), file:line, and the selected row highlighted.
+fn render_breakpoint_lines(
+    lines: &mut Vec<Line<'static>>,
+    app: &crate::app::App,
+    d: &crate::app::DebugState,
+    pal: &crate::theme::Palette,
+) {
+    let bps = d.breakpoint_list();
+    if bps.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no breakpoints — press b on a line",
+            Style::default().fg(pal.accent_dim),
+        )));
+        return;
+    }
+    lines.push(Line::from(Span::styled(
+        " Enter: go · Space: on/off · d: delete",
+        Style::default().fg(pal.accent_dim),
+    )));
+    for (i, (file, line, on)) in bps.iter().enumerate() {
+        let base = file
+            .strip_prefix(&app.repo_root)
+            .unwrap_or(file.as_path())
+            .display()
+            .to_string();
+        let (mark, mark_fg) = if *on { ("●", pal.red) } else { ("○", pal.accent_dim) };
+        let mut row_style = Style::default();
+        let mut text_fg = if *on { pal.accent } else { pal.accent_dim };
+        if i == d.bp_sel {
+            row_style = row_style.bg(pal.selected_bg);
+            text_fg = if *on { pal.accent } else { pal.accent_dim };
+        }
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {mark} "), row_style.fg(mark_fg)),
+            Span::styled(format!("{base}:{line}"), row_style.fg(text_fg)),
+        ]));
+    }
+}
+
 /// The debugger right-hand panel: a session strip, the active session's call
 /// stack, and the selected frame's local variables.
 fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
-    use crate::app::SessionState;
+    use crate::app::{DebugTab, SessionState};
     let pal = app.palette();
     let Some(d) = app.debug.as_ref() else { return };
 
     let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Tab header: [ Vars | Breakpoints ], active tab highlighted.
+    let tab_span = |label: &str, active: bool| {
+        let st = if active {
+            Style::default().fg(pal.accent).add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default().fg(pal.accent_dim)
+        };
+        Span::styled(format!(" {label} "), st)
+    };
+    lines.push(Line::from(vec![
+        tab_span("Vars", d.tab == DebugTab::Vars),
+        Span::raw(" "),
+        tab_span("Breakpoints", d.tab == DebugTab::Breakpoints),
+        Span::styled("   (t: switch)", Style::default().fg(pal.accent_dim)),
+    ]));
+    lines.push(Line::from(""));
+
+    if d.tab == DebugTab::Breakpoints {
+        render_breakpoint_lines(&mut lines, app, d, &pal);
+        let para = Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(focused_border(app, Pane::Debug))
+                .title(" Debug "),
+        );
+        frame.render_widget(para, area);
+        return;
+    }
 
     // Session strip: one row per session, active one bracketed.
     for (i, s) in d.sessions.iter().enumerate() {
@@ -943,12 +1012,15 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
         // keeping the 5-col gutter width (marker + 4-digit line number).
         let line_no = dl.new_lineno.or(dl.old_lineno);
         let is_bp = matches!((&bp_file, line_no), (Some(f), Some(n)) if app.has_breakpoint(f, n));
+        let bp_on = matches!((&bp_file, line_no), (Some(f), Some(n)) if app.breakpoint_enabled(f, n));
         let is_stopped = stopped_line.is_some() && stopped_line == line_no;
         let mut spans: Vec<Span<'static>> = if is_stopped || is_bp {
             let (marker, fg) = if is_stopped {
                 ("▶", pal.tick)
-            } else {
+            } else if bp_on {
                 ("●", pal.red)
+            } else {
+                ("○", pal.accent_dim) // disabled breakpoint
             };
             let num = line_no.map(|n| format!("{:>4}", n)).unwrap_or_else(|| "    ".into());
             let mut mstyle = Style::default().fg(fg);
@@ -1144,11 +1216,14 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                 (Some(f), Some(n)) => app.has_breakpoint(f, n),
                 _ => false,
             };
+            let bp_on = matches!((&bp_file, line_no), (Some(f), Some(n)) if app.breakpoint_enabled(f, n));
             let is_stopped = stopped_line.is_some() && stopped_line == line_no;
             let (marker, marker_fg) = if is_stopped {
                 ("▶", pal.tick)
-            } else if is_bp {
+            } else if is_bp && bp_on {
                 ("●", pal.red)
+            } else if is_bp {
+                ("○", pal.accent_dim) // disabled breakpoint
             } else {
                 (" ", pal.accent_dim)
             };
@@ -1412,10 +1487,13 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
         "Debug",
         &[
-            ("b", "toggle breakpoint on the cursor line (Diff)"),
+            ("b", "toggle breakpoint on cursor line"),
             ("D", "launch a debug session"),
-            ("c / n / i / o", "continue / step over / in / out (Debug pane)"),
-            ("Ctrl-D", "in the comment box: attach the stopped stack"),
+            ("c / n / i / o", "continue / over / in / out"),
+            ("t", "switch Vars / Breakpoints tab"),
+            ("Space / d", "bp list: enable-disable / delete"),
+            ("Enter", "bp list: jump to breakpoint"),
+            ("Ctrl-D", "comment box: attach stack"),
             ("X", "end debug sessions"),
         ],
     ),

@@ -458,6 +458,34 @@ fn run(
                     (KeyCode::Char('o'), _) if app.focus == Pane::Debug => {
                         dbg.control(app, "stepOut");
                     }
+                    // `t`: switch the debug pane between Vars and Breakpoints tabs.
+                    (KeyCode::Char('t'), _) if app.focus == Pane::Debug => {
+                        app.toggle_debug_tab();
+                    }
+                    // Breakpoint-list actions (Debug pane, Breakpoints tab):
+                    // Enter = jump to it, Space/x = enable-disable, d = delete.
+                    (KeyCode::Enter, _)
+                        if app.focus == Pane::Debug && app.debug_tab_is_breakpoints() =>
+                    {
+                        app.jump_to_selected_breakpoint();
+                    }
+                    (KeyCode::Char(' ') | KeyCode::Char('x'), _)
+                        if app.focus == Pane::Debug && app.debug_tab_is_breakpoints() =>
+                    {
+                        if let Some(on) = app.toggle_selected_breakpoint() {
+                            dbg.sync_breakpoints(app);
+                            app.status_msg =
+                                Some(if on { "breakpoint enabled" } else { "breakpoint disabled" }.into());
+                        }
+                    }
+                    (KeyCode::Char('d') | KeyCode::Delete, _)
+                        if app.focus == Pane::Debug && app.debug_tab_is_breakpoints() =>
+                    {
+                        if app.delete_selected_breakpoint() {
+                            dbg.sync_breakpoints(app);
+                            app.status_msg = Some("breakpoint deleted".into());
+                        }
+                    }
                     // (Attaching the debug stack to a comment is now done from
                     // the comment modal: press `c` on a line while stopped, then
                     // Ctrl-D to toggle attaching the captured stack.)
@@ -862,7 +890,7 @@ fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
         }
         Pane::Diff => app.move_diff_cursor(delta),
         Pane::Comments => app.move_comment_selection(delta),
-        Pane::Debug => app.move_debug_panel_selection(delta),
+        Pane::Debug => app.move_debug_selection(delta),
     }
 }
 
