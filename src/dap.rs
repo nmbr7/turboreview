@@ -187,6 +187,144 @@ pub fn parse_stopped(body: &Value) -> Result<StoppedBody> {
     Ok(serde_json::from_value(body.clone())?)
 }
 
+// ─── Threaded client ─────────────────────────────────────────────────────────
+
+use std::io::{BufReader, Write};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
+
+/// Stable id for one debug session, used to tag events from multiple adapters
+/// multiplexed onto a single channel.
+pub type SessionId = u64;
+
+/// A message from a debug session's reader thread to the UI event loop.
+#[derive(Clone, Debug)]
+pub struct SessionMsg {
+    pub session: SessionId,
+    pub kind: SessionKind,
+}
+
+/// What happened on a session's adapter connection.
+#[derive(Clone, Debug)]
+pub enum SessionKind {
+    /// A decoded DAP message (response or event).
+    Message(Message),
+    /// The adapter stdout closed (clean EOF) — session ended.
+    Closed,
+    /// The reader hit an error (e.g. malformed frame).
+    Error(String),
+}
+
+/// Read DAP messages from `r` until EOF/error, forwarding each as a
+/// [`SessionMsg`] tagged with `session`. Generic over the reader so it can be
+/// unit-tested with an in-memory buffer (no real adapter process needed).
+pub fn run_reader<R: BufRead>(session: SessionId, mut r: R, tx: Sender<SessionMsg>) {
+    loop {
+        match read_message(&mut r) {
+            Ok(Some(msg)) => {
+                if tx
+                    .send(SessionMsg {
+                        session,
+                        kind: SessionKind::Message(msg),
+                    })
+                    .is_err()
+                {
+                    break; // receiver dropped — stop reading
+                }
+            }
+            Ok(None) => {
+                let _ = tx.send(SessionMsg {
+                    session,
+                    kind: SessionKind::Closed,
+                });
+                break;
+            }
+            Err(e) => {
+                let _ = tx.send(SessionMsg {
+                    session,
+                    kind: SessionKind::Error(e.to_string()),
+                });
+                break;
+            }
+        }
+    }
+}
+
+/// A live debug-adapter connection: the spawned process, its piped stdin (for
+/// requests), and a monotonic request sequence. The reader thread is spawned at
+/// construction and forwards messages on the shared channel.
+pub struct DapClient {
+    session: SessionId,
+    child: Child,
+    stdin: std::process::ChildStdin,
+    seq: Arc<AtomicI64>,
+}
+
+impl DapClient {
+    /// Spawn the adapter `command args...`, start its reader thread (forwarding
+    /// to `tx` tagged with `session`), and return the client handle.
+    pub fn spawn(
+        session: SessionId,
+        command: &str,
+        args: &[String],
+        tx: Sender<SessionMsg>,
+    ) -> Result<DapClient> {
+        let mut child = Command::new(command)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| anyhow!("failed to spawn debug adapter {command:?}: {e}"))?;
+        let stdin = child.stdin.take().ok_or_else(|| anyhow!("no adapter stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("no adapter stdout"))?;
+        std::thread::Builder::new()
+            .name(format!("dap-reader-{session}"))
+            .spawn(move || run_reader(session, BufReader::new(stdout), tx))
+            .map_err(|e| anyhow!("failed to spawn reader thread: {e}"))?;
+        Ok(DapClient {
+            session,
+            child,
+            stdin,
+            seq: Arc::new(AtomicI64::new(0)),
+        })
+    }
+
+    pub fn session(&self) -> SessionId {
+        self.session
+    }
+
+    /// Send a DAP request; returns the assigned `seq` so the caller can match the
+    /// response (`request_seq`) when it arrives on the channel.
+    pub fn send_request(&mut self, command: &str, arguments: Value) -> Result<i64> {
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let body = request(seq, command, arguments);
+        self.stdin.write_all(&encode(&body))?;
+        self.stdin.flush()?;
+        Ok(seq)
+    }
+
+    /// Politely ask the adapter to disconnect, then kill + reap the process.
+    pub fn shutdown(&mut self) {
+        let _ = self.send_request("disconnect", serde_json::json!({}));
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for DapClient {
+    fn drop(&mut self) {
+        // Best-effort cleanup so a dropped session never leaks an adapter process.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,5 +418,65 @@ mod tests {
         let mut r = BufReader::new(&framed[..]);
         let msg = read_message(&mut r).unwrap().unwrap();
         assert!(matches!(msg, Message::Request { command, .. } if command == "threads"));
+    }
+
+    #[test]
+    fn run_reader_forwards_messages_then_closed() {
+        use std::sync::mpsc::channel;
+        // Two framed events back-to-back, then EOF.
+        let mut buf = encode(&serde_json::json!({
+            "seq":1,"type":"event","event":"initialized","body":{}
+        }));
+        buf.extend(encode(&serde_json::json!({
+            "seq":2,"type":"event","event":"stopped","body":{"reason":"breakpoint","threadId":1}
+        })));
+        let (tx, rx) = channel();
+        run_reader(42, BufReader::new(&buf[..]), tx);
+
+        let m1 = rx.recv().unwrap();
+        assert_eq!(m1.session, 42);
+        assert!(matches!(
+            m1.kind,
+            SessionKind::Message(Message::Event { ref event, .. }) if event == "initialized"
+        ));
+        let m2 = rx.recv().unwrap();
+        assert!(matches!(
+            m2.kind,
+            SessionKind::Message(Message::Event { ref event, .. }) if event == "stopped"
+        ));
+        let m3 = rx.recv().unwrap();
+        assert!(matches!(m3.kind, SessionKind::Closed));
+    }
+
+    #[test]
+    fn run_reader_reports_error_on_garbage() {
+        use std::sync::mpsc::channel;
+        let buf = b"Content-Length: 5\r\n\r\n{bad}".to_vec();
+        let (tx, rx) = channel();
+        run_reader(1, BufReader::new(&buf[..]), tx);
+        let m = rx.recv().unwrap();
+        assert!(matches!(m.kind, SessionKind::Error(_)));
+    }
+
+    // Integration: spawn a real process (`cat`) as a stand-in adapter. It echoes
+    // framed stdin to stdout, so a request we send comes back through the reader.
+    #[cfg(unix)]
+    #[test]
+    fn dap_client_spawn_writes_and_reads_back() {
+        use std::sync::mpsc::channel;
+        let (tx, rx) = channel();
+        let mut client = DapClient::spawn(7, "cat", &[], tx).unwrap();
+        let seq = client.send_request("initialize", serde_json::json!({"adapterID":"x"})).unwrap();
+        assert_eq!(seq, 1);
+        // `cat` echoes our framed request straight back; the reader decodes it.
+        let msg = rx.recv().unwrap();
+        match msg.kind {
+            SessionKind::Message(Message::Request { command, seq: s, .. }) => {
+                assert_eq!(command, "initialize");
+                assert_eq!(s, 1);
+            }
+            other => panic!("expected echoed request, got {other:?}"),
+        }
+        client.shutdown();
     }
 }
