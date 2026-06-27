@@ -758,6 +758,16 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
     let text_w = cell_w.saturating_sub(gutter_w).max(1);
     let wrap_w = inner_w.saturating_sub(BODY_PREFIX_W + RIGHT_PAD).max(1); // indent "    │ " + right pad
 
+    // Breakpoint / stopped-line markers for the file shown in the diff.
+    let bp_file = app.selected_path().map(|p| app.repo_root.join(p));
+    let stopped_line = app
+        .debug
+        .as_ref()
+        .and_then(|d| d.active_session())
+        .and_then(|s| s.stopped_at.as_ref())
+        .filter(|(f, _)| bp_file.as_deref() == Some(f.as_path()))
+        .map(|(_, l)| *l);
+
     let pairs = pair_diff_rows(&app.diff);
     // Which paired row holds the cursor — its header (hunk), left, or right cell.
     let cur = Some(app.diff_cursor);
@@ -856,7 +866,29 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
             }
             s
         };
-        let mut spans = vec![Span::styled(gutter(dl), gutter_style)];
+        // Breakpoint (●) / current-stop (▶) marker in the leading gutter column,
+        // keeping the 5-col gutter width (marker + 4-digit line number).
+        let line_no = dl.new_lineno.or(dl.old_lineno);
+        let is_bp = matches!((&bp_file, line_no), (Some(f), Some(n)) if app.has_breakpoint(f, n));
+        let is_stopped = stopped_line.is_some() && stopped_line == line_no;
+        let mut spans: Vec<Span<'static>> = if is_stopped || is_bp {
+            let (marker, fg) = if is_stopped {
+                ("▶", pal.tick)
+            } else {
+                ("●", pal.red)
+            };
+            let num = line_no.map(|n| format!("{:>4}", n)).unwrap_or_else(|| "    ".into());
+            let mut mstyle = Style::default().fg(fg);
+            if let Some(b) = cell_bg {
+                mstyle = mstyle.bg(b);
+            }
+            vec![
+                Span::styled(marker.to_string(), mstyle),
+                Span::styled(num, gutter_style),
+            ]
+        } else {
+            vec![Span::styled(gutter(dl), gutter_style)]
+        };
         spans.extend(text_spans);
         spans.push(Span::styled(" ".repeat(pad), pad_style));
         spans

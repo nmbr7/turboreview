@@ -110,8 +110,10 @@ impl DebugManager {
         self.next_id += 1;
         let mut client =
             DapClient::spawn(id, &cfg.adapter.command, &cfg.adapter.args, self.tx.clone())?;
-        // DAP handshake: initialize first; on the `initialized` event we send
-        // breakpoints + launch + configurationDone.
+        // DAP handshake: initialize first. On its response we send `launch`;
+        // the adapter then emits `initialized`, on which we send breakpoints +
+        // configurationDone. (Order matters: lldb-dap emits `initialized` only
+        // after it accepts `launch`.)
         let seq = client.send_request(
             "initialize",
             json!({
@@ -188,27 +190,11 @@ impl DebugManager {
     fn handle_event(&mut self, app: &mut App, id: SessionId, event: &str, body: &Value) {
         match event {
             "initialized" => {
-                // Adapter ready for config: send breakpoints + launch + done.
+                // The adapter emits `initialized` AFTER it accepts `launch`. Now
+                // is the time to register breakpoints and finish configuration.
                 self.send_breakpoints(app, id);
-                if let Some((cfg, root)) = self.launch_cfg.get(&id).cloned() {
-                    let program = root.join(&cfg.program);
-                    let cwd = if cfg.cwd.is_empty() {
-                        root.clone()
-                    } else {
-                        root.join(&cfg.cwd)
-                    };
-                    if let Some(l) = self.live.get_mut(&id) {
-                        let _ = l.client.send_request(
-                            "launch",
-                            json!({
-                                "program": program,
-                                "args": cfg.args,
-                                "cwd": cwd,
-                                "stopOnEntry": false,
-                            }),
-                        );
-                        let _ = l.client.send_request("configurationDone", json!({}));
-                    }
+                if let Some(l) = self.live.get_mut(&id) {
+                    let _ = l.client.send_request("configurationDone", json!({}));
                 }
                 set_state(app, id, SessionState::Running);
             }
@@ -235,7 +221,29 @@ impl DebugManager {
 
     fn handle_response(&mut self, app: &mut App, id: SessionId, kind: Pending, body: &Value) {
         match kind {
-            Pending::Initialize => { /* capabilities ignored in P1 */ }
+            Pending::Initialize => {
+                // initialize succeeded → send `launch`. The adapter replies with
+                // an `initialized` event once it's ready for breakpoints.
+                if let Some((cfg, root)) = self.launch_cfg.get(&id).cloned() {
+                    let program = root.join(&cfg.program);
+                    let cwd = if cfg.cwd.is_empty() {
+                        root.clone()
+                    } else {
+                        root.join(&cfg.cwd)
+                    };
+                    if let Some(l) = self.live.get_mut(&id) {
+                        let _ = l.client.send_request(
+                            "launch",
+                            json!({
+                                "program": program,
+                                "args": cfg.args,
+                                "cwd": cwd,
+                                "stopOnEntry": false,
+                            }),
+                        );
+                    }
+                }
+            }
             Pending::StackTrace => {
                 let frames = parse_stack(body);
                 let top_id = body
