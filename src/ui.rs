@@ -477,17 +477,18 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
                                 .file_name()
                                 .and_then(|s| s.to_str())
                                 .unwrap_or(p);
-                            format!("{base}:{}", f.line)
+                            format!("  {base}:{}", f.line)
                         })
                         .unwrap_or_default();
-                    let mut st = Style::default()
-                        .fg(pal.accent)
-                        .add_modifier(Modifier::BOLD);
-                    st = sel_bg(st);
-                    lines.push(Line::from(Span::styled(
-                        format!("  {}  {loc}", f.name),
-                        st,
-                    )));
+                    // Frame name (accent, bold) vs location (cyan/hunk) in
+                    // distinct colors.
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  {}", f.name),
+                            sel_bg(Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)),
+                        ),
+                        Span::styled(loc, sel_bg(Style::default().fg(pal.hunk))),
+                    ]));
                 }
                 crate::app::DebugRow::Var(fi, path) => {
                     let v = crate::app::var_at_path(&sess.stack[*fi].locals, path);
@@ -499,21 +500,29 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
                         } else {
                             "  "
                         };
-                        let mut meta = String::new();
-                        if let Some(t) = v.ty.as_deref() {
-                            meta.push_str(&format!("  : {t}"));
-                        }
-                        if let Some(addr) = v.memory_ref.as_deref() {
-                            meta.push_str(&format!("  @{addr}"));
-                        }
-                        lines.push(Line::from(vec![
+                        // Distinct colors: name (accent), value (green/tick),
+                        // type (blue), address (dim).
+                        let mut spans = vec![
                             Span::styled(
-                                format!("{indent}{marker}{} = ", v.name),
+                                format!("{indent}{marker}{}", v.name),
                                 sel_bg(Style::default().fg(pal.accent)),
                             ),
-                            Span::styled(v.value.clone(), sel_bg(Style::default().fg(pal.accent_dim))),
-                            Span::styled(meta, sel_bg(Style::default().fg(pal.blue))),
-                        ]));
+                            Span::styled(" = ", sel_bg(Style::default().fg(pal.accent_dim))),
+                            Span::styled(v.value.clone(), sel_bg(Style::default().fg(pal.tick))),
+                        ];
+                        if let Some(t) = v.ty.as_deref() {
+                            spans.push(Span::styled(
+                                format!("  : {t}"),
+                                sel_bg(Style::default().fg(pal.blue)),
+                            ));
+                        }
+                        if let Some(addr) = v.memory_ref.as_deref() {
+                            spans.push(Span::styled(
+                                format!("  @{addr}"),
+                                sel_bg(Style::default().fg(pal.accent_dim)),
+                            ));
+                        }
+                        lines.push(Line::from(spans));
                     }
                 }
             }
@@ -733,22 +742,66 @@ fn diff_scroll_start_center(cursor: usize, page: usize, rh: &impl Fn(usize) -> u
 
 /// Number of rendered lines an inline comment box occupies for `wrap_w` columns:
 /// 1 (top) + wrapped text + (response ? 1 blank + wrapped response : 0) + 1 (bottom).
+/// Recursively render captured snapshot variables into the comment box, one
+/// line per var (name = value : type), descending into children. `indent` is
+/// the nesting depth in spaces (added after the box prefix).
+#[allow(clippy::too_many_arguments)]
+fn push_snapshot_vars(
+    result: &mut Vec<Line<'static>>,
+    rendered_rows: &mut usize,
+    page: usize,
+    vars: &[crate::dap::VarRow],
+    indent: usize,
+    border_style: Style,
+    body_style: Style,
+    pal: &Palette,
+) {
+    for v in vars {
+        if *rendered_rows >= page {
+            return;
+        }
+        let pad = " ".repeat(indent);
+        let ty = v
+            .ty
+            .as_deref()
+            .map(|t| format!("  : {t}"))
+            .unwrap_or_default();
+        result.push(Line::from(vec![
+            Span::styled("    │ ", border_style),
+            Span::styled(format!("{pad}{} = ", v.name), body_style),
+            Span::styled(v.value.clone(), Style::default().fg(pal.tick).add_modifier(Modifier::ITALIC)),
+            Span::styled(ty, Style::default().fg(pal.blue).add_modifier(Modifier::ITALIC)),
+        ]));
+        *rendered_rows += 1;
+        if !v.children.is_empty() {
+            push_snapshot_vars(result, rendered_rows, page, &v.children, indent + 2, border_style, body_style, pal);
+        }
+    }
+}
+
+/// Count the lines `push_snapshot_vars` would emit for `vars` (recursive).
+fn count_snapshot_vars(vars: &[crate::dap::VarRow]) -> usize {
+    vars.iter()
+        .map(|v| 1 + count_snapshot_vars(&v.children))
+        .sum()
+}
+
 fn comment_box_height(c: &crate::comments::Comment, wrap_w: usize) -> usize {
     let text_lines = wrap_text(&c.text, wrap_w).len().max(1);
     let response_lines = match c.response.as_deref() {
         Some(r) if !r.trim().is_empty() => 1 + wrap_text(r, response_wrap_w(wrap_w)).len(),
         _ => 0,
     };
-    // Debug snapshot: 1 stack header + frames, then (if any locals) 1 header +
-    // one line per local.
+    // Debug snapshot: 1 header line, then for each frame: 1 frame line + its
+    // (recursive) variable lines.
     let snapshot_lines = match &c.debug_snapshot {
         Some(s) => {
-            let locals = if s.locals.is_empty() {
-                0
-            } else {
-                1 + s.locals.len()
-            };
-            1 + s.stack.len() + locals
+            let frame_lines: usize = s
+                .stack
+                .iter()
+                .map(|f| 1 + count_snapshot_vars(&f.locals))
+                .sum();
+            1 + frame_lines
         }
         None => 0,
     };
@@ -894,32 +947,18 @@ fn push_comment_box(
                         .file_name()
                         .and_then(|s| s.to_str())
                         .unwrap_or(p);
-                    format!("{base}:{}", f.line)
+                    format!("  {base}:{}", f.line)
                 })
                 .unwrap_or_default();
+            // Frame line: name (italic body) + location (cyan).
             result.push(Line::from(vec![
                 Span::styled("    │ ", border_style),
-                Span::styled(format!("    {}  {loc}", f.name), body_style),
+                Span::styled(format!("  {}", f.name), label_style),
+                Span::styled(loc, Style::default().fg(pal.hunk).add_modifier(Modifier::ITALIC)),
             ]));
             *rendered_rows += 1;
-        }
-        // Captured locals of the stopped frame.
-        if !snap.locals.is_empty() && *rendered_rows < page {
-            result.push(Line::from(vec![
-                Span::styled("    │ ", border_style),
-                Span::styled("  locals:", label_style),
-            ]));
-            *rendered_rows += 1;
-            for v in &snap.locals {
-                if *rendered_rows >= page {
-                    break;
-                }
-                result.push(Line::from(vec![
-                    Span::styled("    │ ", border_style),
-                    Span::styled(format!("    {} = {}", v.name, v.value), body_style),
-                ]));
-                *rendered_rows += 1;
-            }
+            // This frame's locals, recursing into captured children.
+            push_snapshot_vars(result, rendered_rows, page, &f.locals, 2, border_style, body_style, pal);
         }
     }
     // Bottom border line
