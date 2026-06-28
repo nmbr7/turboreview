@@ -68,6 +68,39 @@ impl Coverage {
         self.files.len()
     }
 
+    /// Overall (covered, total) instrumented line counts across all files.
+    pub fn totals(&self) -> (usize, usize) {
+        let mut covered = 0;
+        let mut total = 0;
+        for lines in self.files.values() {
+            for hits in lines.values() {
+                total += 1;
+                if *hits > 0 {
+                    covered += 1;
+                }
+            }
+        }
+        (covered, total)
+    }
+
+    /// (covered, total) line counts for a single file (suffix-matched).
+    pub fn file_totals(&self, file: &Path) -> Option<(usize, usize)> {
+        let lines = self.lookup(file)?;
+        let total = lines.len();
+        let covered = lines.values().filter(|h| **h > 0).count();
+        Some((covered, total))
+    }
+
+    /// Overall coverage percentage (0.0 when there are no instrumented lines).
+    pub fn percent(&self) -> f64 {
+        let (c, t) = self.totals();
+        if t == 0 {
+            0.0
+        } else {
+            100.0 * c as f64 / t as f64
+        }
+    }
+
     /// Coverage of `(file, line)`. `file` is matched by suffix so a repo-relative
     /// path (e.g. `src/main.rs`) matches an absolute LCOV `SF:` path
     /// (`/abs/repo/src/main.rs`) and vice versa.
@@ -141,6 +174,18 @@ end_of_record
         assert_eq!(c.line_cov(Path::new("src/main.rs"), 4), LineCov::Covered);
         // Line with no DA record → None.
         assert_eq!(c.line_cov(Path::new("src/main.rs"), 3), LineCov::None);
+    }
+
+    #[test]
+    fn totals_and_percent() {
+        let c = Coverage::parse_lcov(SAMPLE);
+        // main.rs: 3 lines, 2 covered (lines 1,4) + 1 uncovered (2). lib.rs: 1/1.
+        assert_eq!(c.totals(), (3, 4));
+        assert!((c.percent() - 75.0).abs() < 0.01);
+        assert_eq!(
+            c.file_totals(Path::new("src/main.rs")),
+            Some((2, 3))
+        );
     }
 
     #[test]

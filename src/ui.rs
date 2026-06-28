@@ -154,7 +154,8 @@ pub fn render(frame: &mut Frame, app: &App) {
     // The bottom status row only exists when it has something to show — a search
     // input line or a transient message. Otherwise the panes use the full height
     // (no empty padding line), since the "? help" hint lives in the diff border.
-    let want_status = app.search_input.is_some() || app.status_msg.is_some();
+    let want_status =
+        app.search_input.is_some() || app.status_msg.is_some() || app.show_coverage;
     let status_h = if want_status { 1 } else { 0 };
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -1438,10 +1439,39 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(para, area);
         return;
     }
+    // Coverage metrics on the right when the highlight is on; status message on
+    // the left.
+    let msg = app.status_msg.clone().unwrap_or_default();
+    if app.show_coverage {
+        if let Some(cov) = app.coverage.as_ref() {
+            let (c, t) = cov.totals();
+            let mut metrics = format!("cov {:.0}% ({c}/{t})", cov.percent());
+            if let Some((fc, ft)) = app.selected_path().and_then(|p| cov.file_totals(p)) {
+                let fpct = if ft == 0 { 0.0 } else { 100.0 * fc as f64 / ft as f64 };
+                metrics.push_str(&format!("  ·  file {fpct:.0}% ({fc}/{ft})"));
+            }
+            // Lay out: status msg (left) | metrics (right).
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Min(1),
+                    Constraint::Length(metrics.chars().count() as u16 + 1),
+                ])
+                .split(area);
+            frame.render_widget(
+                Paragraph::new(msg).style(Style::default().fg(pal.accent_dim)),
+                cols[0],
+            );
+            frame.render_widget(
+                Paragraph::new(metrics).style(Style::default().fg(pal.tick)),
+                cols[1],
+            );
+            return;
+        }
+    }
     // Transient status message only; the "? for help" hint lives in the diff pane's
     // bottom-right border (see render_diff).
-    let text = app.status_msg.clone().unwrap_or_default();
-    let para = Paragraph::new(text).style(Style::default().fg(pal.accent_dim));
+    let para = Paragraph::new(msg).style(Style::default().fg(pal.accent_dim));
     frame.render_widget(para, area);
 }
 
