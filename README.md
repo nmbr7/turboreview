@@ -125,6 +125,7 @@ Press `?` at any time for an in-app keybinding overlay.
 | `n` / `N`        | jump to next / previous search match                            |
 | `a`              | fold / unfold all directories in the file tree                 |
 | `O`              | view all tracked files / changed files only                     |
+| `e`              | toggle macro-expanded view of the selected file                 |
 | `z`              | hide / show the file pane (diff goes full-width)               |
 | `<` / `>`        | narrow / widen the focused pane (files or the right pane)        |
 | `c`              | comment on the cursor line (opens a modal input box)            |

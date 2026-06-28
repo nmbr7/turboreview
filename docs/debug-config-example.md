@@ -38,7 +38,8 @@ Add a `debug` block. Example for this repo + the demo program:
     "program": "target/debug/examples/debug_demo",
     "args": [],
     "cwd": ".",
-    "source_map": []
+    "source_map": [],
+    "remote": { "host": "", "port": 0, "attach_commands": [] }
   }
 }
 ```
@@ -50,16 +51,42 @@ Fields:
 - `program` — built binary, relative to the source root.
 - `args` / `cwd` — debuggee arguments and working directory.
 - `source_map` — `[[from, to]]` path remaps (for old-commit / remote debugging).
+- `remote` — remote-attach target: `host`/`port` build an lldb-dap
+  `gdb-remote host:port`, or set `attach_commands` to raw adapter commands.
 
 ## 4. Debug it
 
 Run turboreview in this repo, open `examples/debug_demo.rs` in the diff, then:
 
 1. `b` on a marked `// BREAKPOINT` line — a `●` appears in the gutter.
-2. `D` — builds the example and launches the adapter.
-3. The right **Debug** panel shows `⏸ stopped`, the call stack, and locals;
-   `▶` marks the stopped line in the diff.
-4. `Tab` to focus the Debug panel, then step: `c` continue, `n` next,
-   `i` step-in, `o` step-out.
-5. `S` attaches the current stack as a snapshot on a comment at the stopped line.
+2. `D` opens the **launch picker** — choose *worktree* (or *commit* in the
+   Commits view, *process*, *remote*); it builds (if configured) and starts.
+3. The right pane's **Debug** tab shows `⏸ stopped`, the call stack, and the top
+   frame's locals; `▶` marks the stopped line. `[`/`]` switch the right tab,
+   `t` switches Vars / Breakpoints.
+4. `Tab` to focus the Debug pane, then step: `c` continue, `n` next, `i` step-in,
+   `o` step-out. `Enter` expands a frame or a structured variable.
+5. Attach a snapshot: while stopped, press `c` to comment, then `Ctrl-D` to
+   attach the current call stack + locals to the comment.
 6. `X` ends the session.
+
+## Full config reference
+
+Beyond `debug`, `.turboreview/config.json` also holds:
+
+```jsonc
+{
+  // test coverage (% to toggle, M to run)
+  "coverage_file": "coverage/lcov.info",
+  "coverage_command": "cargo llvm-cov --lcov --output-path coverage/lcov.info",
+
+  // macro-expanded view (e). Several entries -> a selection popup; {file} and
+  // {module} are substituted (module derived from the src-relative path).
+  "expand_commands": [
+    { "name": "lib",     "command": "cargo expand --lib {module}" },
+    { "name": "example", "command": "cargo expand --example $(basename {file} .rs)" }
+  ]
+}
+```
+
+See the README's *Test coverage* and *Macro-expanded view* sections for details.
