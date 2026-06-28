@@ -404,6 +404,8 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
     let hscroll = d.hscroll as u16;
 
     let mut lines: Vec<Line<'static>> = Vec::new();
+    // Line index of the selected row (for vertical auto-scroll).
+    let mut sel_line = 0usize;
 
     // Tab header: [ Vars | Breakpoints ], active tab highlighted.
     let tab_span = |label: &str, active: bool| {
@@ -423,9 +425,13 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
 
     if d.tab == DebugTab::Breakpoints {
+        // Selected bp row sits after the 2 header lines + 1 hint line.
+        let bp_sel_line = lines.len() + 1 + d.bp_sel;
         render_breakpoint_lines(&mut lines, app, d, &pal);
+        let inner_h = area.height.saturating_sub(2) as usize;
+        let vscroll = scroll_to_show(bp_sel_line, lines.len(), inner_h) as u16;
         let para = Paragraph::new(lines)
-            .scroll((0, hscroll))
+            .scroll((vscroll, hscroll))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -472,6 +478,9 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
         }
         for (ri, row) in d.debug_rows().iter().enumerate() {
             let selected = ri == d.panel_sel;
+            if selected {
+                sel_line = lines.len();
+            }
             let sel_bg = |st: Style| if selected { st.bg(pal.selected_bg) } else { st };
             match row {
                 crate::app::DebugRow::Frame(fi) => {
@@ -536,8 +545,11 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    // Vertical auto-scroll so the selected row stays visible.
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let vscroll = scroll_to_show(sel_line, lines.len(), inner_h) as u16;
     let para = Paragraph::new(lines)
-        .scroll((0, hscroll))
+        .scroll((vscroll, hscroll))
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -545,6 +557,18 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
                 .title(" Debug "),
         );
     frame.render_widget(para, area);
+}
+
+/// Vertical scroll offset that keeps line `sel` visible within `height` rows of
+/// a `total`-line paragraph (keeps a small margin; clamps to valid range).
+fn scroll_to_show(sel: usize, total: usize, height: usize) -> usize {
+    if height == 0 || total <= height {
+        return 0;
+    }
+    let max = total - height;
+    // Keep the selection a couple rows from the bottom edge when possible.
+    let target = sel.saturating_sub(height.saturating_sub(2));
+    target.min(max)
 }
 
 fn render_files(frame: &mut Frame, app: &App, area: Rect) {
@@ -2002,6 +2026,20 @@ mod tests {
     fn wrap_text_clamps_zero_width_to_one() {
         let lines = wrap_text("ab", 0);
         assert_eq!(lines, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn scroll_to_show_keeps_selection_visible() {
+        // Fits entirely → no scroll.
+        assert_eq!(scroll_to_show(5, 8, 10), 0);
+        // Selection near the top stays at 0.
+        assert_eq!(scroll_to_show(2, 100, 10), 0);
+        // Selection deep → scrolls so it's near the bottom (height-2 margin).
+        assert_eq!(scroll_to_show(50, 100, 10), 50 - 8);
+        // Clamped to max offset (total - height).
+        assert_eq!(scroll_to_show(99, 100, 10), 90);
+        // Zero height → 0.
+        assert_eq!(scroll_to_show(5, 100, 0), 0);
     }
 
     fn comment_with_response(text: &str, response: &str) -> crate::comments::Comment {
