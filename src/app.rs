@@ -534,16 +534,19 @@ impl App {
         self.right_pane_pct = self.right_pane_pct.saturating_sub(5).max(15);
     }
 
-    /// Resize the pane relevant to the current focus: the right pane when it's
-    /// focused, otherwise the file pane. `widen` true = wider, false = narrower.
-    pub fn resize_focused_pane(&mut self, widen: bool) {
+    /// Resize the pane relevant to the current focus. `bigger` follows the key
+    /// direction toward the pane's content: for the left file pane `>` grows it
+    /// (rightward); for the right pane the directions are mirrored, so `<` (which
+    /// points toward the right pane's inner edge) grows it and `>` shrinks it.
+    pub fn resize_focused_pane(&mut self, bigger: bool) {
         if self.focus == Pane::Comments {
-            if widen {
-                self.widen_right();
-            } else {
+            // Right pane: mirror — `<` widens, `>` narrows.
+            if bigger {
                 self.narrow_right();
+            } else {
+                self.widen_right();
             }
-        } else if widen {
+        } else if bigger {
             self.widen_files();
         } else {
             self.narrow_files();
@@ -2605,12 +2608,13 @@ mod tests {
         let mut app = sample();
         let f0 = app.file_pane_pct;
         let r0 = app.right_pane_pct;
-        // Focus the right pane → resize affects it, not files.
+        // Focus the right pane → resize affects it, not files. Directions are
+        // mirrored: `>` (bigger=true) narrows it, `<` (bigger=false) widens it.
         app.focus = Pane::Comments;
-        app.resize_focused_pane(true);
+        app.resize_focused_pane(false); // `<` widens
         assert_eq!(app.right_pane_pct, r0 + 5);
         assert_eq!(app.file_pane_pct, f0);
-        app.resize_focused_pane(false);
+        app.resize_focused_pane(true); // `>` narrows
         assert_eq!(app.right_pane_pct, r0);
         // Focus files → resize affects files.
         app.focus = Pane::Files;
