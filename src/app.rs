@@ -384,6 +384,19 @@ pub struct App {
     pub coverage: Option<crate::coverage::Coverage>,
     /// Whether coverage highlighting is shown in the diff gutter.
     pub show_coverage: bool,
+    /// When `Some`, the debug launch-type picker is open with this selection.
+    pub debug_launch_pick: Option<usize>,
+}
+
+/// The launch modes offered by the debug picker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaunchMode {
+    /// Build + debug the current working tree.
+    Worktree,
+    /// Build + debug the selected commit (Commits view) via a temp worktree.
+    Commit,
+    /// Attach to the configured remote target (gdbserver / Docker).
+    Remote,
 }
 
 enum RowId {
@@ -437,6 +450,7 @@ impl App {
             right_tab: RightTab::Comments,
             coverage: None,
             show_coverage: false,
+            debug_launch_pick: None,
         };
         app.rebuild_rows();
         app
@@ -820,6 +834,44 @@ impl App {
     }
 
     // ─── Debugger ────────────────────────────────────────────────────────────
+
+    /// Launch modes available in the current context: Commit only in the
+    /// Commits list; Worktree always; Remote always (validated on select).
+    pub fn launch_modes(&self) -> Vec<LaunchMode> {
+        let mut modes = Vec::new();
+        if self.view == ViewMode::Commits && self.open_commit.is_none() {
+            modes.push(LaunchMode::Commit);
+        }
+        modes.push(LaunchMode::Worktree);
+        modes.push(LaunchMode::Remote);
+        modes
+    }
+
+    pub fn open_launch_picker(&mut self) {
+        self.debug_launch_pick = Some(0);
+    }
+
+    pub fn close_launch_picker(&mut self) {
+        self.debug_launch_pick = None;
+    }
+
+    pub fn launch_picker_active(&self) -> bool {
+        self.debug_launch_pick.is_some()
+    }
+
+    pub fn move_launch_pick(&mut self, delta: isize) {
+        let len = self.launch_modes().len();
+        if let Some(sel) = self.debug_launch_pick.as_mut() {
+            let max = len as isize - 1;
+            *sel = ((*sel as isize + delta).clamp(0, max)) as usize;
+        }
+    }
+
+    /// The currently highlighted launch mode in the picker, if open.
+    pub fn selected_launch_mode(&self) -> Option<LaunchMode> {
+        let sel = self.debug_launch_pick?;
+        self.launch_modes().get(sel).copied()
+    }
 
     /// Whether a debug session/overlay is active.
     pub fn debug_active(&self) -> bool {
@@ -3896,6 +3948,32 @@ mod tests {
         assert!(app.delete_selected_breakpoint());
         assert_eq!(app.breakpoint_count(), 0);
         assert!(!app.has_breakpoint(&abs, 2));
+    }
+
+    #[test]
+    fn launch_picker_modes_depend_on_view() {
+        let mut app = sample();
+        // Changes view: Worktree + Remote (no Commit).
+        app.open_launch_picker();
+        assert!(app.launch_picker_active());
+        assert_eq!(
+            app.launch_modes(),
+            vec![LaunchMode::Worktree, LaunchMode::Remote]
+        );
+        assert_eq!(app.selected_launch_mode(), Some(LaunchMode::Worktree));
+        app.move_launch_pick(1);
+        assert_eq!(app.selected_launch_mode(), Some(LaunchMode::Remote));
+        app.move_launch_pick(5); // clamp
+        assert_eq!(app.selected_launch_mode(), Some(LaunchMode::Remote));
+        app.close_launch_picker();
+        assert!(!app.launch_picker_active());
+
+        // Commits view: Commit option appears first.
+        app.view = ViewMode::Commits;
+        assert_eq!(
+            app.launch_modes(),
+            vec![LaunchMode::Commit, LaunchMode::Worktree, LaunchMode::Remote]
+        );
     }
 
     #[test]

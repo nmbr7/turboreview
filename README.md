@@ -221,9 +221,24 @@ Protocol](https://microsoft.github.io/debug-adapter-protocol/) (any DAP adapter:
   variable shows its type and memory address.
 - `t` switches the Debug pane between **Vars** and **Breakpoints** (the
   breakpoint list: `Enter` jumps, `Space` enables/disables, `d` deletes).
-- **Debug a past commit:** in the Commits view, select a commit and press `D` —
-  turboreview checks it out in a throwaway `git worktree`, builds it there, and
-  debugs that historical binary (cleaned up when the session ends).
+- Press `D` to open the **launch picker**: debug the working tree, a selected
+  commit, or attach to a remote target.
+- **Debug a past commit:** pick *commit* in the Commits view — turboreview checks
+  it out in a throwaway `git worktree`, builds it there, and debugs that
+  historical binary (cleaned up when the session ends).
+- **Remote attach (gdbserver / Docker):** pick *remote* to attach to a running
+  target. Configure it under `debug.remote` (and use `source_map` to map the
+  remote source paths to your local checkout):
+
+  ```jsonc
+  "debug": {
+    "remote": { "host": "localhost", "port": 1234 },
+    "source_map": [["/build/src", "/local/repo/src"]]
+  }
+  ```
+
+  `host`/`port` run `gdb-remote host:port`; for other setups set
+  `remote.attach_commands` to raw adapter commands instead.
 - **Attach a snapshot to a comment:** while stopped, press `c` to comment, then
   `Ctrl-D` to attach the current call stack + locals. It's saved with the comment
   and shown inline, so a reviewer keeps the exact runtime state.

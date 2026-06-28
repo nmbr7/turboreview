@@ -41,6 +41,37 @@ pub struct AdapterConfig {
     pub args: Vec<String>,
 }
 
+/// Remote-attach configuration. `host`/`port` build an lldb-dap
+/// `attachCommands` of `gdb-remote <host>:<port>`; `attach_commands` overrides
+/// that with raw adapter commands (e.g. for codelldb / custom setups).
+#[derive(Clone, Serialize, Deserialize, Default, Debug, PartialEq)]
+pub struct RemoteConfig {
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub port: u16,
+    /// Raw adapter attach commands; when non-empty, used instead of host/port.
+    #[serde(default)]
+    pub attach_commands: Vec<String>,
+}
+
+impl RemoteConfig {
+    /// Whether a remote target is configured (commands or host:port present).
+    pub fn is_set(&self) -> bool {
+        !self.attach_commands.is_empty() || (!self.host.is_empty() && self.port != 0)
+    }
+
+    /// The lldb commands to run on attach: explicit `attach_commands`, else a
+    /// `gdb-remote host:port`.
+    pub fn commands(&self) -> Vec<String> {
+        if !self.attach_commands.is_empty() {
+            self.attach_commands.clone()
+        } else {
+            vec![format!("gdb-remote {}:{}", self.host, self.port)]
+        }
+    }
+}
+
 /// Per-repo debug configuration: how to build the debuggee, which binary to run,
 /// and which adapter to drive. Source map handles old-commit / remote paths.
 #[derive(Clone, Serialize, Deserialize, Default, Debug, PartialEq)]
@@ -61,6 +92,9 @@ pub struct DebugConfig {
     /// `[[from, to]]` source path remaps for remote / old-commit debugging.
     #[serde(default)]
     pub source_map: Vec<(String, String)>,
+    /// Remote-attach target (gdbserver / Docker). Empty = no remote configured.
+    #[serde(default)]
+    pub remote: RemoteConfig,
 }
 
 /// Persisted configuration. New fields use `#[serde(default)]` so older
@@ -248,6 +282,20 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn remote_config_commands_and_is_set() {
+        let mut r = RemoteConfig::default();
+        assert!(!r.is_set());
+        r.host = "localhost".into();
+        r.port = 1234;
+        assert!(r.is_set());
+        assert_eq!(r.commands(), vec!["gdb-remote localhost:1234".to_string()]);
+        // Explicit commands override host/port.
+        r.attach_commands = vec!["process connect connect://x:9".into()];
+        assert_eq!(r.commands(), vec!["process connect connect://x:9".to_string()]);
+        assert!(r.is_set());
+    }
+
+    #[test]
     fn load_coverage_reads_configured_lcov() {
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -302,6 +350,7 @@ mod tests {
             args: vec!["--flag".into()],
             cwd: ".".into(),
             source_map: vec![("/old".into(), "/new".into())],
+            remote: RemoteConfig::default(),
         };
         save_config(root, &cfg).unwrap();
 

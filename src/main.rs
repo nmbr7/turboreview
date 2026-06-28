@@ -415,6 +415,23 @@ fn run(
                     continue;
                 }
 
+                // Debug launch-type picker owns all keys while open.
+                if app.launch_picker_active() {
+                    match key.code {
+                        KeyCode::Esc => app.close_launch_picker(),
+                        KeyCode::Up | KeyCode::Char('k') => app.move_launch_pick(-1),
+                        KeyCode::Down | KeyCode::Char('j') => app.move_launch_pick(1),
+                        KeyCode::Enter => {
+                            if let Some(mode) = app.selected_launch_mode() {
+                                app.close_launch_picker();
+                                start_debug(repo, app, &mut dbg, mode);
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 // `qq` chord quits; a single `q` only arms the chord, so an
                 // accidental stray `q` does nothing.
                 if matches!(key.code, KeyCode::Char('q')) && key.modifiers.is_empty() {
@@ -469,32 +486,9 @@ fn run(
                             if now { "breakpoint set" } else { "breakpoint cleared" }.into(),
                         );
                     }
-                    // `D`: launch a debug session. In the Commits view (on a
-                    // selected commit), debug that commit via a temp worktree;
-                    // otherwise debug the current working tree.
-                    (KeyCode::Char('D'), _) => {
-                        let cfg = storage::load_debug_config(&app.repo_root);
-                        let commit = if app.view == ViewMode::Commits && app.open_commit.is_none() {
-                            app.selected_commit_info().map(|c| (c.id.clone(), c.short.clone()))
-                        } else {
-                            None
-                        };
-                        let result = match commit {
-                            Some((id, short)) => dbg.launch_commit(app, &cfg, repo, &id, &short),
-                            None => {
-                                let root = app.repo_root.clone();
-                                dbg.launch(app, &cfg, &root, "worktree".into())
-                            }
-                        };
-                        match result {
-                            Ok(()) => {
-                                app.right_tab = turboreview::app::RightTab::Debug;
-                                app.focus = Pane::Comments;
-                                app.status_msg = Some("debug session launching…".into());
-                            }
-                            Err(e) => app.status_msg = Some(format!("debug: {e}")),
-                        }
-                    }
+                    // `D`: open the launch-type picker (worktree / commit /
+                    // remote attach).
+                    (KeyCode::Char('D'), _) => app.open_launch_picker(),
                     // Step / continue — only while the Debug panel is focused so
                     // they don't shadow diff-pane keys (e.g. `c` = comment).
                     (KeyCode::Char('c'), _) if app.is_debug_focused() => {
@@ -1028,6 +1022,34 @@ fn toggle_all_files(repo: &Repo, app: &mut App) {
     }
     app.selected = 0;
     app.rebuild_rows();
+}
+
+/// Start a debug session for the chosen launch mode, then focus the Debug tab.
+fn start_debug(repo: &Repo, app: &mut App, dbg: &mut DebugManager, mode: turboreview::app::LaunchMode) {
+    use turboreview::app::LaunchMode;
+    let cfg = storage::load_debug_config(&app.repo_root);
+    let result = match mode {
+        LaunchMode::Commit => match app.selected_commit_info().map(|c| (c.id.clone(), c.short.clone())) {
+            Some((id, short)) => dbg.launch_commit(app, &cfg, repo, &id, &short),
+            None => Err(anyhow::anyhow!("no commit selected")),
+        },
+        LaunchMode::Worktree => {
+            let root = app.repo_root.clone();
+            dbg.launch(app, &cfg, &root, "worktree".into())
+        }
+        LaunchMode::Remote => {
+            let root = app.repo_root.clone();
+            dbg.attach_remote(app, &cfg, &root)
+        }
+    };
+    match result {
+        Ok(()) => {
+            app.right_tab = turboreview::app::RightTab::Debug;
+            app.focus = Pane::Comments;
+            app.status_msg = Some("debug session starting…".into());
+        }
+        Err(e) => app.status_msg = Some(format!("debug: {e}")),
+    }
 }
 
 fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {

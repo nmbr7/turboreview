@@ -29,6 +29,15 @@ enum Pending {
     VarChildren(usize, u64),
 }
 
+/// Whether a session debuggee is launched locally or attached to a remote.
+#[derive(Clone, Debug)]
+enum LaunchKind {
+    /// `launch` a freshly-built program.
+    Launch,
+    /// `attach` to a remote target via these adapter commands.
+    Attach(Vec<String>),
+}
+
 /// One live adapter connection plus its in-flight request bookkeeping.
 struct Live {
     client: DapClient,
@@ -55,7 +64,7 @@ pub struct DebugManager {
     live: HashMap<SessionId, Live>,
     /// Per-session launch config (cfg + source root), used by the `initialized`
     /// handler to send `launch`.
-    launch_cfg: HashMap<SessionId, (DebugConfig, std::path::PathBuf)>,
+    launch_cfg: HashMap<SessionId, (DebugConfig, std::path::PathBuf, LaunchKind)>,
     /// Worktrees of ended sessions awaiting removal (cleaned by the event loop,
     /// which has the `Repo` handle). See `take_dead_worktrees`.
     dead_worktrees: Vec<std::path::PathBuf>,
@@ -117,7 +126,23 @@ impl DebugManager {
         source_root: &Path,
         label: String,
     ) -> Result<()> {
-        self.launch_inner(app, cfg, source_root, label, None)
+        self.launch_inner(app, cfg, source_root, label, None, LaunchKind::Launch)
+    }
+
+    /// Attach to a remote target (gdbserver / Docker) per `cfg.remote`. No build;
+    /// the adapter runs the remote attach commands. `source_map` should map the
+    /// remote source paths to the local repo so frames resolve to the diff.
+    pub fn attach_remote(&mut self, app: &mut App, cfg: &DebugConfig, repo_root: &Path) -> Result<()> {
+        if !cfg.remote.is_set() {
+            anyhow::bail!("no remote target configured (set debug.remote.host/port)");
+        }
+        let label = if !cfg.remote.host.is_empty() {
+            format!("remote {}:{}", cfg.remote.host, cfg.remote.port)
+        } else {
+            "remote".to_string()
+        };
+        let commands = cfg.remote.commands();
+        self.launch_inner(app, cfg, repo_root, label, None, LaunchKind::Attach(commands))
     }
 
     /// Debug a past commit: create a detached worktree at `sha`, build + launch
@@ -144,7 +169,7 @@ impl DebugManager {
             ));
         }
         let label = format!("commit {short}");
-        let res = self.launch_inner(app, &cfg, &wt, label, Some(wt.clone()));
+        let res = self.launch_inner(app, &cfg, &wt, label, Some(wt.clone()), LaunchKind::Launch);
         if res.is_err() {
             // Build/launch failed — don't leak the worktree.
             repo.remove_worktree(&wt);
@@ -159,8 +184,12 @@ impl DebugManager {
         source_root: &Path,
         label: String,
         worktree: Option<std::path::PathBuf>,
+        kind: LaunchKind,
     ) -> Result<()> {
-        Self::run_build(cfg, source_root)?;
+        // Build only when launching a local program (attach uses a live target).
+        if matches!(kind, LaunchKind::Launch) {
+            Self::run_build(cfg, source_root)?;
+        }
         if cfg.adapter.command.trim().is_empty() {
             anyhow::bail!("no debug adapter configured (set debug.adapter.command)");
         }
@@ -197,7 +226,8 @@ impl DebugManager {
             },
         );
         // Stash the launch config so the `initialized` handler can use it.
-        self.launch_cfg.insert(id, (cfg.clone(), source_root.to_path_buf()));
+        self.launch_cfg
+            .insert(id, (cfg.clone(), source_root.to_path_buf(), kind));
 
         let d = app.debug.get_or_insert_with(DebugState::default);
         d.sessions.push(DebugSession::new(id, label));
@@ -297,25 +327,40 @@ impl DebugManager {
     fn handle_response(&mut self, app: &mut App, id: SessionId, kind: Pending, body: &Value) {
         match kind {
             Pending::Initialize => {
-                // initialize succeeded → send `launch`. The adapter replies with
-                // an `initialized` event once it's ready for breakpoints.
-                if let Some((cfg, root)) = self.launch_cfg.get(&id).cloned() {
-                    let program = root.join(&cfg.program);
-                    let cwd = if cfg.cwd.is_empty() {
-                        root.clone()
-                    } else {
-                        root.join(&cfg.cwd)
+                // initialize succeeded → send `launch` or `attach` by kind. The
+                // adapter replies with an `initialized` event when ready for
+                // breakpoints.
+                if let Some((cfg, root, kind)) = self.launch_cfg.get(&id).cloned() {
+                    let Some(l) = self.live.get_mut(&id) else {
+                        return;
                     };
-                    if let Some(l) = self.live.get_mut(&id) {
-                        let _ = l.client.send_request(
-                            "launch",
-                            json!({
-                                "program": program,
-                                "args": cfg.args,
-                                "cwd": cwd,
-                                "stopOnEntry": false,
-                            }),
-                        );
+                    match kind {
+                        LaunchKind::Launch => {
+                            let program = root.join(&cfg.program);
+                            let cwd = if cfg.cwd.is_empty() {
+                                root.clone()
+                            } else {
+                                root.join(&cfg.cwd)
+                            };
+                            let _ = l.client.send_request(
+                                "launch",
+                                json!({
+                                    "program": program,
+                                    "args": cfg.args,
+                                    "cwd": cwd,
+                                    "stopOnEntry": false,
+                                }),
+                            );
+                        }
+                        LaunchKind::Attach(commands) => {
+                            // lldb-dap: run the remote-connect commands on attach.
+                            let _ = l.client.send_request(
+                                "attach",
+                                json!({
+                                    "attachCommands": commands,
+                                }),
+                            );
+                        }
                     }
                 }
             }

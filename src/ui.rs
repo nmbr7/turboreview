@@ -224,6 +224,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.show_help {
         render_help_modal(frame, app);
     }
+    if app.launch_picker_active() {
+        render_launch_picker(frame, app);
+    }
 }
 
 fn focused_border(app: &App, pane: Pane) -> Style {
@@ -1498,6 +1501,42 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     horizontal[1]
 }
 
+/// The debug launch-type picker overlay (worktree / commit / remote attach).
+fn render_launch_picker(frame: &mut Frame, app: &App) {
+    use crate::app::LaunchMode;
+    let pal = app.palette();
+    let Some(sel) = app.debug_launch_pick else { return };
+    let modes = app.launch_modes();
+    let area = centered_rect(48, 30, frame.area());
+    frame.render_widget(Clear, area);
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, m) in modes.iter().enumerate() {
+        let label = match m {
+            LaunchMode::Worktree => "Debug the working tree",
+            LaunchMode::Commit => "Debug the selected commit (worktree)",
+            LaunchMode::Remote => "Attach to the remote target",
+        };
+        let mut st = Style::default().fg(pal.accent);
+        if i == sel {
+            st = st.bg(pal.selected_bg).add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::from(Span::styled(format!("  {label}"), st)));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " ↑/↓ select · Enter start · Esc cancel",
+        Style::default().fg(pal.accent_dim),
+    )));
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(pal.accent))
+            .title(" Debug "),
+    );
+    frame.render_widget(para, area);
+}
+
 fn render_input_modal(frame: &mut Frame, app: &App, input: &InputState) {
     let pal = app.palette();
     let has_snap = input.debug_snapshot.is_some();
@@ -1652,7 +1691,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "Debug",
         &[
             ("b", "toggle breakpoint on cursor line"),
-            ("D", "debug: worktree, or selected commit (Commits)"),
+            ("D", "debug: pick worktree / commit / remote attach"),
             ("c / n / i / o", "continue / over / in / out"),
             ("[ / ]", "right pane: Comments / Debug tab"),
             ("t", "Debug: Vars / Breakpoints"),
