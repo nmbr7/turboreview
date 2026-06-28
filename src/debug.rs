@@ -36,6 +36,8 @@ enum LaunchKind {
     Launch,
     /// `attach` to a remote target via these adapter commands.
     Attach(Vec<String>),
+    /// `attach` to a running local process by pid.
+    AttachPid(i64),
 }
 
 /// One live adapter connection plus its in-flight request bookkeeping.
@@ -143,6 +145,19 @@ impl DebugManager {
         };
         let commands = cfg.remote.commands();
         self.launch_inner(app, cfg, repo_root, label, None, LaunchKind::Attach(commands))
+    }
+
+    /// Attach to a running local process by pid (no build).
+    pub fn attach_process(
+        &mut self,
+        app: &mut App,
+        cfg: &DebugConfig,
+        repo_root: &Path,
+        pid: i64,
+        name: &str,
+    ) -> Result<()> {
+        let label = format!("pid {pid} ({name})");
+        self.launch_inner(app, cfg, repo_root, label, None, LaunchKind::AttachPid(pid))
     }
 
     /// Debug a past commit: create a detached worktree at `sha`, build + launch
@@ -360,6 +375,9 @@ impl DebugManager {
                                     "attachCommands": commands,
                                 }),
                             );
+                        }
+                        LaunchKind::AttachPid(pid) => {
+                            let _ = l.client.send_request("attach", json!({ "pid": pid }));
                         }
                     }
                 }

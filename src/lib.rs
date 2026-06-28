@@ -8,6 +8,7 @@ pub mod dap;
 pub mod debug;
 pub mod git;
 pub mod highlight;
+pub mod process;
 pub mod icons;
 pub mod review;
 pub mod skill;

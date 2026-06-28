@@ -222,7 +222,9 @@ Protocol](https://microsoft.github.io/debug-adapter-protocol/) (any DAP adapter:
 - `t` switches the Debug pane between **Vars** and **Breakpoints** (the
   breakpoint list: `Enter` jumps, `Space` enables/disables, `d` deletes).
 - Press `D` to open the **launch picker**: debug the working tree, a selected
-  commit, or attach to a remote target.
+  commit, attach to a running process, or attach to a remote target.
+- **Attach to a process:** pick *process* to open a filterable list of running
+  processes (type to filter by name or pid, `Enter` to attach).
 - **Debug a past commit:** pick *commit* in the Commits view — turboreview checks
   it out in a throwaway `git worktree`, builds it there, and debugs that
   historical binary (cleaned up when the session ends).

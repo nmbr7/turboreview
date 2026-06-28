@@ -432,6 +432,36 @@ fn run(
                     continue;
                 }
 
+                // Attach-to-process picker: type to filter, arrows to move,
+                // Enter to attach.
+                if app.proc_picker_active() {
+                    match key.code {
+                        KeyCode::Esc => app.close_proc_picker(),
+                        KeyCode::Up => app.move_proc_pick(-1),
+                        KeyCode::Down => app.move_proc_pick(1),
+                        KeyCode::Backspace => app.proc_filter_backspace(),
+                        KeyCode::Enter => {
+                            if let Some((pid, name)) = app.selected_process() {
+                                app.close_proc_picker();
+                                let cfg = storage::load_debug_config(&app.repo_root);
+                                let root = app.repo_root.clone();
+                                match dbg.attach_process(app, &cfg, &root, pid, &name) {
+                                    Ok(()) => {
+                                        app.right_tab = turboreview::app::RightTab::Debug;
+                                        app.focus = Pane::Comments;
+                                        app.status_msg =
+                                            Some(format!("attaching to {pid} ({name})…"));
+                                    }
+                                    Err(e) => app.status_msg = Some(format!("debug: {e}")),
+                                }
+                            }
+                        }
+                        KeyCode::Char(c) => app.proc_filter_push(c),
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 // `qq` chord quits; a single `q` only arms the chord, so an
                 // accidental stray `q` does nothing.
                 if matches!(key.code, KeyCode::Char('q')) && key.modifiers.is_empty() {
@@ -1040,6 +1070,11 @@ fn start_debug(repo: &Repo, app: &mut App, dbg: &mut DebugManager, mode: turbore
         LaunchMode::Remote => {
             let root = app.repo_root.clone();
             dbg.attach_remote(app, &cfg, &root)
+        }
+        LaunchMode::Process => {
+            // Defer to the process picker; no session starts yet.
+            app.open_proc_picker();
+            return;
         }
     };
     match result {

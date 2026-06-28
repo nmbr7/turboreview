@@ -227,6 +227,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.launch_picker_active() {
         render_launch_picker(frame, app);
     }
+    if app.proc_picker_active() {
+        render_proc_picker(frame, app);
+    }
 }
 
 fn focused_border(app: &App, pane: Pane) -> Style {
@@ -1514,6 +1517,7 @@ fn render_launch_picker(frame: &mut Frame, app: &App) {
         let label = match m {
             LaunchMode::Worktree => "Debug the working tree",
             LaunchMode::Commit => "Debug the selected commit (worktree)",
+            LaunchMode::Process => "Attach to a running process…",
             LaunchMode::Remote => "Attach to the remote target",
         };
         let mut st = Style::default().fg(pal.accent);
@@ -1535,6 +1539,52 @@ fn render_launch_picker(frame: &mut Frame, app: &App) {
             .title(" Debug "),
     );
     frame.render_widget(para, area);
+}
+
+/// The attach-to-process picker: a filter line + the (filtered) process list.
+fn render_proc_picker(frame: &mut Frame, app: &App) {
+    let pal = app.palette();
+    let Some(p) = app.proc_picker.as_ref() else { return };
+    let area = centered_rect(60, 70, frame.area());
+    frame.render_widget(Clear, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+
+    // Filter line (with a block cursor).
+    let filter = Paragraph::new(format!(" filter: {}\u{2588}", p.filter))
+        .style(Style::default().fg(pal.accent));
+    frame.render_widget(filter, rows[0]);
+
+    let filtered = p.filtered();
+    let items: Vec<ListItem> = filtered
+        .iter()
+        .map(|pi| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{:>7}  ", pi.pid), Style::default().fg(pal.hunk)),
+                Span::styled(pi.command.clone(), Style::default().fg(pal.accent)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(pal.accent))
+                .title(" Attach to process (type to filter · Enter · Esc) "),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(pal.selected_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    let mut state = ListState::default();
+    if !filtered.is_empty() {
+        state.select(Some(p.sel));
+    }
+    frame.render_stateful_widget(list, rows[1], &mut state);
 }
 
 fn render_input_modal(frame: &mut Frame, app: &App, input: &InputState) {

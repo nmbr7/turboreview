@@ -386,6 +386,8 @@ pub struct App {
     pub show_coverage: bool,
     /// When `Some`, the debug launch-type picker is open with this selection.
     pub debug_launch_pick: Option<usize>,
+    /// When `Some`, the attach-to-process picker is open.
+    pub proc_picker: Option<ProcPicker>,
 }
 
 /// The launch modes offered by the debug picker.
@@ -397,6 +399,33 @@ pub enum LaunchMode {
     Commit,
     /// Attach to the configured remote target (gdbserver / Docker).
     Remote,
+    /// Attach to a running local process (opens the process picker).
+    Process,
+}
+
+/// State for the "attach to process" picker: the full process list, a filter
+/// string the user types, and the selection index into the filtered view.
+#[derive(Clone, Debug, Default)]
+pub struct ProcPicker {
+    pub procs: Vec<crate::process::ProcInfo>,
+    pub filter: String,
+    pub sel: usize,
+}
+
+impl ProcPicker {
+    /// Processes matching the filter (case-insensitive substring of name or pid).
+    pub fn filtered(&self) -> Vec<&crate::process::ProcInfo> {
+        if self.filter.is_empty() {
+            return self.procs.iter().collect();
+        }
+        let f = self.filter.to_lowercase();
+        self.procs
+            .iter()
+            .filter(|p| {
+                p.command.to_lowercase().contains(&f) || p.pid.to_string().contains(&f)
+            })
+            .collect()
+    }
 }
 
 enum RowId {
@@ -451,6 +480,7 @@ impl App {
             coverage: None,
             show_coverage: false,
             debug_launch_pick: None,
+            proc_picker: None,
         };
         app.rebuild_rows();
         app
@@ -843,6 +873,7 @@ impl App {
             modes.push(LaunchMode::Commit);
         }
         modes.push(LaunchMode::Worktree);
+        modes.push(LaunchMode::Process);
         modes.push(LaunchMode::Remote);
         modes
     }
@@ -871,6 +902,59 @@ impl App {
     pub fn selected_launch_mode(&self) -> Option<LaunchMode> {
         let sel = self.debug_launch_pick?;
         self.launch_modes().get(sel).copied()
+    }
+
+    // ─── Attach-to-process picker ────────────────────────────────────────────
+
+    /// Open the process picker, loading the running-process list.
+    pub fn open_proc_picker(&mut self) {
+        let procs = crate::process::list_processes().unwrap_or_default();
+        self.proc_picker = Some(ProcPicker {
+            procs,
+            filter: String::new(),
+            sel: 0,
+        });
+    }
+
+    pub fn proc_picker_active(&self) -> bool {
+        self.proc_picker.is_some()
+    }
+
+    pub fn close_proc_picker(&mut self) {
+        self.proc_picker = None;
+    }
+
+    pub fn move_proc_pick(&mut self, delta: isize) {
+        if let Some(p) = self.proc_picker.as_mut() {
+            let len = p.filtered().len();
+            if len == 0 {
+                return;
+            }
+            let max = len as isize - 1;
+            p.sel = ((p.sel as isize + delta).clamp(0, max)) as usize;
+        }
+    }
+
+    pub fn proc_filter_push(&mut self, ch: char) {
+        if let Some(p) = self.proc_picker.as_mut() {
+            p.filter.push(ch);
+            p.sel = 0;
+        }
+    }
+
+    pub fn proc_filter_backspace(&mut self) {
+        if let Some(p) = self.proc_picker.as_mut() {
+            p.filter.pop();
+            p.sel = 0;
+        }
+    }
+
+    /// The selected process `(pid, name)` in the filtered list, if any.
+    pub fn selected_process(&self) -> Option<(i64, String)> {
+        let p = self.proc_picker.as_ref()?;
+        p.filtered()
+            .get(p.sel)
+            .map(|pi| (pi.pid, pi.command.clone()))
     }
 
     /// Whether a debug session/overlay is active.
@@ -3958,12 +4042,10 @@ mod tests {
         assert!(app.launch_picker_active());
         assert_eq!(
             app.launch_modes(),
-            vec![LaunchMode::Worktree, LaunchMode::Remote]
+            vec![LaunchMode::Worktree, LaunchMode::Process, LaunchMode::Remote]
         );
         assert_eq!(app.selected_launch_mode(), Some(LaunchMode::Worktree));
-        app.move_launch_pick(1);
-        assert_eq!(app.selected_launch_mode(), Some(LaunchMode::Remote));
-        app.move_launch_pick(5); // clamp
+        app.move_launch_pick(9); // clamp to last
         assert_eq!(app.selected_launch_mode(), Some(LaunchMode::Remote));
         app.close_launch_picker();
         assert!(!app.launch_picker_active());
@@ -3972,8 +4054,40 @@ mod tests {
         app.view = ViewMode::Commits;
         assert_eq!(
             app.launch_modes(),
-            vec![LaunchMode::Commit, LaunchMode::Worktree, LaunchMode::Remote]
+            vec![
+                LaunchMode::Commit,
+                LaunchMode::Worktree,
+                LaunchMode::Process,
+                LaunchMode::Remote
+            ]
         );
+    }
+
+    #[test]
+    fn proc_picker_filters_and_selects() {
+        let mut app = sample();
+        app.proc_picker = Some(ProcPicker {
+            procs: vec![
+                crate::process::ProcInfo { pid: 100, command: "zsh".into() },
+                crate::process::ProcInfo { pid: 200, command: "myapp".into() },
+                crate::process::ProcInfo { pid: 300, command: "myapp-helper".into() },
+            ],
+            filter: String::new(),
+            sel: 0,
+        });
+        assert!(app.proc_picker_active());
+        // Filter to the two "myapp*" entries.
+        app.proc_filter_push('m');
+        app.proc_filter_push('y');
+        assert_eq!(app.proc_picker.as_ref().unwrap().filtered().len(), 2);
+        assert_eq!(app.selected_process(), Some((200, "myapp".into())));
+        app.move_proc_pick(1);
+        assert_eq!(app.selected_process(), Some((300, "myapp-helper".into())));
+        // Filter by pid digits too.
+        app.proc_filter_backspace();
+        app.proc_filter_backspace();
+        app.proc_filter_push('3');
+        assert_eq!(app.selected_process(), Some((300, "myapp-helper".into())));
     }
 
     #[test]
