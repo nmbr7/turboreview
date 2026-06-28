@@ -262,6 +262,21 @@ generates it) in `.turboreview/config.json`:
 Press `M` to run the command and reload. Any tool that emits LCOV works
 (`cargo llvm-cov`, `tarpaulin`, `nyc`, `gcov`, …).
 
+## Macro-expanded view
+
+Press `e` to replace the diff with the **macro-expanded source** of the selected
+file (read-only, syntax-highlighted); `e` again restores the diff. It runs a
+configurable command and shows its stdout. The `{module}` and `{file}`
+placeholders are substituted (module path derived from the `src/`-relative path):
+
+```jsonc
+// crate with both a lib and a bin needs an explicit target:
+"expand_command": "cargo expand --lib {module}"
+```
+
+Default is `cargo expand {module}` (needs nightly + `cargo-expand`). Switching
+files leaves the expanded view.
+
 ## Review state & storage
 
 Reviewed flags and comments persist under `<repo>/.turboreview/`:

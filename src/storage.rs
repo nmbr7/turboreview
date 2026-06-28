@@ -110,6 +110,8 @@ struct Config {
     coverage_file: String, // path to an LCOV file (relative to repo root)
     #[serde(default)]
     coverage_command: String, // shell command that generates the LCOV file
+    #[serde(default)]
+    expand_command: String, // macro-expansion command; {file}/{module} substituted
 }
 
 /// Read the whole config (defaults if missing/unparseable).
@@ -175,6 +177,58 @@ pub fn load_coverage(repo_root: &Path) -> Result<crate::coverage::Coverage> {
     let text = std::fs::read_to_string(&path)
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
     Ok(crate::coverage::Coverage::parse_lcov(&text))
+}
+
+/// Derive a Rust module path from a repo-relative source path for `cargo
+/// expand`, e.g. `src/foo/bar.rs` → `foo::bar`, `src/lib.rs`/`src/main.rs` → "".
+/// Returns the path string for non-`src` files unchanged (best effort).
+pub fn module_path_for(file: &Path) -> String {
+    let rel = file.strip_prefix("src").unwrap_or(file);
+    let mut parts: Vec<String> = rel
+        .components()
+        .filter_map(|c| c.as_os_str().to_str().map(str::to_string))
+        .collect();
+    if let Some(last) = parts.last_mut() {
+        // Drop the .rs extension; mod.rs / main.rs / lib.rs contribute nothing.
+        let stem = last.trim_end_matches(".rs");
+        if stem == "mod" || stem == "main" || stem == "lib" {
+            parts.pop();
+        } else {
+            *last = stem.to_string();
+        }
+    }
+    parts.join("::")
+}
+
+/// Run the configured macro-expansion command for `file` and return its stdout
+/// (the expanded source). `{file}` and `{module}` in the command are replaced
+/// with the repo-relative path and the derived module path. Defaults to
+/// `cargo expand {module}` when no command is configured.
+pub fn run_expand(repo_root: &Path, file: &Path) -> Result<String> {
+    let cfg = load_config(repo_root);
+    let template = if cfg.expand_command.trim().is_empty() {
+        "cargo expand {module}".to_string()
+    } else {
+        cfg.expand_command
+    };
+    let module = module_path_for(file);
+    let cmd = template
+        .replace("{file}", &file.to_string_lossy())
+        .replace("{module}", &module);
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| anyhow::anyhow!("running expand command: {e}"))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "expand command failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Run the configured coverage command (blocking) to (re)generate the LCOV
@@ -280,6 +334,16 @@ pub fn now_secs() -> i64 {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn module_path_derivation() {
+        use std::path::Path;
+        assert_eq!(module_path_for(Path::new("src/foo/bar.rs")), "foo::bar");
+        assert_eq!(module_path_for(Path::new("src/main.rs")), "");
+        assert_eq!(module_path_for(Path::new("src/lib.rs")), "");
+        assert_eq!(module_path_for(Path::new("src/app.rs")), "app");
+        assert_eq!(module_path_for(Path::new("src/a/mod.rs")), "a");
+    }
 
     #[test]
     fn remote_config_commands_and_is_set() {

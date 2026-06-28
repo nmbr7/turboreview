@@ -1256,7 +1256,11 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         format!("ctx {}", app.context_lines)
     };
-    let title = if let Some(commit) = app.history_current_commit() {
+    let title = if app.show_expanded {
+        app.selected_path()
+            .map(|p| format!(" Expanded: {} ", p.display()))
+            .unwrap_or_else(|| " Expanded ".to_string())
+    } else if let Some(commit) = app.history_current_commit() {
         let h = app.history.as_ref().unwrap();
         format!(
             " {} @ {} ({}/{}) — {} ",
@@ -1747,6 +1751,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("a", "fold/unfold all directories"),
             ("O", "view all files / changes only"),
+            ("e", "toggle macro-expanded view of the file"),
             ("%", "toggle coverage highlight"),
             ("M", "run coverage command + show"),
             ("z", "hide/show file pane"),

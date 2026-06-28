@@ -395,6 +395,9 @@ pub struct App {
     pub debug_launch_pick: Option<usize>,
     /// When `Some`, the attach-to-process picker is open.
     pub proc_picker: Option<ProcPicker>,
+    /// When true the diff pane shows the macro-expanded source of the selected
+    /// file instead of its diff.
+    pub show_expanded: bool,
 }
 
 /// The launch modes offered by the debug picker.
@@ -488,6 +491,7 @@ impl App {
             show_coverage: false,
             debug_launch_pick: None,
             proc_picker: None,
+            show_expanded: false,
         };
         app.rebuild_rows();
         app

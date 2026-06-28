@@ -131,6 +131,10 @@ fn refresh_diff_preserving_line(repo: &Repo, app: &mut App, anchor: Option<u32>)
 }
 
 fn refresh_diff(repo: &Repo, app: &mut App) {
+    // Macro-expanded view owns the diff buffer; don't rebuild it here.
+    if app.show_expanded {
+        return;
+    }
     // File-history overlay: when showing a past revision (idx >= 1), render that
     // commit's diff for the history file. idx 0 falls through to the baseline branches.
     if let Some(commit) = app.history_current_commit() {
@@ -892,6 +896,8 @@ fn run(
                         toggle_all_files(repo, app);
                         refresh_diff(repo, app);
                     }
+                    // e — toggle macro-expanded view of the selected file.
+                    (KeyCode::Char('e'), _) => toggle_expand_view(repo, app),
                     (KeyCode::Char('z'), _) => app.toggle_files(),
                     (KeyCode::Char('>'), _) | (KeyCode::Char('.'), _) => {
                         app.resize_focused_pane(true)
@@ -1092,6 +1098,45 @@ fn start_debug(repo: &Repo, app: &mut App, dbg: &mut DebugManager, mode: turbore
     }
 }
 
+/// Toggle the macro-expanded view of the selected file. On enabling, run the
+/// configured expand command and show its output (read-only) in the diff pane;
+/// on disabling, restore the normal diff.
+fn toggle_expand_view(repo: &Repo, app: &mut App) {
+    use turboreview::app::{DiffLine, LineKind};
+    if app.show_expanded {
+        app.show_expanded = false;
+        refresh_diff(repo, app);
+        app.status_msg = Some("expanded view off".into());
+        return;
+    }
+    let Some(file) = app.selected_path().cloned() else {
+        app.status_msg = Some("expand: no file selected".into());
+        return;
+    };
+    app.status_msg = Some("expanding…".into());
+    match storage::run_expand(&app.repo_root, &file) {
+        Ok(text) => {
+            let lines: Vec<DiffLine> = text
+                .lines()
+                .enumerate()
+                .map(|(i, t)| {
+                    let n = (i + 1) as u32;
+                    DiffLine {
+                        kind: LineKind::Context,
+                        text: t.to_string(),
+                        old_lineno: Some(n),
+                        new_lineno: Some(n),
+                    }
+                })
+                .collect();
+            app.show_expanded = true;
+            app.set_diff(lines);
+            app.status_msg = Some(format!("expanded {}", file.display()));
+        }
+        Err(e) => app.status_msg = Some(format!("expand: {e}")),
+    }
+}
+
 fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
     match app.focus {
         Pane::Files => {
@@ -1114,6 +1159,8 @@ fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
                     load_scope(&root, app);
                 }
                 app.move_selection(delta);
+                // The expanded view is per-file; leave it when changing files.
+                app.show_expanded = false;
                 refresh_diff(repo, app);
             }
         }
