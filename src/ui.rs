@@ -1128,8 +1128,8 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
             // gutter column, keeping the 5-col width.
             let num = line_no.map(|n| format!("{:>4}", n)).unwrap_or_else(|| "    ".into());
             let (cov_ch, cov_fg) = match cov {
-                crate::coverage::LineCov::Covered => ("│", pal.tick),
-                crate::coverage::LineCov::Uncovered => ("│", pal.red),
+                crate::coverage::LineCov::Covered => ("▌", pal.tick),
+                crate::coverage::LineCov::Uncovered => ("▌", pal.red),
                 crate::coverage::LineCov::None => (" ", gutter_fg),
             };
             let mut cov_style = Style::default().fg(cov_fg);
@@ -1379,8 +1379,8 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             // Coverage bar: a colored `│` between the marker and the line
             // number (green covered / red uncovered / blank when no data).
             let (cov_ch, cov_fg) = match cov {
-                crate::coverage::LineCov::Covered => ("│", pal.tick),
-                crate::coverage::LineCov::Uncovered => ("│", pal.red),
+                crate::coverage::LineCov::Covered => ("▌", pal.tick),
+                crate::coverage::LineCov::Uncovered => ("▌", pal.red),
                 crate::coverage::LineCov::None => (" ", pal.accent_dim),
             };
             let mut cov_style = Style::default().fg(cov_fg);
