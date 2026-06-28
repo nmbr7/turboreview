@@ -451,9 +451,12 @@ impl DebugManager {
                     }
                     sess.stack.len()
                 });
-                // Eagerly resolve this frame's structured vars so a captured
-                // snapshot includes the full heap contents.
-                self.auto_expand_frame(app, id, frame_idx);
+                // Auto-expand only the top frame's structured vars; deeper
+                // frames stay collapsed (the user expands them on demand with
+                // Enter). Their locals are still fetched for snapshots.
+                if frame_idx == 0 {
+                    self.auto_expand_frame(app, id, frame_idx);
+                }
                 // Chain to the next frame (serially, to avoid lldb-dap's stateful
                 // variablesReference race) so all frames' locals are eventually
                 // populated and can be captured into a comment snapshot.
