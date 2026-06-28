@@ -402,6 +402,8 @@ impl DebugManager {
                     sess.stack = frames;
                     sess.frame_sel = 0;
                     sess.locals.clear();
+                    // Reset frame expansion: only the top frame open on each stop.
+                    sess.expanded_frames = std::collections::BTreeSet::from([0]);
                     sess.stopped_at = sess
                         .stack
                         .first()

@@ -496,11 +496,13 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
                             format!("  {base}:{}", f.line)
                         })
                         .unwrap_or_default();
-                    // Frame header: name (yellow, bold) clearly separate from
-                    // the variable subtree below; location in cyan.
+                    // Frame header: a ▾/▸ collapse marker, name (yellow, bold)
+                    // separate from the variable subtree; location in cyan.
+                    let open = sess.expanded_frames.contains(fi);
+                    let marker = if open { "▾ " } else { "▸ " };
                     lines.push(Line::from(vec![
                         Span::styled(
-                            format!("  {}", f.name),
+                            format!("{marker}{}", f.name),
                             sel_bg(Style::default().fg(pal.yellow).add_modifier(Modifier::BOLD)),
                         ),
                         Span::styled(loc, sel_bg(Style::default().fg(pal.hunk))),
@@ -1769,7 +1771,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("c / n / i / o", "continue / over / in / out"),
             ("[ / ]", "right pane: Comments / Debug tab"),
             ("t", "Debug: Vars / Breakpoints"),
-            ("Enter", "Vars: expand a variable"),
+            ("Enter", "Vars: expand a frame or variable"),
             ("h / l", "Debug: scroll horizontally"),
             ("Space / d", "bp list: enable-disable / delete"),
             ("Enter", "bp list: jump to breakpoint"),

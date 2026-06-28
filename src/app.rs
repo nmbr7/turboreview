@@ -169,6 +169,9 @@ pub struct DebugSession {
     pub frame_sel: usize,
     /// Locals for the selected frame.
     pub locals: Vec<crate::dap::VarRow>,
+    /// Frames whose locals are shown (expanded) in the panel. The top frame (0)
+    /// is open by default; others are collapsed until expanded.
+    pub expanded_frames: std::collections::BTreeSet<usize>,
 }
 
 impl DebugSession {
@@ -182,6 +185,7 @@ impl DebugSession {
             stack: Vec::new(),
             frame_sel: 0,
             locals: Vec::new(),
+            expanded_frames: std::collections::BTreeSet::from([0]),
         }
     }
 }
@@ -241,7 +245,10 @@ impl DebugState {
         };
         for (fi, frame) in sess.stack.iter().enumerate() {
             rows.push(DebugRow::Frame(fi));
-            push_var_rows(&frame.locals, fi, &mut Vec::new(), &mut rows);
+            // Only list a frame's locals when the frame is expanded.
+            if sess.expanded_frames.contains(&fi) {
+                push_var_rows(&frame.locals, fi, &mut Vec::new(), &mut rows);
+            }
         }
         rows
     }
@@ -1152,6 +1159,30 @@ impl App {
     /// Toggle expansion of the selected variable (if structured). When expanding
     /// a value that has no children yet, returns `(frame_idx, var_ref, path)` so
     /// the caller can fetch them; otherwise returns None.
+    /// If the selected row is a stack frame, toggle whether its locals are
+    /// shown. Returns `Some(frame_idx)` when it was just expanded but its locals
+    /// aren't fetched yet, so the caller can request them.
+    pub fn toggle_selected_frame(&mut self) -> Option<usize> {
+        let d = self.debug.as_mut()?;
+        let row = d.debug_rows().get(d.panel_sel).cloned()?;
+        let DebugRow::Frame(fi) = row else {
+            return None;
+        };
+        let sess = d.sessions.get_mut(d.active)?;
+        let now_open = if sess.expanded_frames.contains(&fi) {
+            sess.expanded_frames.remove(&fi);
+            false
+        } else {
+            sess.expanded_frames.insert(fi);
+            true
+        };
+        if now_open && sess.stack.get(fi).is_some_and(|f| f.locals.is_empty()) {
+            Some(fi)
+        } else {
+            None
+        }
+    }
+
     pub fn toggle_expand_selected_var(&mut self) -> Option<(usize, i64, Vec<usize>)> {
         let d = self.debug.as_mut()?;
         let row = d.debug_rows().get(d.panel_sel).cloned()?;
@@ -3943,6 +3974,45 @@ mod tests {
         assert_eq!(app.debug.as_ref().unwrap().panel_sel, 2); // clamped to last row
         app.move_debug_panel_selection(-99);
         assert_eq!(app.debug.as_ref().unwrap().panel_sel, 0);
+    }
+
+    #[test]
+    fn frame_collapse_hides_locals_except_top() {
+        let mut app = app_on_diff_line();
+        let mut st = DebugState::default();
+        let mut sess = DebugSession::new(1, "s".into());
+        let frame = |n: &str| crate::dap::Frame {
+            name: n.into(),
+            file: None,
+            line: 0,
+            id: 0,
+            locals: vec![crate::dap::VarRow {
+                name: "x".into(),
+                value: "1".into(),
+                ty: None,
+                var_ref: 0,
+                memory_ref: None,
+                expanded: false,
+                children: vec![],
+            }],
+        };
+        sess.stack = vec![frame("top"), frame("mid")];
+        st.sessions.push(sess);
+        app.debug = Some(st);
+
+        // Only the top frame is open by default: 2 frame rows + top's 1 local = 3.
+        assert_eq!(app.debug_panel_len(), 3);
+
+        // Select the second frame (row index 2: top, top-local, mid) and expand.
+        app.debug.as_mut().unwrap().panel_sel = 2;
+        // Its locals are already present, so no fetch is requested.
+        assert_eq!(app.toggle_selected_frame(), None);
+        assert_eq!(app.debug_panel_len(), 4); // mid's local now shows
+
+        // Collapsing the top frame hides its local.
+        app.debug.as_mut().unwrap().panel_sel = 0;
+        assert_eq!(app.toggle_selected_frame(), None);
+        assert_eq!(app.debug_panel_len(), 3);
     }
 
     #[test]

@@ -537,12 +537,17 @@ fn run(
                     (KeyCode::Char('t'), _) if app.is_debug_focused() => {
                         app.toggle_debug_tab();
                     }
-                    // Vars tab: Enter expands/collapses a structured variable
-                    // (String/Vec/struct), fetching its children on first expand.
+                    // Vars tab: Enter toggles a stack frame's locals, or
+                    // expands/collapses a structured variable (fetching children
+                    // or the frame's locals on first expand).
                     (KeyCode::Enter, _)
                         if app.is_debug_focused() && !app.debug_tab_is_breakpoints() =>
                     {
-                        if let Some((frame, var_ref, path)) = app.toggle_expand_selected_var() {
+                        if let Some(frame) = app.toggle_selected_frame() {
+                            dbg.request_frame_locals(app, frame);
+                        } else if let Some((frame, var_ref, path)) =
+                            app.toggle_expand_selected_var()
+                        {
                             dbg.request_var_children(app, frame, var_ref, path);
                         }
                     }
