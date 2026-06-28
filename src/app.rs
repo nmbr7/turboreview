@@ -380,6 +380,10 @@ pub struct App {
     pub debug: Option<DebugState>,
     /// Which tab the right pane shows (Comments or Debug).
     pub right_tab: RightTab,
+    /// Parsed LCOV coverage, loaded on demand for the coverage highlight.
+    pub coverage: Option<crate::coverage::Coverage>,
+    /// Whether coverage highlighting is shown in the diff gutter.
+    pub show_coverage: bool,
 }
 
 enum RowId {
@@ -431,6 +435,8 @@ impl App {
             search_input: None,
             debug: None,
             right_tab: RightTab::Comments,
+            coverage: None,
+            show_coverage: false,
         };
         app.rebuild_rows();
         app
@@ -799,6 +805,18 @@ impl App {
             RightTab::Debug => RightTab::Comments,
             other => other,
         };
+    }
+
+    /// Coverage state of a repo-relative `(file, line)` when the highlight is on.
+    /// Returns `LineCov::None` when coverage is off or there's no data.
+    pub fn line_coverage(&self, file: &Path, line: u32) -> crate::coverage::LineCov {
+        if !self.show_coverage {
+            return crate::coverage::LineCov::None;
+        }
+        self.coverage
+            .as_ref()
+            .map(|c| c.line_cov(file, line))
+            .unwrap_or(crate::coverage::LineCov::None)
     }
 
     // ─── Debugger ────────────────────────────────────────────────────────────

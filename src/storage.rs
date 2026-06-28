@@ -72,6 +72,10 @@ struct Config {
     split_diff: bool, // side-by-side diff toggle
     #[serde(default)]
     debug: DebugConfig, // debugger build/adapter/program config
+    #[serde(default)]
+    coverage_file: String, // path to an LCOV file (relative to repo root)
+    #[serde(default)]
+    coverage_command: String, // shell command that generates the LCOV file
 }
 
 /// Read the whole config (defaults if missing/unparseable).
@@ -124,6 +128,42 @@ pub fn save_split(repo_root: &Path, split: bool) -> Result<()> {
 /// Load the persisted debug configuration (defaults if unset/unparseable).
 pub fn load_debug_config(repo_root: &Path) -> DebugConfig {
     load_config(repo_root).debug
+}
+
+/// Load and parse the configured LCOV coverage file. Returns an error message
+/// when no path is set or the file can't be read.
+pub fn load_coverage(repo_root: &Path) -> Result<crate::coverage::Coverage> {
+    let cfg = load_config(repo_root);
+    if cfg.coverage_file.trim().is_empty() {
+        anyhow::bail!("no coverage file set (config: \"coverage_file\")");
+    }
+    let path = repo_root.join(&cfg.coverage_file);
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+    Ok(crate::coverage::Coverage::parse_lcov(&text))
+}
+
+/// Run the configured coverage command (blocking) to (re)generate the LCOV
+/// file, then load it. Errors when no command is set or the command fails.
+pub fn run_coverage(repo_root: &Path) -> Result<crate::coverage::Coverage> {
+    let cmd = load_config(repo_root).coverage_command;
+    if cmd.trim().is_empty() {
+        anyhow::bail!("no coverage command set (config: \"coverage_command\")");
+    }
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| anyhow::anyhow!("running coverage command: {e}"))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "coverage command failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    load_coverage(repo_root)
 }
 
 const ARCHIVE_DAYS: i64 = 14;
@@ -206,6 +246,42 @@ pub fn now_secs() -> i64 {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn load_coverage_reads_configured_lcov() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // Config points at a coverage file; write that file.
+        std::fs::create_dir_all(worktree_dir(root)).unwrap();
+        std::fs::write(
+            worktree_dir(root).join("config.json"),
+            br#"{"theme":"dark","coverage_file":"cov/lcov.info"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("cov")).unwrap();
+        std::fs::write(
+            root.join("cov/lcov.info"),
+            "SF:src/x.rs\nDA:1,4\nDA:2,0\nend_of_record\n",
+        )
+        .unwrap();
+
+        let cov = load_coverage(root).unwrap();
+        use crate::coverage::LineCov;
+        assert_eq!(
+            cov.line_cov(std::path::Path::new("src/x.rs"), 1),
+            LineCov::Covered
+        );
+        assert_eq!(
+            cov.line_cov(std::path::Path::new("src/x.rs"), 2),
+            LineCov::Uncovered
+        );
+    }
+
+    #[test]
+    fn load_coverage_errors_without_config() {
+        let dir = tempdir().unwrap();
+        assert!(load_coverage(dir.path()).is_err());
+    }
 
     #[test]
     fn debug_config_round_trips_and_preserves_other_fields() {

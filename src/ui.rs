@@ -1042,10 +1042,18 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
         };
         let dl = &app.diff[di];
         let comment = app.comment_for(dl);
-        let gutter_fg = match comment {
-            Some(c) if c.stale => pal.yellow,
-            Some(_) => pal.accent,
-            None => pal.accent_dim,
+        let cov = match (app.selected_path(), dl.new_lineno.or(dl.old_lineno)) {
+            (Some(f), Some(n)) => app.line_coverage(f, n),
+            _ => crate::coverage::LineCov::None,
+        };
+        let gutter_fg = match cov {
+            crate::coverage::LineCov::Covered => pal.tick,
+            crate::coverage::LineCov::Uncovered => pal.red,
+            crate::coverage::LineCov::None => match comment {
+                Some(c) if c.stale => pal.yellow,
+                Some(_) => pal.accent,
+                None => pal.accent_dim,
+            },
         };
         let bg = match dl.kind {
             LineKind::Add => Some(pal.add_bg),
@@ -1188,6 +1196,8 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
         .to_string();
     // Absolute path of the file shown in the diff, for breakpoint lookups.
     let bp_file = app.selected_path().map(|p| app.repo_root.join(p));
+    // Repo-relative path for coverage lookups (matched by suffix).
+    let cov_file = app.selected_path().cloned();
     // Line where the active session is currently stopped (in this file).
     let stopped_line = app
         .debug
@@ -1287,10 +1297,20 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             }
             // Gutter: YELLOW for stale-commented lines, ACCENT for normal commented, ACCENT_DIM otherwise.
             let comment = app.comment_for(dl);
-            let gutter_fg = match comment {
-                Some(c) if c.stale => pal.yellow,
-                Some(_) => pal.accent,
-                None => pal.accent_dim,
+            // Coverage highlight (when on) colors the line-number gutter:
+            // covered = green, uncovered = red; otherwise the comment color.
+            let cov = match (&cov_file, dl.new_lineno.or(dl.old_lineno)) {
+                (Some(f), Some(n)) => app.line_coverage(f, n),
+                _ => crate::coverage::LineCov::None,
+            };
+            let gutter_fg = match cov {
+                crate::coverage::LineCov::Covered => pal.tick,
+                crate::coverage::LineCov::Uncovered => pal.red,
+                crate::coverage::LineCov::None => match comment {
+                    Some(c) if c.stale => pal.yellow,
+                    Some(_) => pal.accent,
+                    None => pal.accent_dim,
+                },
             };
             let gutter_style = if is_cursor {
                 Style::default().fg(gutter_fg).bg(pal.selected_bg)
@@ -1559,6 +1579,8 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("a", "fold/unfold all directories"),
             ("O", "view all files / changes only"),
+            ("%", "toggle coverage highlight"),
+            ("M", "run coverage command + show"),
             ("z", "hide/show file pane"),
             ("< / >", "resize focused pane (files / right)"),
             ("C", "toggle comment-list pane"),

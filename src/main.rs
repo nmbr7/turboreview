@@ -822,6 +822,41 @@ fn run(
                         app.toggle_fold_all();
                         refresh_diff(repo, app);
                     }
+                    // % — toggle coverage highlight; loads the LCOV file on first
+                    // enable (config: coverage_file).
+                    (KeyCode::Char('%'), _) => {
+                        if app.show_coverage {
+                            app.show_coverage = false;
+                            app.status_msg = Some("coverage off".into());
+                        } else {
+                            if app.coverage.is_none() {
+                                match storage::load_coverage(&app.repo_root) {
+                                    Ok(c) => app.coverage = Some(c),
+                                    Err(e) => {
+                                        app.status_msg = Some(format!("coverage: {e}"));
+                                    }
+                                }
+                            }
+                            if let Some(c) = &app.coverage {
+                                app.show_coverage = true;
+                                app.status_msg =
+                                    Some(format!("coverage on ({} files)", c.file_count()));
+                            }
+                        }
+                    }
+                    // M — run the configured coverage command, then load + show it.
+                    (KeyCode::Char('M'), _) => {
+                        app.status_msg = Some("running coverage…".into());
+                        match storage::run_coverage(&app.repo_root) {
+                            Ok(c) => {
+                                let n = c.file_count();
+                                app.coverage = Some(c);
+                                app.show_coverage = true;
+                                app.status_msg = Some(format!("coverage updated ({n} files)"));
+                            }
+                            Err(e) => app.status_msg = Some(format!("coverage: {e}")),
+                        }
+                    }
                     // O — toggle "view all files" (every tracked file, not just
                     // changed ones) so any source file can be opened/debugged.
                     (KeyCode::Char('O'), _) => {

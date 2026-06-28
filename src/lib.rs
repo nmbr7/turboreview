@@ -3,6 +3,7 @@ pub const COMMIT_PAGE: usize = 50;
 
 pub mod app;
 pub mod comments;
+pub mod coverage;
 pub mod dap;
 pub mod debug;
 pub mod git;
