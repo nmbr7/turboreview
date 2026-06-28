@@ -849,4 +849,182 @@ mod tests {
         cfg.build = "exit 3".into();
         assert!(DebugManager::run_build(&cfg, Path::new(".")).is_err());
     }
+
+    // ── Message-handling tests (no real adapter) ────────────────────────────
+    //
+    // We back a session with `cat` (a real DapClient whose requests go nowhere),
+    // register a DebugSession on the App, then inject synthetic DAP messages on
+    // the manager's channel and `drain` them — exercising the event/response
+    // state machine without a debugger process.
+
+    use crate::app::{App, DebugSession, DebugState, FileChange, SessionState, Status};
+    use std::path::PathBuf;
+
+    fn app_with_debug() -> App {
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.debug = Some(DebugState::default());
+        app
+    }
+
+    /// Register a `cat`-backed live session (id 1) + a DebugSession on `app`.
+    fn register_cat_session(mgr: &mut DebugManager, app: &mut App) -> SessionId {
+        let id = mgr.next_id;
+        mgr.next_id += 1;
+        let client = DapClient::spawn(id, "cat", &[], mgr.tx.clone()).unwrap();
+        mgr.live.insert(
+            id,
+            Live {
+                client,
+                pending: HashMap::new(),
+                bp_sent: false,
+                top_frame: None,
+                var_paths: HashMap::new(),
+                next_var_key: 1,
+                worktree: None,
+            },
+        );
+        let d = app.debug.get_or_insert_with(DebugState::default);
+        d.sessions.push(DebugSession::new(id, "test".into()));
+        d.active = d.sessions.len() - 1;
+        id
+    }
+
+    fn inject(mgr: &DebugManager, id: SessionId, msg: Message) {
+        mgr.tx
+            .send(SessionMsg {
+                session: id,
+                kind: SessionKind::Message(msg),
+            })
+            .unwrap();
+    }
+
+    fn event(seq: i64, event: &str, body: Value) -> Message {
+        Message::Event {
+            seq,
+            event: event.into(),
+            body,
+        }
+    }
+
+    fn response(req_seq: i64, command: &str, body: Value) -> Message {
+        Message::Response {
+            seq: 0,
+            request_seq: req_seq,
+            command: command.into(),
+            success: true,
+            body,
+        }
+    }
+
+    #[test]
+    fn stopped_event_sets_state_and_thread() {
+        let mut mgr = DebugManager::new();
+        let mut app = app_with_debug();
+        let id = register_cat_session(&mut mgr, &mut app);
+
+        inject(&mgr, id, event(1, "stopped", json!({"reason":"breakpoint","threadId":7})));
+        mgr.drain(&mut app);
+
+        let s = &app.debug.as_ref().unwrap().sessions[0];
+        assert_eq!(s.state, SessionState::Stopped);
+        assert_eq!(s.stopped_thread, Some(7));
+    }
+
+    #[test]
+    fn stacktrace_response_fills_stack_and_stopped_at() {
+        let mut mgr = DebugManager::new();
+        let mut app = app_with_debug();
+        let id = register_cat_session(&mut mgr, &mut app);
+        // The handler matches responses by request_seq via the live `pending`
+        // map; register a StackTrace request manually.
+        mgr.live.get_mut(&id).unwrap().pending.insert(99, Pending::StackTrace);
+
+        let body = json!({
+            "stackFrames": [
+                {"id": 1, "name": "main", "line": 42, "source": {"path": "/repo/a.rs"}}
+            ]
+        });
+        inject(&mgr, id, response(99, "stackTrace", body));
+        mgr.drain(&mut app);
+
+        let s = &app.debug.as_ref().unwrap().sessions[0];
+        assert_eq!(s.stack.len(), 1);
+        assert_eq!(s.stack[0].name, "main");
+        assert_eq!(s.stopped_at, Some((PathBuf::from("/repo/a.rs"), 42)));
+    }
+
+    #[test]
+    fn variables_response_fills_frame_locals() {
+        let mut mgr = DebugManager::new();
+        let mut app = app_with_debug();
+        let id = register_cat_session(&mut mgr, &mut app);
+        // Seed a frame so Variables(0) has somewhere to store locals.
+        {
+            let s = &mut app.debug.as_mut().unwrap().sessions[0];
+            s.stack = vec![crate::dap::Frame {
+                name: "f".into(),
+                file: None,
+                line: 0,
+                id: 1,
+                locals: vec![],
+            }];
+        }
+        mgr.live.get_mut(&id).unwrap().pending.insert(5, Pending::Variables(0));
+
+        let body = json!({"variables":[{"name":"x","value":"1","type":"i32"}]});
+        inject(&mgr, id, response(5, "variables", body));
+        mgr.drain(&mut app);
+
+        let s = &app.debug.as_ref().unwrap().sessions[0];
+        assert_eq!(s.stack[0].locals.len(), 1);
+        assert_eq!(s.stack[0].locals[0].name, "x");
+        assert_eq!(s.locals.len(), 1); // top-frame mirror
+    }
+
+    #[test]
+    fn terminated_event_clears_stop() {
+        let mut mgr = DebugManager::new();
+        let mut app = app_with_debug();
+        let id = register_cat_session(&mut mgr, &mut app);
+        {
+            let s = &mut app.debug.as_mut().unwrap().sessions[0];
+            s.state = SessionState::Stopped;
+            s.stopped_at = Some((PathBuf::from("/repo/a.rs"), 1));
+            s.stack = vec![crate::dap::Frame {
+                name: "f".into(),
+                file: None,
+                line: 0,
+                id: 1,
+                locals: vec![],
+            }];
+        }
+        inject(&mgr, id, event(1, "terminated", json!({})));
+        mgr.drain(&mut app);
+
+        let s = &app.debug.as_ref().unwrap().sessions[0];
+        assert_eq!(s.state, SessionState::Exited);
+        assert!(s.stopped_at.is_none());
+        assert!(s.stack.is_empty());
+    }
+
+    #[test]
+    fn closed_marks_exited_and_collects_worktree() {
+        let mut mgr = DebugManager::new();
+        let mut app = app_with_debug();
+        let id = register_cat_session(&mut mgr, &mut app);
+        mgr.live.get_mut(&id).unwrap().worktree = Some(PathBuf::from("/tmp/wt"));
+
+        mgr.tx
+            .send(SessionMsg { session: id, kind: SessionKind::Closed })
+            .unwrap();
+        mgr.drain(&mut app);
+
+        assert_eq!(app.debug.as_ref().unwrap().sessions[0].state, SessionState::Exited);
+        assert!(!mgr.live.contains_key(&id)); // removed
+        assert_eq!(mgr.take_dead_worktrees(), vec![PathBuf::from("/tmp/wt")]);
+    }
 }
