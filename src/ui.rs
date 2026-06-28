@@ -227,6 +227,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.launch_picker_active() {
         render_launch_picker(frame, app);
     }
+    if app.expand_picker_active() {
+        render_expand_picker(frame, app);
+    }
     if app.proc_picker_active() {
         render_proc_picker(frame, app);
     }
@@ -1535,6 +1538,38 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 
 /// The debug launch-type picker overlay (worktree / commit / remote attach).
+/// The expand-command picker: choose which configured command to run.
+fn render_expand_picker(frame: &mut Frame, app: &App) {
+    let pal = app.palette();
+    let Some((cmds, sel)) = app.expand_pick.as_ref() else { return };
+    let area = centered_rect(60, 40, frame.area());
+    frame.render_widget(Clear, area);
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, c) in cmds.iter().enumerate() {
+        let mut st = Style::default().fg(pal.accent);
+        if i == *sel {
+            st = st.bg(pal.selected_bg).add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {}", c.name), st),
+            Span::styled(format!("   {}", c.command), Style::default().fg(pal.accent_dim)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " ↑/↓ select · Enter run · Esc cancel",
+        Style::default().fg(pal.accent_dim),
+    )));
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(pal.accent))
+            .title(" Expand "),
+    );
+    frame.render_widget(para, area);
+}
+
 fn render_launch_picker(frame: &mut Frame, app: &App) {
     use crate::app::LaunchMode;
     let pal = app.palette();

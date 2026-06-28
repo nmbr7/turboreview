@@ -438,6 +438,23 @@ fn run(
 
                 // Attach-to-process picker: type to filter, arrows to move,
                 // Enter to attach.
+                // Expand-command picker.
+                if app.expand_picker_active() {
+                    match key.code {
+                        KeyCode::Esc => app.close_expand_picker(),
+                        KeyCode::Up | KeyCode::Char('k') => app.move_expand_pick(-1),
+                        KeyCode::Down | KeyCode::Char('j') => app.move_expand_pick(1),
+                        KeyCode::Enter => {
+                            if let Some(cmd) = app.selected_expand_command() {
+                                app.close_expand_picker();
+                                run_expand_with(app, &cmd.command);
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 if app.proc_picker_active() {
                     match key.code {
                         KeyCode::Esc => app.close_proc_picker(),
@@ -1102,19 +1119,35 @@ fn start_debug(repo: &Repo, app: &mut App, dbg: &mut DebugManager, mode: turbore
 /// configured expand command and show its output (read-only) in the diff pane;
 /// on disabling, restore the normal diff.
 fn toggle_expand_view(repo: &Repo, app: &mut App) {
-    use turboreview::app::{DiffLine, LineKind};
     if app.show_expanded {
         app.show_expanded = false;
         refresh_diff(repo, app);
         app.status_msg = Some("expanded view off".into());
         return;
     }
-    let Some(file) = app.selected_path().cloned() else {
+    if app.selected_path().is_none() {
         app.status_msg = Some("expand: no file selected".into());
+        return;
+    }
+    let cmds = storage::load_expand_commands(&app.repo_root);
+    if cmds.len() <= 1 {
+        // Single configured command — run it directly.
+        let template = cmds.first().map(|c| c.command.clone()).unwrap_or_default();
+        run_expand_with(app, &template);
+    } else {
+        // Several configured — let the user pick.
+        app.open_expand_picker(cmds);
+    }
+}
+
+/// Run a specific expand `template` for the selected file and show the result.
+fn run_expand_with(app: &mut App, template: &str) {
+    use turboreview::app::{DiffLine, LineKind};
+    let Some(file) = app.selected_path().cloned() else {
         return;
     };
     app.status_msg = Some("expanding…".into());
-    match storage::run_expand(&app.repo_root, &file) {
+    match storage::run_expand_template(&app.repo_root, &file, template) {
         Ok(text) => {
             let lines: Vec<DiffLine> = text
                 .lines()

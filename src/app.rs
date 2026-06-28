@@ -398,6 +398,8 @@ pub struct App {
     /// When true the diff pane shows the macro-expanded source of the selected
     /// file instead of its diff.
     pub show_expanded: bool,
+    /// When `Some`, the expand-command picker is open: (commands, selection).
+    pub expand_pick: Option<(Vec<crate::storage::ExpandCommand>, usize)>,
 }
 
 /// The launch modes offered by the debug picker.
@@ -492,6 +494,7 @@ impl App {
             debug_launch_pick: None,
             proc_picker: None,
             show_expanded: false,
+            expand_pick: None,
         };
         app.rebuild_rows();
         app
@@ -916,6 +919,36 @@ impl App {
     pub fn selected_launch_mode(&self) -> Option<LaunchMode> {
         let sel = self.debug_launch_pick?;
         self.launch_modes().get(sel).copied()
+    }
+
+    // ─── Expand-command picker ───────────────────────────────────────────────
+
+    pub fn open_expand_picker(&mut self, commands: Vec<crate::storage::ExpandCommand>) {
+        self.expand_pick = Some((commands, 0));
+    }
+
+    pub fn expand_picker_active(&self) -> bool {
+        self.expand_pick.is_some()
+    }
+
+    pub fn close_expand_picker(&mut self) {
+        self.expand_pick = None;
+    }
+
+    pub fn move_expand_pick(&mut self, delta: isize) {
+        if let Some((cmds, sel)) = self.expand_pick.as_mut() {
+            if cmds.is_empty() {
+                return;
+            }
+            let max = cmds.len() as isize - 1;
+            *sel = ((*sel as isize + delta).clamp(0, max)) as usize;
+        }
+    }
+
+    /// The selected expand command, if the picker is open.
+    pub fn selected_expand_command(&self) -> Option<crate::storage::ExpandCommand> {
+        let (cmds, sel) = self.expand_pick.as_ref()?;
+        cmds.get(*sel).cloned()
     }
 
     // ─── Attach-to-process picker ────────────────────────────────────────────
@@ -4139,6 +4172,25 @@ mod tests {
                 LaunchMode::Remote
             ]
         );
+    }
+
+    #[test]
+    fn expand_picker_selects_command() {
+        use crate::storage::ExpandCommand;
+        let mut app = sample();
+        let cmds = vec![
+            ExpandCommand { name: "lib".into(), command: "cargo expand --lib {module}".into() },
+            ExpandCommand { name: "example".into(), command: "cargo expand --example x".into() },
+        ];
+        app.open_expand_picker(cmds);
+        assert!(app.expand_picker_active());
+        assert_eq!(app.selected_expand_command().unwrap().name, "lib");
+        app.move_expand_pick(1);
+        assert_eq!(app.selected_expand_command().unwrap().name, "example");
+        app.move_expand_pick(9); // clamp
+        assert_eq!(app.selected_expand_command().unwrap().name, "example");
+        app.close_expand_picker();
+        assert!(!app.expand_picker_active());
     }
 
     #[test]

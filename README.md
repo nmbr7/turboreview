@@ -277,6 +277,18 @@ placeholders are substituted (module path derived from the `src/`-relative path)
 Default is `cargo expand {module}` (needs nightly + `cargo-expand`). Switching
 files leaves the expanded view.
 
+Configure **several** named commands to get a picker on `e`:
+
+```jsonc
+"expand_commands": [
+  { "name": "lib",     "command": "cargo expand --lib {module}" },
+  { "name": "example", "command": "cargo expand --example $(basename {file} .rs)" }
+]
+```
+
+With one (or none) configured, `e` runs it directly; with several, it opens a
+selection popup.
+
 ## Review state & storage
 
 Reviewed flags and comments persist under `<repo>/.turboreview/`:

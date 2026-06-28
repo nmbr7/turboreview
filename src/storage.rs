@@ -97,6 +97,13 @@ pub struct DebugConfig {
     pub remote: RemoteConfig,
 }
 
+/// A named macro-expansion command (shown in the expand picker).
+#[derive(Clone, Serialize, Deserialize, Default, Debug, PartialEq)]
+pub struct ExpandCommand {
+    pub name: String,
+    pub command: String,
+}
+
 /// Persisted configuration. New fields use `#[serde(default)]` so older
 /// config.json files (which may lack them) keep loading.
 #[derive(Serialize, Deserialize, Default)]
@@ -111,7 +118,9 @@ struct Config {
     #[serde(default)]
     coverage_command: String, // shell command that generates the LCOV file
     #[serde(default)]
-    expand_command: String, // macro-expansion command; {file}/{module} substituted
+    expand_command: String, // single macro-expansion command (fallback)
+    #[serde(default)]
+    expand_commands: Vec<ExpandCommand>, // named commands shown in the expand picker
 }
 
 /// Read the whole config (defaults if missing/unparseable).
@@ -211,10 +220,37 @@ pub fn run_expand(repo_root: &Path, file: &Path) -> Result<String> {
     } else {
         cfg.expand_command
     };
+    run_expand_template(repo_root, file, &template)
+}
+
+/// Named expand commands offered by the picker. Falls back to the single
+/// `expand_command` (or the built-in default) when `expand_commands` is empty.
+pub fn load_expand_commands(repo_root: &Path) -> Vec<ExpandCommand> {
+    let cfg = load_config(repo_root);
+    if !cfg.expand_commands.is_empty() {
+        return cfg.expand_commands;
+    }
+    let command = if cfg.expand_command.trim().is_empty() {
+        "cargo expand {module}".to_string()
+    } else {
+        cfg.expand_command
+    };
+    vec![ExpandCommand {
+        name: "expand".into(),
+        command,
+    }]
+}
+
+/// Run a specific expand command `template` (with `{file}`/`{module}`
+/// substitution) for `file` and return its stdout.
+pub fn run_expand_template(repo_root: &Path, file: &Path, template: &str) -> Result<String> {
     let module = module_path_for(file);
     let cmd = template
         .replace("{file}", &file.to_string_lossy())
         .replace("{module}", &module);
+    // Note: an empty {module} leaves a trailing space, which `sh` ignores. We do
+    // NOT collapse whitespace, so shell constructs in the command (case, $(), …)
+    // stay intact for path-aware expand commands.
     let out = std::process::Command::new("sh")
         .arg("-c")
         .arg(&cmd)
@@ -222,10 +258,17 @@ pub fn run_expand(repo_root: &Path, file: &Path) -> Result<String> {
         .output()
         .map_err(|e| anyhow::anyhow!("running expand command: {e}"))?;
     if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // `cargo expand` on a lib+bin crate needs an explicit target.
+        let hint = if stderr.contains("can only be passed to one target") {
+            "  (hint: set expand_command to `cargo expand --lib {module}` or `--bin <name>`)"
+        } else {
+            ""
+        };
         anyhow::bail!(
-            "expand command failed ({}): {}",
+            "expand command failed ({}): {}{hint}",
             out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
+            stderr.trim()
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
