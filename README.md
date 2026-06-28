@@ -8,7 +8,9 @@
 working tree or browse the branch's commit history, with a file tree on the left
 and the selected diff (syntax-highlighted, adjustable context) on the right.
 Stage files, mark them reviewed, leave line comments — and let an AI coding agent
-read those comments, fix the code, and respond.
+read those comments, fix the code, and respond. It can also **debug** straight
+from the diff (breakpoints, stepping, variable inspection, even debugging a past
+commit) and overlay **test coverage**.
 
 <p align="center">
   <img width="800" alt="turboreview screenshot" src="https://github.com/user-attachments/assets/69ca499b-052b-47e0-b567-72e123ac4568" />
@@ -122,15 +124,33 @@ Press `?` at any time for an in-app keybinding overlay.
 | `/`              | search within the current diff                                  |
 | `n` / `N`        | jump to next / previous search match                            |
 | `a`              | fold / unfold all directories in the file tree                 |
+| `O`              | view all tracked files / changed files only                     |
 | `z`              | hide / show the file pane (diff goes full-width)               |
-| `<` / `>`        | narrow / widen the file pane                                    |
+| `<` / `>`        | narrow / widen the focused pane (files or the right pane)        |
 | `c`              | comment on the cursor line (opens a modal input box)            |
 | `s`              | stage the selected file (Unstaged) / unstage it (Staged)        |
 | `Space`          | toggle the reviewed checkbox on the selected file               |
 | `R`              | toggle hiding reviewed files                                    |
 | `r`              | refresh everything from disk / git                              |
+| `%`              | toggle test-coverage highlight (LCOV)                            |
+| `M`              | run the configured coverage command, then show it               |
 | `?`              | show the keybinding help overlay                                |
 | `qq` / `Ctrl-C`  | quit (press `q` twice to avoid accidental exits)                |
+
+**Debugging** (right pane Debug tab; see [Debugging](#debugging)):
+
+| Key              | Action                                                          |
+|------------------|-----------------------------------------------------------------|
+| `b`              | toggle a breakpoint on the cursor line (Diff pane)              |
+| `D`              | launch a debug session (a selected commit in Commits, else worktree) |
+| `[` / `]`        | right pane: switch the Comments / Debug tab (when focused)       |
+| `t`              | Debug tab: switch the Vars / Breakpoints view                   |
+| `c`/`n`/`i`/`o`  | continue / step over / step in / step out (Debug focused)       |
+| `Enter`          | Vars: expand a variable · Breakpoints: jump to it                |
+| `Space` / `d`    | Breakpoints tab: enable-disable / delete a breakpoint           |
+| `h` / `l`        | scroll the Debug pane horizontally                              |
+| `Ctrl-D`         | in the comment box: attach the stopped call stack to the comment |
+| `X`              | end all debug sessions                                          |
 
 In the comment input box: type freely, **Enter** for a newline, **Ctrl-S** to
 save, **Esc** to cancel. Saving an empty comment deletes it.
@@ -175,6 +195,55 @@ scope (`.turboreview/commits/<sha>/`).
 
 Press `/` to **search** within the current diff (case-insensitive substring).
 `n` and `N` jump to the next and previous match.
+
+## Debugging
+
+turboreview can drive a debugger straight from the diff, using the [Debug Adapter
+Protocol](https://microsoft.github.io/debug-adapter-protocol/) (any DAP adapter:
+`lldb-dap`, `codelldb`, `debugpy`, …). Configure it under `debug` in
+`.turboreview/config.json` (see [docs/debug-config-example.md](docs/debug-config-example.md)):
+
+```jsonc
+"debug": {
+  "adapter": { "command": "lldb-dap", "args": [] },
+  "build":   "cargo build",                 // run before launch
+  "program": "target/debug/your-binary",    // built binary (relative to source root)
+  "args": [], "cwd": ".",
+  "source_map": []
+}
+```
+
+- Press `b` on a diff line to set a breakpoint (a `●` shows in the gutter), then
+  `D` to build + launch. The **right pane's Debug tab** shows the call stack and
+  the selected frame's variables; `▶` marks the stopped line.
+- `Tab` to focus the Debug pane, then step with `c` / `n` / `i` / `o`. `Enter`
+  expands a structured value (String/Vec/struct/map) to its contents; each
+  variable shows its type and memory address.
+- `t` switches the Debug pane between **Vars** and **Breakpoints** (the
+  breakpoint list: `Enter` jumps, `Space` enables/disables, `d` deletes).
+- **Debug a past commit:** in the Commits view, select a commit and press `D` —
+  turboreview checks it out in a throwaway `git worktree`, builds it there, and
+  debugs that historical binary (cleaned up when the session ends).
+- **Attach a snapshot to a comment:** while stopped, press `c` to comment, then
+  `Ctrl-D` to attach the current call stack + locals. It's saved with the comment
+  and shown inline, so a reviewer keeps the exact runtime state.
+- `O` toggles **view all files** (every tracked file, not just changed ones) so
+  you can open and breakpoint anywhere in the codebase. `X` ends the session.
+
+## Test coverage
+
+Press `%` to overlay **coverage** from an LCOV file: a `▌` bar in the gutter is
+green for covered lines, red for uncovered. The footer shows overall and
+current-file percentages. Configure the file (and, optionally, a command that
+generates it) in `.turboreview/config.json`:
+
+```jsonc
+"coverage_file": "coverage/lcov.info",
+"coverage_command": "cargo llvm-cov --lcov --output-path coverage/lcov.info"
+```
+
+Press `M` to run the command and reload. Any tool that emits LCOV works
+(`cargo llvm-cov`, `tarpaulin`, `nyc`, `gcov`, …).
 
 ## Review state & storage
 
