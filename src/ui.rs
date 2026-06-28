@@ -1046,14 +1046,10 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
             (Some(f), Some(n)) => app.line_coverage(f, n),
             _ => crate::coverage::LineCov::None,
         };
-        let gutter_fg = match cov {
-            crate::coverage::LineCov::Covered => pal.tick,
-            crate::coverage::LineCov::Uncovered => pal.red,
-            crate::coverage::LineCov::None => match comment {
-                Some(c) if c.stale => pal.yellow,
-                Some(_) => pal.accent,
-                None => pal.accent_dim,
-            },
+        let gutter_fg = match comment {
+            Some(c) if c.stale => pal.yellow,
+            Some(_) => pal.accent,
+            None => pal.accent_dim,
         };
         let bg = match dl.kind {
             LineKind::Add => Some(pal.add_bg),
@@ -1128,7 +1124,22 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
                 Span::styled(num, gutter_style),
             ]
         } else {
-            vec![Span::styled(gutter(dl), gutter_style)]
+            // 4-digit number + a coverage `│` bar (green/red) in the trailing
+            // gutter column, keeping the 5-col width.
+            let num = line_no.map(|n| format!("{:>4}", n)).unwrap_or_else(|| "    ".into());
+            let (cov_ch, cov_fg) = match cov {
+                crate::coverage::LineCov::Covered => ("│", pal.tick),
+                crate::coverage::LineCov::Uncovered => ("│", pal.red),
+                crate::coverage::LineCov::None => (" ", gutter_fg),
+            };
+            let mut cov_style = Style::default().fg(cov_fg);
+            if let Some(b) = cell_bg {
+                cov_style = cov_style.bg(b);
+            }
+            vec![
+                Span::styled(num, gutter_style),
+                Span::styled(cov_ch.to_string(), cov_style),
+            ]
         };
         spans.extend(text_spans);
         spans.push(Span::styled(" ".repeat(pad), pad_style));
@@ -1297,20 +1308,16 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             }
             // Gutter: YELLOW for stale-commented lines, ACCENT for normal commented, ACCENT_DIM otherwise.
             let comment = app.comment_for(dl);
-            // Coverage highlight (when on) colors the line-number gutter:
-            // covered = green, uncovered = red; otherwise the comment color.
+            // Coverage (when on) is shown as a colored `│` bar (see below), not
+            // by recoloring the line number.
             let cov = match (&cov_file, dl.new_lineno.or(dl.old_lineno)) {
                 (Some(f), Some(n)) => app.line_coverage(f, n),
                 _ => crate::coverage::LineCov::None,
             };
-            let gutter_fg = match cov {
-                crate::coverage::LineCov::Covered => pal.tick,
-                crate::coverage::LineCov::Uncovered => pal.red,
-                crate::coverage::LineCov::None => match comment {
-                    Some(c) if c.stale => pal.yellow,
-                    Some(_) => pal.accent,
-                    None => pal.accent_dim,
-                },
+            let gutter_fg = match comment {
+                Some(c) if c.stale => pal.yellow,
+                Some(_) => pal.accent,
+                None => pal.accent_dim,
             };
             let gutter_style = if is_cursor {
                 Style::default().fg(gutter_fg).bg(pal.selected_bg)
@@ -1369,8 +1376,24 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                     }
                 }
             }
-            let mut all_spans = Vec::with_capacity(2 + spans.len());
+            // Coverage bar: a colored `│` between the marker and the line
+            // number (green covered / red uncovered / blank when no data).
+            let (cov_ch, cov_fg) = match cov {
+                crate::coverage::LineCov::Covered => ("│", pal.tick),
+                crate::coverage::LineCov::Uncovered => ("│", pal.red),
+                crate::coverage::LineCov::None => (" ", pal.accent_dim),
+            };
+            let mut cov_style = Style::default().fg(cov_fg);
+            if is_cursor {
+                cov_style = cov_style.bg(pal.selected_bg);
+            } else if let Some(b) = bg {
+                cov_style = cov_style.bg(b);
+            }
+            let cov_span = Span::styled(cov_ch.to_string(), cov_style);
+
+            let mut all_spans = Vec::with_capacity(3 + spans.len());
             all_spans.push(marker_span);
+            all_spans.push(cov_span);
             all_spans.push(gutter_span);
             all_spans.extend(spans);
             result.push(Line::from(all_spans));
