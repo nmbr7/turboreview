@@ -89,6 +89,43 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// Ceiling division for non-negative integers.
+fn div_ceil(n: usize, d: usize) -> usize {
+    let d = d.max(1);
+    (n + d - 1) / d
+}
+
+/// Hard-wrap a run of styled spans to `width` visual columns, preserving each
+/// span's style. Splits on the character grid (not word boundaries) so code
+/// stays column-aligned. Returns one span-row per visual line; an empty input
+/// yields a single empty row. `width` is clamped to at least 1.
+fn wrap_spans(spans: &[Span<'static>], width: usize) -> Vec<Vec<Span<'static>>> {
+    let width = width.max(1);
+    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut cur: Vec<Span<'static>> = Vec::new();
+    let mut cur_len = 0usize; // visual chars used on the current row
+    for span in spans {
+        let style = span.style;
+        let mut buf = String::new();
+        for ch in span.content.chars() {
+            if cur_len == width {
+                if !buf.is_empty() {
+                    cur.push(Span::styled(std::mem::take(&mut buf), style));
+                }
+                rows.push(std::mem::take(&mut cur));
+                cur_len = 0;
+            }
+            buf.push(ch);
+            cur_len += 1;
+        }
+        if !buf.is_empty() {
+            cur.push(Span::styled(buf, style));
+        }
+    }
+    rows.push(cur); // final (possibly empty) row
+    rows
+}
+
 /// One visual row in side-by-side mode. A `header` (hunk) row spans the full
 /// width and ignores left/right. Otherwise `left`/`right` hold the diff indices
 /// shown on the old/new sides (`None` = a blank cell).
@@ -1042,11 +1079,27 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
         .position(|p| p.header == cur || p.left == cur || p.right == cur)
         .unwrap_or(0);
 
-    // Rendered height of a paired row = 1 + comment box for each distinct side
-    // with a comment. Context rows have left==right; count that box only once.
+    // Visual code rows a side occupies (1, or wrapped-line count when wrapping).
+    let side_rows = |di: Option<usize>| -> usize {
+        match di {
+            Some(i) if app.wrap_lines && app.diff[i].kind != LineKind::Hunk => {
+                div_ceil(app.diff[i].text.chars().count(), text_w).max(1)
+            }
+            _ => 1,
+        }
+    };
+
+    // Rendered height of a paired row = code rows (max of the two sides) +
+    // comment box for each distinct side with a comment. Context rows have
+    // left==right; count that box only once.
     let row_height = |pi: usize| -> usize {
         let p = &pairs[pi];
-        let mut h = 1;
+        // Hunk header rows are full-width, always one line.
+        let mut h = if p.header.is_some() {
+            1
+        } else {
+            side_rows(p.left).max(side_rows(p.right))
+        };
         let right = if p.right == p.left { None } else { p.right };
         for side in [p.left, right] {
             if let Some(di) = side {
@@ -1064,9 +1117,11 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
         diff_scroll_start_follow(cursor_row, page, &row_height)
     };
 
-    // Render one cell (gutter + text), padded/truncated to `cell_w`, with the
-    // appropriate background. `di` None => a blank cell.
-    let render_cell = |di: Option<usize>, is_cursor_row: bool| -> Vec<Span<'static>> {
+    // Render one cell (gutter + text) as one or more visual rows, each padded to
+    // `cell_w`, with the appropriate background. `di` None => a blank cell. When
+    // wrapping is off, always a single row; when on, the text wraps to `text_w`
+    // with the gutter shown only on the first row.
+    let render_cell = |di: Option<usize>, is_cursor_row: bool| -> Vec<Vec<Span<'static>>> {
         let Some(di) = di else {
             // Blank cell: pad to cell width.
             let bg = if is_cursor_row {
@@ -1074,7 +1129,7 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
             } else {
                 Style::default()
             };
-            return vec![Span::styled(" ".repeat(cell_w), bg)];
+            return vec![vec![Span::styled(" ".repeat(cell_w), bg)]];
         };
         let dl = &app.diff[di];
         let comment = app.comment_for(dl);
@@ -1100,15 +1155,13 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
             }
             s
         };
-        // Text, horizontally scrolled then truncated to text width, syntax-highlighted.
-        let shifted: String = dl
-            .text
-            .chars()
-            .skip(app.diff_hscroll)
-            .take(text_w)
-            .collect();
-        let visible = shifted.chars().count();
-        let pad = text_w.saturating_sub(visible);
+        // Text: horizontally scrolled, syntax-highlighted. When wrapping is off
+        // it is truncated to `text_w`; when on it is wrapped to `text_w` rows.
+        let shifted: String = if app.wrap_lines {
+            dl.text.clone()
+        } else {
+            dl.text.chars().skip(app.diff_hscroll).take(text_w).collect()
+        };
         // Search tint applies to the whole cell when matched (not on cursor row).
         let search_hit = app.search.as_ref().map_or(false, |s| {
             !is_cursor_row && dl.text.to_lowercase().contains(&s.query)
@@ -1181,9 +1234,30 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
                 Span::styled(cov_ch.to_string(), cov_style),
             ]
         };
-        spans.extend(text_spans);
-        spans.push(Span::styled(" ".repeat(pad), pad_style));
-        spans
+        // `spans` currently holds the gutter (marker/num/cov). Split the text into
+        // visual rows: one row when wrapping is off, N when on.
+        let gutter_spans = spans;
+        let text_rows: Vec<Vec<Span<'static>>> = if app.wrap_lines {
+            wrap_spans(&text_spans, text_w)
+        } else {
+            vec![text_spans]
+        };
+        let blank_gutter = Span::styled(" ".repeat(gutter_w), pad_style);
+        let mut rows: Vec<Vec<Span<'static>>> = Vec::with_capacity(text_rows.len());
+        for (ri, trow) in text_rows.into_iter().enumerate() {
+            let mut row: Vec<Span<'static>> = Vec::with_capacity(gutter_spans.len() + trow.len() + 1);
+            if ri == 0 {
+                row.extend(gutter_spans.iter().cloned());
+            } else {
+                row.push(blank_gutter.clone());
+            }
+            let visible: usize = trow.iter().map(|s| s.content.chars().count()).sum();
+            let pad = text_w.saturating_sub(visible);
+            row.extend(trow);
+            row.push(Span::styled(" ".repeat(pad), pad_style));
+            rows.push(row);
+        }
+        rows
     };
 
     // A row is highlighted when any of its diff indices fall in the visual-select
@@ -1211,17 +1285,41 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
             continue;
         }
 
-        // Two cells + separator.
-        let mut spans = render_cell(p.left, is_cursor_row);
+        // Two cells + separator. Each cell may wrap to several rows; align them
+        // by zipping to the taller side and padding the shorter with a blank cell.
+        let left_rows = render_cell(p.left, is_cursor_row);
+        let right_rows = render_cell(p.right, is_cursor_row);
         let sep_style = if is_cursor_row {
             Style::default().fg(pal.accent_dim).bg(pal.selected_bg)
         } else {
             Style::default().fg(pal.accent_dim)
         };
-        spans.push(Span::styled("│", sep_style));
-        spans.extend(render_cell(p.right, is_cursor_row));
-        result.push(Line::from(spans));
-        rendered_rows += 1;
+        let blank_cell = |is_cur: bool| -> Vec<Span<'static>> {
+            let st = if is_cur {
+                Style::default().bg(pal.selected_bg)
+            } else {
+                Style::default()
+            };
+            vec![Span::styled(" ".repeat(cell_w), st)]
+        };
+        let nrows = left_rows.len().max(right_rows.len());
+        for ri in 0..nrows {
+            if rendered_rows >= page {
+                break;
+            }
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            match left_rows.get(ri) {
+                Some(r) => spans.extend(r.iter().cloned()),
+                None => spans.extend(blank_cell(is_cursor_row)),
+            }
+            spans.push(Span::styled("│", sep_style));
+            match right_rows.get(ri) {
+                Some(r) => spans.extend(r.iter().cloned()),
+                None => spans.extend(blank_cell(is_cursor_row)),
+            }
+            result.push(Line::from(spans));
+            rendered_rows += 1;
+        }
 
         // Inline comment box(es) full-width under the row. For a context row,
         // left and right are the SAME diff index — render its box once.
@@ -1303,11 +1401,23 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
         // don't overflow or butt against the pane border.
         let inner_w = area.width.saturating_sub(2) as usize; // minus the diff pane borders
         let wrap_w = inner_w.saturating_sub(BODY_PREFIX_W + RIGHT_PAD).max(1);
+        // Prefix before the code text: marker (1) + coverage bar (1) + gutter (5).
+        const LINE_PREFIX_W: usize = 7;
+        // Width available for the code text itself (used only when wrapping).
+        let code_w = inner_w.saturating_sub(LINE_PREFIX_W).max(1);
 
-        // Compute the rendered height (diff line + its inline comment box lines) for a
-        // given diff index, so we can scroll in rendered-line space and guarantee the
-        // cursor line AND its comment are always visible. Wrapped text height must match
-        // the body/response render below or scrolling drifts.
+        // Visual rows a wrapped code line occupies (1 when wrapping is off).
+        let code_rows = |dl: &crate::app::DiffLine| -> usize {
+            if !app.wrap_lines || dl.kind == LineKind::Hunk {
+                return 1;
+            }
+            div_ceil(dl.text.chars().count(), code_w).max(1)
+        };
+
+        // Compute the rendered height (diff line rows + its inline comment box lines)
+        // for a given diff index, so we can scroll in rendered-line space and
+        // guarantee the cursor line AND its comment are always visible. Wrapped text
+        // height must match the body/response render below or scrolling drifts.
         // comment box: 1 (top) + wrapped text + (if response: 1 blank + wrapped response) + 1 (bottom)
         let rendered_height = |i: usize| -> usize {
             let dl = &app.diff[i];
@@ -1315,7 +1425,7 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                 .comment_for(dl)
                 .map(|c| comment_box_height(c, wrap_w))
                 .unwrap_or(0);
-            1 + comment_lines
+            code_rows(dl) + comment_lines
         };
 
         // History overlay: center the cursor line. Otherwise: cursor at viewport bottom.
@@ -1441,13 +1551,42 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             }
             let cov_span = Span::styled(cov_ch.to_string(), cov_style);
 
-            let mut all_spans = Vec::with_capacity(3 + spans.len());
-            all_spans.push(marker_span);
-            all_spans.push(cov_span);
-            all_spans.push(gutter_span);
-            all_spans.extend(spans);
-            result.push(Line::from(all_spans));
-            rendered_rows += 1;
+            if app.wrap_lines {
+                // Wrap the code onto continuation rows. The marker/cov/gutter
+                // prefix appears once; wrapped rows are indented under the code
+                // column with a blank prefix carrying the row's background.
+                let rows = wrap_spans(&spans, code_w);
+                let cont_bg = if is_cursor { Some(pal.selected_bg) } else { bg };
+                let mut prefix_style = Style::default();
+                if let Some(b) = cont_bg {
+                    prefix_style = prefix_style.bg(b);
+                }
+                let indent = " ".repeat(LINE_PREFIX_W);
+                for (ri, row) in rows.into_iter().enumerate() {
+                    if rendered_rows >= page {
+                        break;
+                    }
+                    let mut line_spans: Vec<Span> = Vec::with_capacity(3 + row.len());
+                    if ri == 0 {
+                        line_spans.push(marker_span.clone());
+                        line_spans.push(cov_span.clone());
+                        line_spans.push(gutter_span.clone());
+                    } else {
+                        line_spans.push(Span::styled(indent.clone(), prefix_style));
+                    }
+                    line_spans.extend(row);
+                    result.push(Line::from(line_spans));
+                    rendered_rows += 1;
+                }
+            } else {
+                let mut all_spans = Vec::with_capacity(3 + spans.len());
+                all_spans.push(marker_span);
+                all_spans.push(cov_span);
+                all_spans.push(gutter_span);
+                all_spans.extend(spans);
+                result.push(Line::from(all_spans));
+                rendered_rows += 1;
+            }
 
             // Enhancement 5a: Inline comment box with box-drawing chars.
             // Normal:  ╭─ comment  /  │ <line>...  /  ╰─
@@ -1779,6 +1918,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("F", "full-file diff toggle"),
             ("v", "side-by-side / unified diff"),
             ("d", "cycle diff style: dim / bright / plain"),
+            ("w", "toggle wrapping of long diff lines"),
             ("y", "copy line / selection to clipboard"),
             ("V", "visual select (move, then y to copy, Esc cancels)"),
         ],
@@ -2079,6 +2219,52 @@ mod tests {
     fn wrap_text_clamps_zero_width_to_one() {
         let lines = wrap_text("ab", 0);
         assert_eq!(lines, vec!["a", "b"]);
+    }
+
+    fn row_text(row: &[Span<'static>]) -> String {
+        row.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn wrap_spans_hard_splits_on_grid() {
+        let spans = vec![Span::raw("abcdefg".to_string())];
+        let rows = wrap_spans(&spans, 3);
+        let texts: Vec<String> = rows.iter().map(|r| row_text(r)).collect();
+        assert_eq!(texts, vec!["abc", "def", "g"]);
+    }
+
+    #[test]
+    fn wrap_spans_preserves_span_styles_across_split() {
+        let red = Style::default().fg(Color::Red);
+        let blue = Style::default().fg(Color::Blue);
+        // "ab" red + "cd" blue, width 3 -> row0: "abc" (a,b red; c blue), row1: "d" blue.
+        let spans = vec![
+            Span::styled("ab".to_string(), red),
+            Span::styled("cd".to_string(), blue),
+        ];
+        let rows = wrap_spans(&spans, 3);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(row_text(&rows[0]), "abc");
+        assert_eq!(row_text(&rows[1]), "d");
+        // Style boundary is preserved: last span of row0 is the blue "c".
+        assert_eq!(rows[0].last().unwrap().style.fg, Some(Color::Blue));
+        assert_eq!(rows[1][0].style.fg, Some(Color::Blue));
+    }
+
+    #[test]
+    fn wrap_spans_short_input_single_row() {
+        let spans = vec![Span::raw("hi".to_string())];
+        let rows = wrap_spans(&spans, 10);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(row_text(&rows[0]), "hi");
+    }
+
+    #[test]
+    fn div_ceil_rounds_up() {
+        assert_eq!(div_ceil(0, 3), 0);
+        assert_eq!(div_ceil(1, 3), 1);
+        assert_eq!(div_ceil(3, 3), 1);
+        assert_eq!(div_ceil(7, 3), 3);
     }
 
     #[test]

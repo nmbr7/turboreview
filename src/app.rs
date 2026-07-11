@@ -443,6 +443,9 @@ pub struct App {
     /// Visual emphasis for the diff: dim context (default), full brightness, or
     /// plain (no add/del background). Cycled with `d`.
     pub diff_style: DiffStyle,
+    /// false (default) = long diff lines truncate (use h-scroll); true = wrap
+    /// them onto continuation rows. Toggled with `w`.
+    pub wrap_lines: bool,
     pub history: Option<FileHistory>,
     pub search: Option<SearchState>,
     pub search_input: Option<String>,
@@ -548,6 +551,7 @@ impl App {
             theme: crate::theme::Theme::Dark,
             split_diff: false,
             diff_style: DiffStyle::Dim,
+            wrap_lines: false,
             history: None,
             search: None,
             search_input: None,
@@ -587,6 +591,15 @@ impl App {
     /// Advance the diff style to the next state in the cycle.
     pub fn cycle_diff_style(&mut self) {
         self.diff_style = self.diff_style.next();
+    }
+
+    /// Toggle wrapping of long diff lines. Wrapping makes h-scroll a no-op, so
+    /// reset the horizontal offset when turning it on.
+    pub fn toggle_wrap(&mut self) {
+        self.wrap_lines = !self.wrap_lines;
+        if self.wrap_lines {
+            self.diff_hscroll = 0;
+        }
     }
 
     pub fn palette(&self) -> crate::theme::Palette {
@@ -3095,6 +3108,18 @@ mod tests {
         assert!(app.split_diff);
         app.toggle_split();
         assert!(!app.split_diff);
+    }
+
+    #[test]
+    fn toggle_wrap_flips_and_resets_hscroll() {
+        let mut app = sample();
+        assert!(!app.wrap_lines);
+        app.diff_hscroll = 12;
+        app.toggle_wrap();
+        assert!(app.wrap_lines);
+        assert_eq!(app.diff_hscroll, 0); // wrapping makes h-scroll a no-op
+        app.toggle_wrap();
+        assert!(!app.wrap_lines);
     }
 
     #[test]

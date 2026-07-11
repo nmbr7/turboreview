@@ -72,6 +72,7 @@ fn main() -> Result<()> {
     app.theme = storage::load_theme(&root);
     app.split_diff = storage::load_split(&root);
     app.diff_style = storage::load_diff_style(&root);
+    app.wrap_lines = storage::load_wrap_lines(&root);
     refresh_diff(&repo, &mut app);
 
     let mut terminal = setup_terminal()?;
@@ -942,6 +943,19 @@ fn run(
                         app.cycle_diff_style();
                         let _ = storage::save_diff_style(&app.repo_root, app.diff_style);
                         app.status_msg = Some(app.diff_style.label().into());
+                    }
+                    // w toggles wrapping of long diff lines and persists it.
+                    (KeyCode::Char('w'), _) => {
+                        app.toggle_wrap();
+                        let _ = storage::save_wrap_lines(&app.repo_root, app.wrap_lines);
+                        app.status_msg = Some(
+                            if app.wrap_lines {
+                                "line wrap on"
+                            } else {
+                                "line wrap off"
+                            }
+                            .into(),
+                        );
                     }
                     // A (capital) — archive all resolved comments in the current scope
                     (KeyCode::Char('A'), _) => {

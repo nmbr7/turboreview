@@ -118,6 +118,8 @@ struct Config {
     #[serde(default = "default_diff_style")]
     diff_style: String, // "dim" (default) | "bright" | "plain"
     #[serde(default)]
+    wrap_lines: bool, // wrap long diff lines (default false)
+    #[serde(default)]
     debug: DebugConfig, // debugger build/adapter/program config
     #[serde(default)]
     coverage_file: String, // path to an LCOV file (relative to repo root)
@@ -137,6 +139,7 @@ impl Default for Config {
             theme: String::new(),
             split_diff: false,
             diff_style: default_diff_style(),
+            wrap_lines: false,
             debug: DebugConfig::default(),
             coverage_file: String::new(),
             coverage_command: String::new(),
@@ -202,6 +205,18 @@ pub fn load_diff_style(repo_root: &Path) -> crate::app::DiffStyle {
 pub fn save_diff_style(repo_root: &Path, style: crate::app::DiffStyle) -> Result<()> {
     let mut cfg = load_config(repo_root);
     cfg.diff_style = style.as_str().into();
+    save_config(repo_root, &cfg)
+}
+
+/// Load the persisted line-wrap preference (false if unset).
+pub fn load_wrap_lines(repo_root: &Path) -> bool {
+    load_config(repo_root).wrap_lines
+}
+
+/// Persist the line-wrap preference, preserving other config fields.
+pub fn save_wrap_lines(repo_root: &Path, wrap: bool) -> Result<()> {
+    let mut cfg = load_config(repo_root);
+    cfg.wrap_lines = wrap;
     save_config(repo_root, &cfg)
 }
 
@@ -599,6 +614,29 @@ mod tests {
         assert_eq!(load_theme(root), crate::theme::Theme::Light);
         assert!(load_split(root));
         assert_eq!(load_diff_style(root), crate::app::DiffStyle::Plain);
+    }
+
+    #[test]
+    fn wrap_lines_defaults_false_and_round_trips() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert!(!load_wrap_lines(root)); // default
+        save_wrap_lines(root, true).unwrap();
+        assert!(load_wrap_lines(root));
+        save_wrap_lines(root, false).unwrap();
+        assert!(!load_wrap_lines(root));
+    }
+
+    #[test]
+    fn saving_wrap_lines_preserves_other_fields() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        save_theme(root, crate::theme::Theme::Light).unwrap();
+        save_diff_style(root, crate::app::DiffStyle::Plain).unwrap();
+        save_wrap_lines(root, true).unwrap();
+        assert_eq!(load_theme(root), crate::theme::Theme::Light);
+        assert_eq!(load_diff_style(root), crate::app::DiffStyle::Plain);
+        assert!(load_wrap_lines(root));
     }
 
     // ─── TDD: archive_path, append_archive, archive_cutoff_secs ──────────────
