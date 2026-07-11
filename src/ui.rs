@@ -1,5 +1,5 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
@@ -1088,8 +1088,8 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
             None => pal.accent_dim,
         };
         let bg = match dl.kind {
-            LineKind::Add => Some(pal.add_bg),
-            LineKind::Del => Some(pal.del_bg),
+            LineKind::Add if app.diff_style.change_bg() => Some(pal.add_bg),
+            LineKind::Del if app.diff_style.change_bg() => Some(pal.del_bg),
             _ => None,
         };
         let cell_bg = if is_cursor_row { Some(pal.selected_bg) } else { bg };
@@ -1121,8 +1121,12 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
                 sp.style = sp.style.bg(pal.accent_dim);
             } else if let Some(b) = cell_bg {
                 sp.style = sp.style.bg(b);
+            } else if !app.diff_style.change_bg() {
+                // Plain: drop the syntax theme's own background so only the
+                // terminal background shows through.
+                sp.style = sp.style.bg(Color::Reset);
             }
-            if !is_cursor_row && dl.kind == LineKind::Context {
+            if app.diff_style.dim_context() && !is_cursor_row && dl.kind == LineKind::Context {
                 sp.style = sp.style.add_modifier(Modifier::DIM);
             }
         }
@@ -1332,8 +1336,8 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             // cursor line when nothing is selected).
             let is_cursor = idx >= sel_lo && idx <= sel_hi;
             let bg = match dl.kind {
-                LineKind::Add => Some(pal.add_bg),
-                LineKind::Del => Some(pal.del_bg),
+                LineKind::Add if app.diff_style.change_bg() => Some(pal.add_bg),
+                LineKind::Del if app.diff_style.change_bg() => Some(pal.del_bg),
                 _ => None,
             };
             if dl.kind == LineKind::Hunk {
@@ -1401,8 +1405,14 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                     for s in spans.iter_mut() {
                         s.style = s.style.bg(bg);
                     }
+                } else if !app.diff_style.change_bg() {
+                    // Plain: drop the syntax theme's own background so only the
+                    // terminal background shows through.
+                    for s in spans.iter_mut() {
+                        s.style = s.style.bg(Color::Reset);
+                    }
                 }
-                if dl.kind == LineKind::Context {
+                if app.diff_style.dim_context() && dl.kind == LineKind::Context {
                     for s in spans.iter_mut() {
                         s.style = s.style.add_modifier(Modifier::DIM);
                     }
@@ -1768,6 +1778,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("+/-", "context lines (±5, + at max → full file)"),
             ("F", "full-file diff toggle"),
             ("v", "side-by-side / unified diff"),
+            ("d", "cycle diff style: dim / bright / plain"),
             ("y", "copy line / selection to clipboard"),
             ("V", "visual select (move, then y to copy, Esc cancels)"),
         ],

@@ -71,6 +71,7 @@ fn main() -> Result<()> {
     // Load persisted theme preference
     app.theme = storage::load_theme(&root);
     app.split_diff = storage::load_split(&root);
+    app.diff_style = storage::load_diff_style(&root);
     refresh_diff(&repo, &mut app);
 
     let mut terminal = setup_terminal()?;
@@ -933,6 +934,14 @@ fn run(
                     (KeyCode::Char('v'), _) => {
                         app.toggle_split();
                         let _ = storage::save_split(&app.repo_root, app.split_diff);
+                    }
+                    // d cycles the diff style (dim -> bright -> plain) and persists
+                    // it (the debug-breakpoint `d` arm above is guarded, so it wins
+                    // only while the Debug breakpoints view is focused).
+                    (KeyCode::Char('d'), _) => {
+                        app.cycle_diff_style();
+                        let _ = storage::save_diff_style(&app.repo_root, app.diff_style);
+                        app.status_msg = Some(app.diff_style.label().into());
                     }
                     // A (capital) — archive all resolved comments in the current scope
                     (KeyCode::Char('A'), _) => {

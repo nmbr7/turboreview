@@ -119,6 +119,7 @@ Press `?` at any time for an in-app keybinding overlay.
 | `+` / `-`        | increase / decrease diff context (step 5; `+` at max → full file) |
 | `F`              | toggle full-file view (shortcut; also reachable via `+`)          |
 | `v`              | toggle side-by-side (split) vs unified diff (persisted)          |
+| `d`              | cycle diff style: dim → bright → plain (persisted)              |
 | `H`              | file-history overlay for the selected file's diff               |
 | `{` / `}`        | step to older / newer revision (in the history overlay)         |
 | `/`              | search within the current diff                                  |

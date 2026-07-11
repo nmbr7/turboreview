@@ -88,6 +88,66 @@ pub enum ViewMode {
     Commits,
 }
 
+/// How much visual emphasis the diff gives changed vs. unchanged lines.
+/// Cycled with `d`: Dim -> Bright -> Plain -> Dim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffStyle {
+    /// Unchanged context lines dimmed; add/del lines carry a green/red bg.
+    Dim,
+    /// Context at full brightness; add/del lines still carry a green/red bg.
+    Bright,
+    /// No dimming and no add/del background — changed lines are marked only by
+    /// the +/- gutter.
+    Plain,
+}
+
+impl DiffStyle {
+    /// Next state in the cycle.
+    pub fn next(self) -> DiffStyle {
+        match self {
+            DiffStyle::Dim => DiffStyle::Bright,
+            DiffStyle::Bright => DiffStyle::Plain,
+            DiffStyle::Plain => DiffStyle::Dim,
+        }
+    }
+
+    /// Whether unchanged context lines should be dimmed.
+    pub fn dim_context(self) -> bool {
+        matches!(self, DiffStyle::Dim)
+    }
+
+    /// Whether add/del lines get their green/red background fill. Syntax
+    /// highlighting of the text is kept in every state.
+    pub fn change_bg(self) -> bool {
+        !matches!(self, DiffStyle::Plain)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DiffStyle::Dim => "dim",
+            DiffStyle::Bright => "bright",
+            DiffStyle::Plain => "plain",
+        }
+    }
+
+    pub fn from_str(s: &str) -> DiffStyle {
+        match s {
+            "bright" => DiffStyle::Bright,
+            "plain" => DiffStyle::Plain,
+            _ => DiffStyle::Dim,
+        }
+    }
+
+    /// Short label for the status line.
+    pub fn label(self) -> &'static str {
+        match self {
+            DiffStyle::Dim => "diff style: dim",
+            DiffStyle::Bright => "diff style: bright",
+            DiffStyle::Plain => "diff style: plain",
+        }
+    }
+}
+
 /// Run-state of a single debug session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
@@ -380,6 +440,9 @@ pub struct App {
     pub theme: crate::theme::Theme,
     /// false = unified diff (default), true = side-by-side (split) diff.
     pub split_diff: bool,
+    /// Visual emphasis for the diff: dim context (default), full brightness, or
+    /// plain (no add/del background). Cycled with `d`.
+    pub diff_style: DiffStyle,
     pub history: Option<FileHistory>,
     pub search: Option<SearchState>,
     pub search_input: Option<String>,
@@ -484,6 +547,7 @@ impl App {
             comment_selected: 0,
             theme: crate::theme::Theme::Dark,
             split_diff: false,
+            diff_style: DiffStyle::Dim,
             history: None,
             search: None,
             search_input: None,
@@ -518,6 +582,11 @@ impl App {
     /// Toggle side-by-side (split) diff rendering.
     pub fn toggle_split(&mut self) {
         self.split_diff = !self.split_diff;
+    }
+
+    /// Advance the diff style to the next state in the cycle.
+    pub fn cycle_diff_style(&mut self) {
+        self.diff_style = self.diff_style.next();
     }
 
     pub fn palette(&self) -> crate::theme::Palette {
@@ -3026,6 +3095,40 @@ mod tests {
         assert!(app.split_diff);
         app.toggle_split();
         assert!(!app.split_diff);
+    }
+
+    #[test]
+    fn cycle_diff_style_dim_bright_plain_dim() {
+        let mut app = sample();
+        assert_eq!(app.diff_style, DiffStyle::Dim);
+        app.cycle_diff_style();
+        assert_eq!(app.diff_style, DiffStyle::Bright);
+        app.cycle_diff_style();
+        assert_eq!(app.diff_style, DiffStyle::Plain);
+        app.cycle_diff_style();
+        assert_eq!(app.diff_style, DiffStyle::Dim);
+    }
+
+    #[test]
+    fn diff_style_flags_per_state() {
+        // Dim: dims context AND paints change bg.
+        assert!(DiffStyle::Dim.dim_context());
+        assert!(DiffStyle::Dim.change_bg());
+        // Bright: no dim, but still paints change bg.
+        assert!(!DiffStyle::Bright.dim_context());
+        assert!(DiffStyle::Bright.change_bg());
+        // Plain: no dim, no change bg.
+        assert!(!DiffStyle::Plain.dim_context());
+        assert!(!DiffStyle::Plain.change_bg());
+    }
+
+    #[test]
+    fn diff_style_str_round_trips() {
+        for st in [DiffStyle::Dim, DiffStyle::Bright, DiffStyle::Plain] {
+            assert_eq!(DiffStyle::from_str(st.as_str()), st);
+        }
+        // Unknown strings fall back to Dim.
+        assert_eq!(DiffStyle::from_str("bogus"), DiffStyle::Dim);
     }
 
     #[test]

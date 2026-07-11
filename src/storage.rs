@@ -104,13 +104,19 @@ pub struct ExpandCommand {
     pub command: String,
 }
 
+fn default_diff_style() -> String {
+    "dim".into()
+}
+
 /// Persisted configuration. New fields use `#[serde(default)]` so older
 /// config.json files (which may lack them) keep loading.
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize)]
 struct Config {
     theme: String, // "dark" | "light"
     #[serde(default)]
     split_diff: bool, // side-by-side diff toggle
+    #[serde(default = "default_diff_style")]
+    diff_style: String, // "dim" (default) | "bright" | "plain"
     #[serde(default)]
     debug: DebugConfig, // debugger build/adapter/program config
     #[serde(default)]
@@ -121,6 +127,23 @@ struct Config {
     expand_command: String, // single macro-expansion command (fallback)
     #[serde(default)]
     expand_commands: Vec<ExpandCommand>, // named commands shown in the expand picker
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        // diff_style defaults to "dim" to match the serde default, so a missing
+        // config.json keeps the historical dimmed look.
+        Config {
+            theme: String::new(),
+            split_diff: false,
+            diff_style: default_diff_style(),
+            debug: DebugConfig::default(),
+            coverage_file: String::new(),
+            coverage_command: String::new(),
+            expand_command: String::new(),
+            expand_commands: Vec::new(),
+        }
+    }
 }
 
 /// Read the whole config (defaults if missing/unparseable).
@@ -167,6 +190,18 @@ pub fn load_split(repo_root: &Path) -> bool {
 pub fn save_split(repo_root: &Path, split: bool) -> Result<()> {
     let mut cfg = load_config(repo_root);
     cfg.split_diff = split;
+    save_config(repo_root, &cfg)
+}
+
+/// Load the persisted diff style ("dim" if unset).
+pub fn load_diff_style(repo_root: &Path) -> crate::app::DiffStyle {
+    crate::app::DiffStyle::from_str(&load_config(repo_root).diff_style)
+}
+
+/// Persist the diff style, preserving other config fields.
+pub fn save_diff_style(repo_root: &Path, style: crate::app::DiffStyle) -> Result<()> {
+    let mut cfg = load_config(repo_root);
+    cfg.diff_style = style.as_str().into();
     save_config(repo_root, &cfg)
 }
 
@@ -528,6 +563,42 @@ mod tests {
         std::fs::write(cfgdir.join("config.json"), br#"{"theme":"light"}"#).unwrap();
         assert_eq!(load_theme(root), crate::theme::Theme::Light);
         assert!(!load_split(root)); // missing field defaults to false
+        assert_eq!(load_diff_style(root), crate::app::DiffStyle::Dim); // missing -> dim
+    }
+
+    #[test]
+    fn diff_style_defaults_dim_when_config_missing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // No config.json at all -> historical dimmed look is the default.
+        assert_eq!(load_diff_style(root), crate::app::DiffStyle::Dim);
+    }
+
+    #[test]
+    fn diff_style_round_trips_all_states() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(load_diff_style(root), crate::app::DiffStyle::Dim); // default
+        for st in [
+            crate::app::DiffStyle::Bright,
+            crate::app::DiffStyle::Plain,
+            crate::app::DiffStyle::Dim,
+        ] {
+            save_diff_style(root, st).unwrap();
+            assert_eq!(load_diff_style(root), st);
+        }
+    }
+
+    #[test]
+    fn saving_diff_style_preserves_theme_and_split() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        save_theme(root, crate::theme::Theme::Light).unwrap();
+        save_split(root, true).unwrap();
+        save_diff_style(root, crate::app::DiffStyle::Plain).unwrap();
+        assert_eq!(load_theme(root), crate::theme::Theme::Light);
+        assert!(load_split(root));
+        assert_eq!(load_diff_style(root), crate::app::DiffStyle::Plain);
     }
 
     // ─── TDD: archive_path, append_archive, archive_cutoff_secs ──────────────
