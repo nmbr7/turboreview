@@ -42,6 +42,30 @@ fn main() -> Result<()> {
         print!("{}", turboreview::skill::SKILL_DOC);
         return Ok(());
     }
+    // `--watch` streams comments as JSON lines instead of starting the TUI, so
+    // an agent can stay running alongside the reviewer. `--replay` additionally
+    // emits comments that are already open when it starts.
+    if args.iter().any(|a| a == "--watch") {
+        let repo_arg = args
+            .iter()
+            .skip(1)
+            .find(|a| !a.starts_with("--"))
+            .cloned()
+            .unwrap_or_else(|| ".".to_string());
+        let repo = Repo::discover(&PathBuf::from(&repo_arg))?;
+        let root = repo.workdir()?;
+        let replay = args.iter().any(|a| a == "--replay");
+        let stdout = io::stdout();
+        return match turboreview::watch::run(&root, replay, stdout.lock()) {
+            // A closed pipe (the agent exited, or `| head`) is a normal end, not
+            // a failure worth a non-zero exit and a backtrace.
+            Err(e) => match e.downcast_ref::<io::Error>() {
+                Some(io_err) if io_err.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+                _ => Err(e),
+            },
+            ok => ok,
+        };
+    }
     let repo_arg = args
         .iter()
         .skip(1)

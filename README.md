@@ -66,6 +66,8 @@ an older build).
 ```
 turboreview [REPO_PATH]   # defaults to the current directory
 turboreview --skill       # print the AI-agent guide and exit
+turboreview --watch       # stream review comments as JSON lines (for an agent)
+turboreview --watch --replay   # ... including comments already open
 ```
 
 Run inside (or point at) any git repository.
@@ -209,9 +211,29 @@ banner says only what changed; `r` applies it.
 
 There is no daemon and no socket: both sides poll the same file. turboreview stats
 `comments.json` every ~500ms while you are idle (mtime and length, so two writes in
-one timestamp tick are still caught). An agent asked to *watch* rather than do a
-single pass polls it the same way — `--skill` tells it how, including re-reading
-immediately before every write so it never clobbers a comment you just added.
+one timestamp tick are still caught).
+
+For the other direction, an agent runs:
+
+```sh
+turboreview --watch            # one JSON object per line, as comments arrive
+turboreview --watch --replay   # plus comments already open when it starts
+```
+
+It streams every scope (the worktree and each reviewed commit) and keeps running,
+so the agent reads a line at a time instead of polling by hand:
+
+```json
+{"kind":"new","scope":"worktree","path":"/repo/.turboreview/comments.json",
+ "file":"src/a.rs","line":42,"orig_line":40,"text":"use a const here",
+ "line_text":"let x = 2;","hunk":"@@ -1,4 +1,4 @@","stale":false}
+```
+
+`kind` is `new`, `edited` (you reworded it) or `reopened` (you rejected the fix —
+the line carries the agent's `previous_response`). Replies the agent writes are not
+echoed back, so answering cannot loop. `path` names the file to write the reply
+into, which matters because a comment left on a commit belongs to that commit's
+store, not the worktree's.
 
 ## File history & search
 

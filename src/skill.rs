@@ -145,15 +145,40 @@ properties affect how you read it:
 
 The reviewer may be working in turboreview while you are working in the code. If
 you are asked to watch (stay running and respond as comments arrive), rather than
-to do a single pass:
+to do a single pass, run:
 
-1. Poll the active scope's `comments.json` for changes. Compare modification time
-   *and* file length — two writes inside one filesystem timestamp tick can share
-   an mtime. Every second or two is plenty; this is a human typing.
-2. On a change, re-read the file and look for comments with `status` == `open`
-   that you have not already answered.
-3. Fix, respond, and set the status exactly as in the workflow above.
-4. Go back to waiting. Do not exit after the first comment.
+    turboreview --watch [REPO_PATH]
+
+It prints one JSON object per line to stdout as comments appear, and keeps
+running. Read it a line at a time — do not wait for EOF, it never comes. It
+watches every scope (the worktree and each reviewed commit), so you do not have
+to work out where the reviewer is looking.
+
+Each line:
+
+```json
+{"kind":"new","scope":"worktree","path":"/repo/.turboreview/comments.json",
+ "file":"src/a.rs","line":42,"orig_line":40,"text":"use a const here",
+ "line_text":"let x = 2;","context_before":[],"context_after":[],
+ "hunk":"@@ -1,4 +1,4 @@","stale":false}
+```
+
+- `kind` — `new` (a comment to answer), `edited` (the reviewer reworded one;
+  re-read `text`, the ask has changed), or `reopened` (they rejected your fix;
+  `previous_response` carries what you said before).
+- `scope` — `worktree` or `commit:<sha>`.
+- `path` — the exact `comments.json` to write your reply back into. Use it; do
+  not re-derive the path.
+- `line` vs `orig_line` — `line` is where the comment is now, `orig_line` is
+  where it started and is the stable identity. When `stale` is true, `line` is a
+  guess: anchor on `line_text` and the context instead.
+
+Then, for each line: fix, respond, and set the status exactly as in the workflow
+above, and go back to reading. Do not exit after the first comment.
+
+Comments you answer yourself are not echoed back, so responding cannot loop.
+Comments already open when the watch starts are skipped as well — pass
+`--replay` to receive those too, when picking up a review already in progress.
 
 **Do not clobber the reviewer's edits.** You and turboreview both write this file,
 and turboreview holds the whole array in memory. So:
@@ -306,6 +331,14 @@ mod tests {
         assert!(
             SKILL_DOC.contains("## Watching for new comments"),
             "SKILL_DOC must document the live-review watch loop"
+        );
+        assert!(
+            SKILL_DOC.contains("turboreview --watch"),
+            "SKILL_DOC must tell the agent to use --watch"
+        );
+        assert!(
+            SKILL_DOC.contains("--replay"),
+            "SKILL_DOC must document --replay for an in-progress review"
         );
         assert!(
             SKILL_DOC.contains("Re-read `comments.json` immediately before writing it"),
