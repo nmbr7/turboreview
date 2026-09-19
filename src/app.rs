@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -408,6 +409,15 @@ pub struct App {
     pub selected: usize,
     pub diff: Vec<DiffLine>,
     pub diff_cursor: usize,
+    /// First diff index shown in the diff viewport. The viewport is sticky: it
+    /// only moves when the cursor would fall outside it, so moving the cursor
+    /// within the visible range leaves the content where it is. Updated during
+    /// render (the page height is only known there), hence `Cell`.
+    pub diff_scroll: Cell<usize>,
+    /// Same as `diff_scroll`, for the split view. Split indexes into its own
+    /// row-pair list, not into `diff`, so the two offsets are not interchangeable
+    /// and toggling `v` must not carry one over to the other.
+    pub diff_scroll_split: Cell<usize>,
     pub diff_hscroll: usize,
     /// Some(anchor) when visual-select is active; anchor is a diff index.
     pub select_anchor: Option<usize>,
@@ -524,6 +534,8 @@ impl App {
             selected: 0,
             diff: Vec::new(),
             diff_cursor: 0,
+            diff_scroll: Cell::new(0),
+            diff_scroll_split: Cell::new(0),
             diff_hscroll: 0,
             select_anchor: None,
             reviewed: HashSet::new(),
@@ -780,6 +792,8 @@ impl App {
     pub fn set_diff(&mut self, diff: Vec<DiffLine>) {
         self.diff = diff;
         self.diff_cursor = 0;
+        self.diff_scroll.set(0);
+        self.diff_scroll_split.set(0);
         self.diff_hscroll = 0;
         self.search = None;
         self.search_input = None;

@@ -775,14 +775,30 @@ fn render_commits(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// Keep the cursor visible at the bottom of the viewport (default diff scrolling).
-fn diff_scroll_start_follow(cursor: usize, page: usize, rh: &impl Fn(usize) -> usize) -> usize {
+/// Sticky viewport: keep `prev` as the first visible row and only move it when the
+/// cursor would fall outside the page. Scrolling up starts exactly when the cursor
+/// reaches the top row; scrolling down when it would pass the bottom edge.
+///
+/// `rh(i)` is the rendered height of row `i`, so a row taller than one terminal line
+/// (a line carrying a comment box) is accounted for.
+fn diff_scroll_start_sticky(
+    cursor: usize,
+    prev: usize,
+    page: usize,
+    rh: &impl Fn(usize) -> usize,
+) -> usize {
     if page == 0 {
         return cursor;
     }
+    // Above the viewport: the cursor is the new top row.
+    if cursor <= prev {
+        return cursor;
+    }
+    // Below the viewport: walk back from the cursor so it sits on the last row
+    // that fits, which scrolls by the minimum needed.
     let mut start = cursor;
     let mut used = rh(cursor);
-    while start > 0 {
+    while start > prev {
         let h = rh(start - 1);
         if used + h > page {
             break;
@@ -1114,7 +1130,10 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
     let start = if app.history_active() {
         diff_scroll_start_center(cursor_row, page, &row_height)
     } else {
-        diff_scroll_start_follow(cursor_row, page, &row_height)
+        let start =
+            diff_scroll_start_sticky(cursor_row, app.diff_scroll_split.get(), page, &row_height);
+        app.diff_scroll_split.set(start);
+        start
     };
 
     // Render one cell (gutter + text) as one or more visual rows, each padded to
@@ -1428,11 +1447,19 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
             code_rows(dl) + comment_lines
         };
 
-        // History overlay: center the cursor line. Otherwise: cursor at viewport bottom.
+        // History overlay: center the cursor line. Otherwise: sticky viewport, so the
+        // content only scrolls once the cursor reaches an edge.
         let start = if app.history_active() {
             diff_scroll_start_center(app.diff_cursor, page, &rendered_height)
         } else {
-            diff_scroll_start_follow(app.diff_cursor, page, &rendered_height)
+            let start = diff_scroll_start_sticky(
+                app.diff_cursor,
+                app.diff_scroll.get(),
+                page,
+                &rendered_height,
+            );
+            app.diff_scroll.set(start);
+            start
         };
 
         let (sel_lo, sel_hi) = app.select_range();
@@ -2463,6 +2490,39 @@ mod tests {
     }
 
     #[test]
+    fn diff_scroll_start_sticky_holds_viewport_until_cursor_hits_an_edge() {
+        let rh = |_| 1usize;
+        // Viewport shows 10..=19. Moving the cursor up inside it must not scroll.
+        assert_eq!(diff_scroll_start_sticky(19, 10, 10, &rh), 10);
+        assert_eq!(diff_scroll_start_sticky(15, 10, 10, &rh), 10);
+        assert_eq!(diff_scroll_start_sticky(11, 10, 10, &rh), 10);
+        // Cursor reaches the top row: still no scroll, it is visible.
+        assert_eq!(diff_scroll_start_sticky(10, 10, 10, &rh), 10);
+        // Past the top row: scroll up by exactly one line.
+        assert_eq!(diff_scroll_start_sticky(9, 10, 10, &rh), 9);
+        // Past the bottom row: scroll down by exactly one line.
+        assert_eq!(diff_scroll_start_sticky(20, 10, 10, &rh), 11);
+    }
+
+    #[test]
+    fn diff_scroll_start_sticky_accounts_for_tall_rows() {
+        // Row 12 renders 4 rows tall (a line carrying a comment box).
+        let rh = |i: usize| if i == 12 { 4usize } else { 1 };
+        // From start 10, page 10: rows 10,11 (2) + 12 (4) + 13..=16 (4) = 10.
+        // Cursor 16 is the last row that fits, so the viewport holds.
+        assert_eq!(diff_scroll_start_sticky(16, 10, 10, &rh), 10);
+        // Cursor 17 does not fit; walking back drops row 10 only (1 + 9 = 10).
+        assert_eq!(diff_scroll_start_sticky(17, 10, 10, &rh), 11);
+    }
+
+    #[test]
+    fn diff_scroll_start_sticky_jumps_to_cursor_when_far_above() {
+        let rh = |_| 1usize;
+        // A jump (gg, search) far above the viewport puts the cursor at the top.
+        assert_eq!(diff_scroll_start_sticky(3, 40, 10, &rh), 3);
+    }
+
+    #[test]
     fn diff_scroll_start_center_places_cursor_mid_viewport() {
         let rh = |_| 1usize;
         // page 10, cursor 15 -> ~4 lines above -> start 11
@@ -2471,13 +2531,7 @@ mod tests {
         assert_eq!(diff_scroll_start_center(2, 10, &rh), 0);
     }
 
-    #[test]
-    fn diff_scroll_start_follow_places_cursor_at_bottom() {
-        let rh = |_| 1usize;
-        // page 10, cursor 15 -> start 6 (lines 6..=15 fill the page)
-        assert_eq!(diff_scroll_start_follow(15, 10, &rh), 6);
-    }
-
+    
     #[test]
     fn history_mode_scrolls_cursor_toward_center() {
         use crate::app::{CommentScope, FileHistory};
@@ -2595,6 +2649,52 @@ mod tests {
             .collect();
         assert!(!dump.contains("@@ -1 +1 @@"));
         assert!(dump.contains("let x = 1;"));
+    }
+
+    #[test]
+    fn moving_cursor_up_inside_viewport_does_not_scroll() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = app_with_diff();
+        app.set_diff({
+            let mut lines = Vec::new();
+            for i in 1..=40u32 {
+                lines.push(crate::app::DiffLine {
+                    kind: LineKind::Add,
+                    text: format!("line {i};"),
+                    old_lineno: None,
+                    new_lineno: Some(i),
+                });
+            }
+            lines
+        });
+        // Scroll down far enough that the top of the file is off screen.
+        app.diff_cursor = 39;
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let top = app.diff_scroll.get();
+        assert!(top > 0, "viewport should have scrolled down");
+
+        // Now walk the cursor back up, staying inside the visible page. The
+        // viewport must not move until the cursor reaches its top row.
+        for c in (top + 1..39).rev() {
+            app.diff_cursor = c;
+            terminal.draw(|f| render(f, &app)).unwrap();
+            assert_eq!(
+                app.diff_scroll.get(),
+                top,
+                "viewport moved while cursor {c} was still inside it (top {top})"
+            );
+        }
+
+        // Landing on the top row still does not scroll.
+        app.diff_cursor = top;
+        terminal.draw(|f| render(f, &app)).unwrap();
+        assert_eq!(app.diff_scroll.get(), top);
+
+        // One more press past it scrolls by exactly one line.
+        app.diff_cursor = top - 1;
+        terminal.draw(|f| render(f, &app)).unwrap();
+        assert_eq!(app.diff_scroll.get(), top - 1);
     }
 
     #[test]
