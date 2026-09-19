@@ -127,7 +127,9 @@ properties affect how you read it:
    - Read `text` — the requested change or question.
 4. Make the code change that addresses the comment.
 5. Update that comment object in the JSON:
-   - Set `response` to a short explanation of what you did (or why not).
+   - Set `response` to a short explanation of what you did (or why not). If it
+     already holds an answer of yours, append to it rather than replacing it —
+     the reviewer may not have read the old one yet.
    - Set `status`:
      - `resolved`  — you made the requested change.
      - `wontfix`   — you deliberately did not change it; explain why in `response`.
@@ -179,6 +181,17 @@ above, and go back to reading. Do not exit after the first comment.
 Comments you answer yourself are not echoed back, so responding cannot loop.
 Comments already open when the watch starts are skipped as well — pass
 `--replay` to receive those too, when picking up a review already in progress.
+
+**An `edited` event usually means the reviewer appended to a comment you already
+answered.** They asked a follow-up under their original text, and your existing
+`response` is still the answer to the first part. Add to it — keep what you wrote
+and append the new answer below it. Replacing it destroys an answer the reviewer
+may not have read yet, and they cannot tell that it is gone: the comment simply
+shows a reply that no longer matches what they asked.
+
+If the follow-up makes the old answer wrong rather than incomplete, say so in the
+new text instead of deleting the old — "correction: ..." leaves the reviewer able
+to follow what changed.
 
 **Do not clobber the reviewer's edits.** You and turboreview both write this file,
 and turboreview holds the whole array in memory. So:
@@ -272,6 +285,11 @@ the review corpus — do not touch any `comments.json` while doing one.
   it" is not confirmation; the user saying to commit is.
 - NEVER write `lessons.md` without reviewing the candidate lessons with the user first
   and getting approval — however obvious a pattern looks to you.
+- NEVER overwrite a `response` you have already written. When a comment gains a
+  follow-up, append to the existing response rather than replacing it. Preserving
+  the other comments in the array is not enough — an answer already written into
+  the comment you *are* editing is just as easy to destroy, and the reviewer has
+  no way to see that it is missing.
 "#;
 
 #[cfg(test)]
@@ -343,6 +361,10 @@ mod tests {
         assert!(
             SKILL_DOC.contains("Re-read `comments.json` immediately before writing it"),
             "SKILL_DOC must warn against clobbering the reviewer's edits"
+        );
+        assert!(
+            SKILL_DOC.contains("NEVER overwrite a `response` you have already written"),
+            "SKILL_DOC must forbid overwriting an existing response"
         );
         assert!(
             SKILL_DOC.contains("## Learning from past reviews"),
