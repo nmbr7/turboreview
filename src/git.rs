@@ -51,10 +51,8 @@ impl Repo {
         let workdir = self.workdir()?;
         // Unique path under the system temp dir.
         let short: String = sha.chars().take(8).collect();
-        let dir = std::env::temp_dir().join(format!(
-            "turboreview-wt-{short}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("turboreview-wt-{short}-{}", std::process::id()));
         let out = std::process::Command::new("git")
             .current_dir(&workdir)
             .args([
@@ -131,11 +129,7 @@ impl Repo {
         let index = self.inner.index()?;
         let mut out: Vec<PathBuf> = index
             .iter()
-            .filter_map(|e| {
-                std::str::from_utf8(&e.path)
-                    .ok()
-                    .map(|p| PathBuf::from(p))
-            })
+            .filter_map(|e| std::str::from_utf8(&e.path).ok().map(PathBuf::from))
             .collect();
         out.sort();
         out.dedup();
@@ -151,8 +145,8 @@ impl Repo {
             .workdir()
             .map(|w| w.join(file))
             .unwrap_or_else(|| file.to_path_buf());
-        let content = std::fs::read_to_string(&abs)
-            .with_context(|| format!("reading {}", abs.display()))?;
+        let content =
+            std::fs::read_to_string(&abs).with_context(|| format!("reading {}", abs.display()))?;
         let lines = content
             .lines()
             .enumerate()
@@ -399,7 +393,7 @@ fn collect_diff_lines(diff: &Diff<'_>) -> Result<Vec<DiffLine>> {
             }
         } else {
             String::from_utf8_lossy(line.content())
-                .trim_end_matches(|c| c == '\n' || c == '\r')
+                .trim_end_matches(['\n', '\r'])
                 .to_string()
         };
         lines.push(DiffLine {
@@ -811,10 +805,7 @@ mod tests {
         commit_file(&repo, dir.path(), "a.txt", "a\n");
         let r = Repo::discover(dir.path()).unwrap();
         let files = r.list_tracked_files().unwrap();
-        assert_eq!(
-            files,
-            vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")]
-        );
+        assert_eq!(files, vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")]);
     }
 
     #[test]
@@ -824,7 +815,9 @@ mod tests {
         let r = Repo::discover(dir.path()).unwrap();
         let lines = r.file_lines(Path::new("f.txt")).unwrap();
         assert_eq!(lines.len(), 3);
-        assert!(lines.iter().all(|l| l.kind == crate::app::LineKind::Context));
+        assert!(lines
+            .iter()
+            .all(|l| l.kind == crate::app::LineKind::Context));
         assert_eq!(lines[0].new_lineno, Some(1));
         assert_eq!(lines[2].text, "three");
         assert_eq!(lines[2].new_lineno, Some(3));

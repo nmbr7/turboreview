@@ -34,7 +34,7 @@ pub fn parse_ps(text: &str) -> Vec<ProcInfo> {
             })
         })
         .collect();
-    out.sort_by(|a, b| b.pid.cmp(&a.pid));
+    out.sort_by_key(|p| std::cmp::Reverse(p.pid));
     out
 }
 
@@ -47,7 +47,13 @@ mod tests {
         let text = "    1 /sbin/launchd\n  546 /usr/libexec/logd\n 9999 myapp\n";
         let procs = parse_ps(text);
         // Sorted by pid desc.
-        assert_eq!(procs[0], ProcInfo { pid: 9999, command: "myapp".into() });
+        assert_eq!(
+            procs[0],
+            ProcInfo {
+                pid: 9999,
+                command: "myapp".into()
+            }
+        );
         assert_eq!(procs[1].pid, 546);
         assert_eq!(procs[1].command, "logd");
         assert_eq!(procs[2].command, "launchd");

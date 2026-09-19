@@ -803,12 +803,10 @@ impl App {
             RowKind::File {
                 section,
                 file_index,
-            } => {
-                return self
-                    .section_files(*section)
-                    .get(*file_index)
-                    .map(|f| RowId::File(*section, f.path.clone()));
-            }
+            } => self
+                .section_files(*section)
+                .get(*file_index)
+                .map(|f| RowId::File(*section, f.path.clone())),
             RowKind::Dir { section, path, .. } => Some(RowId::Dir(*section, path.clone())),
             RowKind::Header { .. } => None,
         }
@@ -825,7 +823,7 @@ impl App {
             ) if rs == s => self
                 .section_files(*rs)
                 .get(*file_index)
-                .map_or(false, |f| &f.path == p),
+                .is_some_and(|f| &f.path == p),
             (
                 RowKind::Dir {
                     section: rs, path, ..
@@ -1252,6 +1250,9 @@ impl App {
         };
         let d = self.debug.get_or_insert_with(DebugState::default);
         let lines = d.breakpoints.entry(file.clone()).or_default();
+        // clippy suggests an Entry here, but that inverts the toggle into
+        // "vacant => insert, else => remove", which reads backwards.
+        #[allow(clippy::map_entry)]
         let now_set = if lines.contains_key(&line) {
             lines.remove(&line);
             false
@@ -3035,15 +3036,15 @@ mod tests {
     #[test]
     fn toggle_files_sets_focus() {
         let mut app = sample();
-        assert_eq!(app.show_files, true);
+        assert!(app.show_files);
         assert_eq!(app.focus, Pane::Files);
         // toggle off while focused on Files -> show_files false, focus moves to Diff
         app.toggle_files();
-        assert_eq!(app.show_files, false);
+        assert!(!app.show_files);
         assert_eq!(app.focus, Pane::Diff);
         // toggle on -> show_files true, but focus stays on Diff (no auto-steal back to Files)
         app.toggle_files();
-        assert_eq!(app.show_files, true);
+        assert!(app.show_files);
         assert_eq!(app.focus, Pane::Diff);
     }
 

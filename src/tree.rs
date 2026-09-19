@@ -167,7 +167,7 @@ fn build_section_rows(
         }
     }
 
-    fn sort_nodes(children: &mut Vec<Node>) {
+    fn sort_nodes(children: &mut [Node]) {
         children.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
         for child in children.iter_mut() {
             if let Node::Dir { children: sub, .. } = child {

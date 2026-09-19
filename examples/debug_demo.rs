@@ -32,7 +32,7 @@ fn describe(label: &str, value: u64) -> String {
 
 /// Classify a value as even/odd — a small extra frame to step into.
 fn classify(value: u64) -> &'static str {
-    if value % 2 == 0 {
+    if value.is_multiple_of(2) {
         "even"
     } else {
         "odd"

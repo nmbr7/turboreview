@@ -92,7 +92,7 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 /// Ceiling division for non-negative integers.
 fn div_ceil(n: usize, d: usize) -> usize {
     let d = d.max(1);
-    (n + d - 1) / d
+    n.div_ceil(d)
 }
 
 /// Hard-wrap a run of styled spans to `width` visual columns, preserving each
@@ -1051,10 +1051,7 @@ fn push_comment_box(
         *rendered_rows += 1;
     }
     // Response block (only when response is present AND non-empty after trim)
-    if c.response
-        .as_deref()
-        .map_or(false, |r| !r.trim().is_empty())
-    {
+    if c.response.as_deref().is_some_and(|r| !r.trim().is_empty()) {
         let resp = c.response.as_deref().unwrap();
         if *rendered_rows < page {
             result.push(Line::from(Span::styled("    │ ", border_style)));
@@ -1209,11 +1206,9 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
             side_rows(p.left).max(side_rows(p.right))
         };
         let right = if p.right == p.left { None } else { p.right };
-        for side in [p.left, right] {
-            if let Some(di) = side {
-                if let Some(c) = app.comment_for(&app.diff[di]) {
-                    h += comment_box_height(c, wrap_w);
-                }
+        for di in [p.left, right].into_iter().flatten() {
+            if let Some(c) = app.comment_for(&app.diff[di]) {
+                h += comment_box_height(c, wrap_w);
             }
         }
         h
@@ -1282,9 +1277,10 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
                 .collect()
         };
         // Search tint applies to the whole cell when matched (not on cursor row).
-        let search_hit = app.search.as_ref().map_or(false, |s| {
-            !is_cursor_row && dl.text.to_lowercase().contains(&s.query)
-        });
+        let search_hit = app
+            .search
+            .as_ref()
+            .is_some_and(|s| !is_cursor_row && dl.text.to_lowercase().contains(&s.query));
         let mut text_spans: Vec<Span<'static>> = highlight_code(&shifted, ext, app.theme);
         for sp in text_spans.iter_mut() {
             if is_cursor_row {
@@ -1319,7 +1315,7 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
         let bp_on =
             matches!((&bp_file, line_no), (Some(f), Some(n)) if app.breakpoint_enabled(f, n));
         let is_stopped = stopped_line.is_some() && stopped_line == line_no;
-        let mut spans: Vec<Span<'static>> = if is_stopped || is_bp {
+        let spans: Vec<Span<'static>> = if is_stopped || is_bp {
             let (marker, fg) = if is_stopped {
                 ("▶", pal.tick)
             } else if bp_on {
@@ -1449,11 +1445,9 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
         // Inline comment box(es) full-width under the row. For a context row,
         // left and right are the SAME diff index — render its box once.
         let right = if p.right == p.left { None } else { p.right };
-        for side in [p.left, right] {
-            if let Some(di) = side {
-                if let Some(c) = app.comment_for(&app.diff[di]) {
-                    push_comment_box(&mut result, &mut rendered_rows, page, c, wrap_w, &pal);
-                }
+        for di in [p.left, right].into_iter().flatten() {
+            if let Some(c) = app.comment_for(&app.diff[di]) {
+                push_comment_box(&mut result, &mut rendered_rows, page, c, wrap_w, &pal);
             }
         }
     }

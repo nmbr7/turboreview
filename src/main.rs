@@ -1094,10 +1094,10 @@ fn run(
                     }
                     // c (no modifier) opens comment modal; Ctrl-C is already handled above.
                     // In Commits-list mode (not in detail), rows are stale; ignore.
-                    (KeyCode::Char('c'), _) => {
-                        if !(app.view == ViewMode::Commits && !app.in_commit_detail()) {
-                            app.start_comment();
-                        }
+                    (KeyCode::Char('c'), _)
+                        if !(app.view == ViewMode::Commits && !app.in_commit_detail()) =>
+                    {
+                        app.start_comment();
                     }
                     _ => {}
                 }
@@ -1123,9 +1123,10 @@ fn ensure_visible_commit_stats(repo: &Repo, app: &mut App, viewport_h: usize) {
     let hi = (sel + viewport_h).min(app.commits.len().saturating_sub(1));
     for i in lo..=hi {
         let id = app.commits[i].id.clone();
-        if !app.commit_stats.contains_key(&id) {
+        if let std::collections::hash_map::Entry::Vacant(slot) = app.commit_stats.entry(id.clone())
+        {
             if let Ok(stat) = repo.commit_stat(&id) {
-                app.commit_stats.insert(id, stat);
+                slot.insert(stat);
             }
         }
     }
