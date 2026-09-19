@@ -1956,11 +1956,71 @@ fn render_proc_picker(frame: &mut Frame, app: &App) {
     frame.render_stateful_widget(list, rows[1], &mut state);
 }
 
+/// The agent's existing status and response, for display above the comment
+/// editor. Read-only context: editing the comment does not change either.
+fn response_panel(c: &crate::comments::Comment, pal: &Palette) -> Paragraph<'static> {
+    let (badge, color) = match c.status {
+        CommentStatus::Open => ("comment", pal.accent_dim),
+        CommentStatus::Resolved => ("✓ resolved", pal.tick),
+        CommentStatus::Wontfix => ("✗ wontfix", pal.red),
+        CommentStatus::NeedsInfo => ("? needs-info", pal.yellow),
+    };
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    // The comment as it stands, so the reply below has something to refer to.
+    for l in c.text.lines() {
+        lines.push(Line::from(Span::styled(
+            l.to_string(),
+            Style::default()
+                .fg(pal.accent)
+                .add_modifier(Modifier::ITALIC),
+        )));
+    }
+    if let Some(resp) = c.response.as_deref() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "↳ response:".to_string(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )));
+        for l in resp.lines() {
+            lines.push(Line::from(Span::styled(
+                l.to_string(),
+                Style::default().fg(pal.accent_dim),
+            )));
+        }
+    }
+    Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(color))
+                .padding(Padding::horizontal(1))
+                .title(format!(" {badge} ")),
+        )
+        .wrap(Wrap { trim: false })
+}
+
 fn render_input_modal(frame: &mut Frame, app: &App, input: &InputState) {
     let pal = app.palette();
     let has_snap = input.debug_snapshot.is_some();
-    // Taller modal when a debug snapshot is shown alongside the text field.
-    let area = centered_rect(64, if has_snap { 70 } else { 40 }, frame.area());
+    // When editing a comment the agent has already answered, show its reply
+    // above the editor — otherwise you are replying to something you cannot see.
+    let existing = app
+        .comments
+        .get(&input.target_file, input.target_line)
+        .filter(|c| {
+            c.response
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|r| !r.is_empty())
+        });
+    // Taller modal whenever something is shown alongside the text field.
+    let height = if has_snap || existing.is_some() {
+        70
+    } else {
+        40
+    };
+    let area = centered_rect(64, height, frame.area());
     frame.render_widget(Clear, area);
     let title = format!(
         " Comment line {} (Ctrl-S save · Esc cancel) ",
@@ -1979,16 +2039,42 @@ fn render_input_modal(frame: &mut Frame, app: &App, input: &InputState) {
         .wrap(Wrap { trim: false });
 
     let Some(snap) = input.debug_snapshot.as_ref() else {
-        frame.render_widget(para, area);
+        let Some(c) = existing else {
+            frame.render_widget(para, area);
+            return;
+        };
+        // Split: the agent's response on top, the editor below.
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .split(area);
+        frame.render_widget(response_panel(c, &pal), rows[0]);
+        frame.render_widget(para, rows[1]);
         return;
     };
 
-    // Split: text field on top, debug stack/locals below.
+    // Split: response (when present) and text field on top, debug stack below.
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints(if existing.is_some() {
+            [
+                Constraint::Percentage(30),
+                Constraint::Percentage(25),
+                Constraint::Percentage(45),
+            ]
+            .to_vec()
+        } else {
+            [Constraint::Percentage(40), Constraint::Percentage(60)].to_vec()
+        })
         .split(area);
-    frame.render_widget(para, rows[0]);
+    let editor_row = match existing {
+        Some(c) => {
+            frame.render_widget(response_panel(c, &pal), rows[0]);
+            rows[1]
+        }
+        None => rows[0],
+    };
+    frame.render_widget(para, editor_row);
 
     let on = input.attach_debug;
     let dbg_title = format!(
@@ -2044,7 +2130,7 @@ fn render_input_modal(frame: &mut Frame, app: &App, input: &InputState) {
                 .title(dbg_title),
         )
         .wrap(Wrap { trim: false });
-    frame.render_widget(dbg, rows[1]);
+    frame.render_widget(dbg, rows[rows.len() - 1]);
 }
 
 /// Keybindings grouped by category for the help overlay. Each group is a
@@ -2503,6 +2589,162 @@ mod tests {
             rendered.len(),
             comment_box_height(&c, wrap_w),
             "height calc must equal rendered line count or scrolling drifts"
+        );
+    }
+
+    /// The modal draws over the diff, which renders its own inline comment box
+    /// containing the same response — so asserting on the whole buffer proves
+    /// nothing. Render the panel alone into a small area instead.
+    #[test]
+    fn response_panel_shows_the_reply_and_the_comment() {
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut c = crate::comments::Comment {
+            file: PathBuf::from("a.rs"),
+            line: 1,
+            hunk: String::new(),
+            text: "why is this here?".into(),
+            line_text: "let x = 1;".into(),
+            context_before: vec![],
+            context_after: vec![],
+            orig_line: 1,
+            stale: false,
+            status: crate::comments::CommentStatus::Resolved,
+            response: Some("MODALREPLY".into()),
+            updated: 0,
+            debug_snapshot: None,
+        };
+        let pal = crate::theme::Palette::for_theme(crate::theme::Theme::Dark);
+        terminal
+            .draw(|f| f.render_widget(response_panel(&c, &pal), f.area()))
+            .unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|x| x.symbol())
+            .collect();
+        assert!(dump.contains("MODALREPLY"), "panel must show the response");
+        assert!(
+            dump.contains("why is this here?"),
+            "panel must show the comment"
+        );
+        assert!(
+            dump.contains("resolved"),
+            "panel must show the status badge"
+        );
+
+        // Status drives the badge.
+        c.status = crate::comments::CommentStatus::NeedsInfo;
+        terminal
+            .draw(|f| f.render_widget(response_panel(&c, &pal), f.area()))
+            .unwrap();
+        let dump2: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|x| x.symbol())
+            .collect();
+        assert!(dump2.contains("needs-info"));
+    }
+
+    /// The modal is drawn over the diff, and the diff's own inline box repeats
+    /// the response — so this asserts on the modal's split instead: with a reply
+    /// present the editor is pushed down, and the panel's badge sits above it.
+    #[test]
+    fn comment_modal_stacks_the_response_above_the_editor() {
+        fn dump(app: &App) -> Vec<String> {
+            let backend = TestBackend::new(120, 40);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| render(f, app)).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            (0..40)
+                .map(|y| {
+                    (0..120)
+                        .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                        .collect::<String>()
+                })
+                .collect()
+        }
+        fn row_of(rows: &[String], needle: &str) -> Option<usize> {
+            rows.iter().position(|r| r.contains(needle))
+        }
+
+        let mut app = app_with_diff();
+        app.rebuild_rows();
+        app.selected = 1;
+        app.focus = Pane::Diff;
+        app.diff_cursor = 1;
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            1,
+            "@@ -1 +1 @@".to_string(),
+            "why is this here?".to_string(),
+            "let x = 1;".to_string(),
+            vec![],
+            vec![],
+            0,
+        );
+        app.comments.items[0].response = Some("PANELREPLY".into());
+        app.comments.items[0].status = crate::comments::CommentStatus::Resolved;
+        app.start_comment();
+        assert!(app.input_active());
+
+        let rows = dump(&app);
+        let editor = row_of(&rows, "Ctrl-S save").expect("editor must render");
+        // "✓ resolved" is the panel's border title; the inline diff box uses the
+        // same words, so take the LAST occurrence above the editor.
+        let badge = rows[..editor]
+            .iter()
+            .rposition(|r| r.contains("resolved"))
+            .expect("panel badge must render above the editor");
+        assert!(
+            badge < editor,
+            "the response panel must sit above the editor"
+        );
+        assert!(
+            rows[badge..editor].iter().any(|r| r.contains("PANELREPLY")),
+            "the response must render between the panel border and the editor"
+        );
+
+        // Without a response the editor is the top of the modal.
+        let mut plain = app_with_diff();
+        plain.rebuild_rows();
+        plain.selected = 1;
+        plain.focus = Pane::Diff;
+        plain.diff_cursor = 1;
+        plain.start_comment();
+        let rows2 = dump(&plain);
+        let editor2 = row_of(&rows2, "Ctrl-S save").expect("editor must render");
+        assert!(
+            editor2 < editor,
+            "a modal with no response must start higher than one with a panel"
+        );
+    }
+
+    #[test]
+    fn comment_modal_has_no_response_panel_for_a_new_comment() {
+        let backend = TestBackend::new(160, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = app_with_diff();
+        app.rebuild_rows();
+        app.selected = 1;
+        app.focus = Pane::Diff;
+        app.diff_cursor = 1;
+        app.start_comment();
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !dump.contains("\u{21b3} response:"),
+            "a fresh comment has nothing to show above the editor"
         );
     }
 
