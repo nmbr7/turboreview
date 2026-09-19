@@ -17,6 +17,23 @@ repository's `.gitignore` so it is never committed:
 
 ## File locations
 
+Everything lives under `<repo-root>/.turboreview/`:
+
+    .turboreview/
+    ├── comments.json              # worktree review — active comments
+    ├── reviewed.json              # worktree review — reviewed-file flags
+    ├── comment-log.jsonl          # append-only activity log (newest last)
+    ├── lessons.md                 # distilled review lessons (see "Learning from past reviews")
+    ├── archive/
+    │   └── comments-archive.jsonl # resolved comments, append-only, repo-wide
+    └── commits/
+        └── <sha>/
+            ├── comments.json      # per-commit review — active comments
+            └── reviewed.json      # per-commit review — reviewed-file flags
+
+Read the directory to see what actually exists — `lessons.md` and `archive/`
+are only present once something has written them.
+
 ### Working-tree review (Changes view)
 
 Comments: `<repo-root>/.turboreview/comments.json`
@@ -82,12 +99,25 @@ keep the active `comments.json` small. This happens automatically on startup for
 resolved comments older than 14 days, or manually when the reviewer presses `A`.
 
 The archive file is **append-only JSON lines** — one serialized comment object per
-line, same schema as the `comments.json` array elements above. Agents normally only
-need the active `comments.json`; the archive is historical only.
+line, same schema as the `comments.json` array elements above.
+
+For the routine fix loop you only need the active `comments.json`. But the archive
+is the durable record of review feedback that was actually acted on, and it is the
+primary input for a lesson pass (see below) — so don't discard it as noise. Two
+properties affect how you read it:
+
+- It is **repo-wide and cross-scope**. Archived per-commit comments land in the same
+  file as worktree ones, and the originating scope is not recorded on the line. Don't
+  assume a line came from the worktree review.
+- It is **incomplete by construction**. Only resolved comments are ever archived, and
+  editing a comment overwrites its text in place, so earlier wording is not recoverable
+  anywhere. Draw lessons from what is present; don't treat the archive as a full history.
 
 ## Your workflow
 
-1. Check `comment-log.jsonl` (tail) to identify recent activity and which scope
+1. Read `lessons.md` if it exists — it records preferences this reviewer has already
+   asked for, and applies to the changes you are about to make. Then check
+   `comment-log.jsonl` (tail) to identify recent activity and which scope
    (`worktree` or `commit:<sha>`) has open comments.
 2. Read the appropriate `comments.json` (worktree or commit-specific).
 3. For each comment with `status` == `open`:
@@ -105,6 +135,47 @@ need the active `comments.json`; the archive is historical only.
      - leave `open` only if you have not addressed it yet.
 6. Write the JSON array back to the correct `comments.json` (preserve all other
    fields and all other comments unchanged; pretty-printed JSON is fine).
+7. **Hand back to the reviewer. Stop here.** Do not `git add` and do not commit.
+   Report what you changed, file by file, and which comments you set to which status.
+   The reviewer reopens turboreview to see your responses inline in the diff and
+   decides whether each fix is right. Stage and commit only after the user explicitly
+   confirms — and when they do, run `git add` and `git commit` as separate commands.
+
+## Learning from past reviews
+
+The same comment should not have to be written twice. When the reviewer keeps asking
+for the same thing, that preference belongs in `.turboreview/lessons.md`, where you
+read it at the start of every fix loop (step 1 above).
+
+**When to do a lesson pass.** Only when the user explicitly asks — "review my past
+comments", "what patterns do you see", "update the lessons file". Never start one
+unprompted, never offer one spontaneously, and never fold one into a routine fix loop.
+
+**What to read**, richest source first:
+
+- `archive/comments-archive.jsonl` — resolved comments, the strongest signal, since
+  each one is feedback the reviewer gave and you acted on.
+- Every `comments.json` (worktree and each `commits/<sha>/`) — any comment that already
+  carries a `response` is part of the same record.
+- `comment-log.jsonl` — activity shape only. It logs `remove` actions and drifts out of
+  sync with `comments.json`, so use it to spot which files draw repeated attention, not
+  to reconstruct what a comment said.
+
+**What counts as a lesson.** A preference that recurs across *distinct* comments and
+generalises beyond the one site it was raised at — naming, error handling, test
+structure, comment density, API shape. Not a lesson: a one-off fix, anything resting on
+a single comment, or a restatement of what the code already makes obvious.
+
+**Discuss before writing.** Where a pattern is ambiguous or thinly evidenced, ask rather
+than guess. Ask how far it reaches ("everywhere, or only in the parser?"), and how firm
+it is ("hard rule or preference?"). Put candidate lessons to the user for confirmation
+before writing them down. A wrong lesson is worse than a missing one — it gets applied
+silently to every future change.
+
+**How to write it.** Append to or update `.turboreview/lessons.md`, one lesson per
+bullet, each carrying the evidence behind it (which comments, how many). Preserve
+lessons already in the file; never rewrite it wholesale. A lesson pass is read-only over
+the review corpus — do not touch any `comments.json` while doing one.
 
 ## Rules
 
@@ -119,6 +190,13 @@ need the active `comments.json`; the archive is historical only.
 - When editing a per-commit comment, write back to the commit-specific
   `comments.json` at `.turboreview/commits/<sha>/comments.json` — not the
   worktree file.
+- NEVER stage (`git add`) or commit a change you made in response to a comment. The
+  point of turboreview is that a human reviews the diff; an agent that commits its own
+  fix has decided the review passed on the reviewer's behalf.
+- Leave fixes unstaged in the working tree. That is exactly where the Changes view
+  shows them, which is where the reviewer will look.
+- Wait for explicit user confirmation before staging or committing. You saying "fixed
+  it" is not confirmation; the user saying to commit is.
 "#;
 
 #[cfg(test)]
@@ -170,6 +248,22 @@ mod tests {
         assert!(
             SKILL_DOC.contains("updated"),
             "SKILL_DOC must mention the updated field"
+        );
+        assert!(
+            SKILL_DOC.contains("lessons.md"),
+            "SKILL_DOC must document the lessons file"
+        );
+        assert!(
+            SKILL_DOC.contains("## Learning from past reviews"),
+            "SKILL_DOC must have the learning section"
+        );
+        assert!(
+            SKILL_DOC.contains("comments-archive.jsonl"),
+            "SKILL_DOC must name the archive file"
+        );
+        assert!(
+            SKILL_DOC.contains("git add"),
+            "SKILL_DOC must state the do-not-stage rule"
         );
     }
 }

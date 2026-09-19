@@ -134,6 +134,7 @@ Press `?` at any time for an in-app keybinding overlay.
 | `s`              | stage the selected file (Unstaged) / unstage it (Staged)        |
 | `Space`          | toggle the reviewed checkbox on the selected file               |
 | `R`              | toggle hiding reviewed files                                    |
+| `A`              | archive resolved comments in the current scope                  |
 | `r`              | refresh everything from disk / git                              |
 | `%`              | toggle test-coverage highlight (LCOV)                            |
 | `M`              | run the configured coverage command, then show it               |
@@ -185,6 +186,13 @@ optional `response`. An AI coding agent can close the loop:
    `response` and sets the `status` in the relevant `comments.json`.
 3. Reopen turboreview — each comment box shows the agent's status badge
    (`✓ resolved`, `✗ wontfix`, `? needs-info`) and its response inline.
+4. The agent leaves its fixes **unstaged** and stops there. You review the diff and
+   approve before anything is staged or committed — the agent never commits its own
+   fix on your behalf.
+
+Ask the agent to "review my past comments" and it will distil recurring feedback into
+`.turboreview/lessons.md`, then read that file at the start of later fix loops so the
+same review note doesn't have to be written twice.
 
 ## File history & search
 
@@ -301,6 +309,8 @@ Reviewed flags and comments persist under `<repo>/.turboreview/`:
 | `.turboreview/comments.json` · `reviewed.json`    | working-tree review (Changes view)      |
 | `.turboreview/commits/<sha>/comments.json` · `…`  | per-commit review (Commits view)        |
 | `.turboreview/comment-log.jsonl`                  | append-only activity log (newest last)  |
+| `.turboreview/archive/comments-archive.jsonl`     | archived resolved comments (repo-wide)  |
+| `.turboreview/lessons.md`                         | recurring review lessons (agent-written)|
 
 The comment log records one JSON object per comment add/edit
 (`{path, line, scope, date, action}`, where `date` is a `YYYY-MM-DD HH:MM:SS`

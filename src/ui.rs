@@ -1952,6 +1952,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("s", "stage / unstage file"),
             ("Space", "toggle reviewed"),
             ("R", "hide reviewed files"),
+            ("A", "archive resolved comments"),
         ],
     ),
     (
@@ -3347,6 +3348,10 @@ mod tests {
         assert!(
             dump.contains("theme"),
             "help overlay must mention theme toggle"
+        );
+        assert!(
+            dump.contains("archive"),
+            "help overlay must mention the archive key"
         );
         // Grouped help: category headers must render.
         assert!(
