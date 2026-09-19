@@ -357,7 +357,38 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
                     ),
                     Span::raw(text_display),
                 ]);
-                ListItem::new(line)
+                // The agent's reply on a second line, so the pane answers "what
+                // did it say" without opening the file's diff. Dimmed and marked
+                // with ↳, matching the inline comment box.
+                let mut lines = vec![line];
+                if let Some(resp) = c
+                    .response
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                {
+                    let first = resp.lines().next().unwrap_or("");
+                    // 6 = the "    ↳ " prefix below.
+                    let max_resp = area.width.saturating_sub(6) as usize;
+                    let shown = if first.chars().count() > max_resp && max_resp > 3 {
+                        format!(
+                            "{}…",
+                            first
+                                .chars()
+                                .take(max_resp.saturating_sub(1))
+                                .collect::<String>()
+                        )
+                    } else {
+                        first.to_string()
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("    ↳ {shown}"),
+                        Style::default()
+                            .fg(pal.accent_dim)
+                            .add_modifier(Modifier::ITALIC),
+                    )));
+                }
+                ListItem::new(lines)
             }
         })
         .collect();
@@ -3435,6 +3466,91 @@ mod tests {
             .collect();
         assert!(dump.contains("reload"), "banner must prompt for a reload");
         assert!(dump.contains("resolved"), "banner must say what changed");
+    }
+
+    #[test]
+    fn comment_pane_shows_the_agent_response() {
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.show_comments = true;
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            5,
+            "@@ -3,4 @@".to_string(),
+            "look at this".to_string(),
+            "fn foo()".to_string(),
+            vec![],
+            vec![],
+            0,
+        );
+
+        // No response yet: the pane shows only the comment.
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let before: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!before.contains("SENTINELREPLY"));
+
+        // The agent answers; the pane must show it without opening the diff.
+        app.comments.items[0].response = Some("SENTINELREPLY".into());
+        app.comments.items[0].status = crate::comments::CommentStatus::Resolved;
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let after: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            after.contains("SENTINELREPLY"),
+            "the comment pane must show the agent's response"
+        );
+    }
+
+    #[test]
+    fn comment_pane_omits_an_empty_response() {
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.show_comments = true;
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            5,
+            "@@ -3,4 @@".to_string(),
+            "look at this".to_string(),
+            "fn foo()".to_string(),
+            vec![],
+            vec![],
+            0,
+        );
+        // Whitespace-only response must not draw an empty ↳ row.
+        app.comments.items[0].response = Some("   ".into());
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !dump.contains("\u{21b3}"),
+            "a blank response must not render a response row"
+        );
     }
 
     #[test]
