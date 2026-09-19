@@ -1,6 +1,6 @@
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use ratatui::backend::CrosstermBackend;
@@ -14,14 +14,19 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::Terminal;
 
-use turboreview::app::{App, CommentScope, Mode, Pane, Section, ViewMode};
-use turboreview::debug::DebugManager;
+use turboreview::app::{self, App, CommentScope, Mode, Pane, Section, ViewMode};
 use turboreview::comments;
+use turboreview::debug::DebugManager;
 use turboreview::git::Repo;
 use turboreview::{review, storage, ui};
 
 /// Rows moved per Shift+Up/Down (or J/K) fast-nav step.
 const JUMP_STEP: isize = 10;
+
+/// How often to stat `comments.json` for agent writes while the reviewer is idle.
+/// Far slower than the 50ms event poll — this is a filesystem stat, and half a
+/// second is well inside human reaction time for a notification.
+const AGENT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Copy text to the system clipboard. A fresh handle is created per call;
 /// arboard advises against holding one long-term on some platforms.
@@ -67,6 +72,11 @@ fn main() -> Result<()> {
             }
         }
     }
+    // Baseline the agent-write watcher against what we just loaded (including any
+    // auto-archive rewrite above). Without this the first poll finds a `None`
+    // fingerprint, silently adopts whatever is on disk, and swallows an agent
+    // write that landed before it.
+    app.comments_fingerprint = storage::comments_fingerprint(&root, &app.comment_scope);
     app.commits = repo.log(app.commit_limit).unwrap_or_default();
     // Load persisted theme preference
     app.theme = storage::load_theme(&root);
@@ -86,6 +96,35 @@ fn load_scope(repo_root: &Path, app: &mut App) {
     let dir = storage::scope_dir(repo_root, &app.comment_scope);
     app.comments = comments::Comments::load(&dir).unwrap_or_default();
     app.reviewed = review::load(&dir).unwrap_or_default();
+    // Re-baseline the watcher: what we just read is now the known state, so the
+    // load itself never counts as an external change.
+    app.comments_fingerprint = storage::comments_fingerprint(repo_root, &app.comment_scope);
+    app.pending_update = None;
+}
+
+/// Poll the current scope's `comments.json` for writes by an agent.
+///
+/// Sets `app.pending_update` when the content actually differs; the view is not
+/// reloaded here, so nothing moves while the reviewer is reading. A write that
+/// leaves the comments equivalent (reformat, or our own save) re-baselines the
+/// fingerprint silently.
+fn poll_agent_updates(repo_root: &Path, app: &mut App) {
+    let current = storage::comments_fingerprint(repo_root, &app.comment_scope);
+    if current == app.comments_fingerprint {
+        return;
+    }
+    let dir = storage::scope_dir(repo_root, &app.comment_scope);
+    let Ok(disk) = comments::Comments::load(&dir) else {
+        // Mid-write or malformed: leave the fingerprint alone and retry next tick.
+        return;
+    };
+    // Always diff disk against what the reviewer currently has loaded, never
+    // against the previous poll — polls do not change `app.comments`, so a
+    // cumulative diff is already the full picture and re-adding it would
+    // double-count on every tick.
+    let update = app::diff_comments(&app.comments.items, &disk.items);
+    app.comments_fingerprint = current;
+    app.pending_update = (!update.is_empty()).then_some(update);
 }
 
 /// Re-sync the comment scope to the current history revision (or the baseline),
@@ -268,6 +307,8 @@ fn reload_all(repo: &Repo, app: &mut App) {
 
 /// Reload everything from disk/git so new external changes appear.
 fn reload_everything(repo: &Repo, app: &mut App) {
+    // Grab the pending summary before load_scope clears it, to report below.
+    let pending = app.pending_update.take();
     // Reload file lists (on error set status_msg but keep going)
     match repo.changed_files(Mode::Unstaged) {
         Ok(f) => app.unstaged = f,
@@ -294,7 +335,12 @@ fn reload_everything(repo: &Repo, app: &mut App) {
     // Rebuild rows and refresh diff
     app.rebuild_rows();
     refresh_diff(repo, app);
-    app.status_msg = Some("refreshed".into());
+    // `load_scope` above cleared `pending_update`; report what the reload brought
+    // in rather than a bare "refreshed", so the agent's work is acknowledged.
+    app.status_msg = Some(match pending {
+        Some(u) => format!("reloaded — {}", u.summary()),
+        None => "refreshed".into(),
+    });
 }
 
 fn run(
@@ -302,6 +348,7 @@ fn run(
     repo: &Repo,
     app: &mut App,
 ) -> Result<()> {
+    let mut last_agent_poll = Instant::now();
     let mut pending_g = false; // for the `gg` chord
     let mut pending_q = false; // for the `qq` quit chord (avoid accidental quit on a stray q)
     let mut dbg = DebugManager::new();
@@ -323,6 +370,13 @@ fn run(
 
         // Poll so debugger events can be drained even when the user is idle.
         if !event::poll(Duration::from_millis(50))? {
+            // Idle: cheap stat of comments.json to notice agent writes. Throttled
+            // well above the event poll so this is a stat every ~500ms, not 20/sec.
+            if last_agent_poll.elapsed() >= AGENT_POLL_INTERVAL {
+                last_agent_poll = Instant::now();
+                let root = app.repo_root.clone();
+                poll_agent_updates(&root, app);
+            }
             continue;
         }
         match event::read()? {
@@ -360,15 +414,9 @@ fn run(
                                     );
                                     // Attach the captured debug snapshot, if kept.
                                     if let Some(snap) = committed.debug_snapshot.clone() {
-                                        if let Some(c) = app
-                                            .comments
-                                            .items
-                                            .iter_mut()
-                                            .find(|c| {
-                                                c.file == committed.file
-                                                    && c.line == committed.line
-                                            })
-                                        {
+                                        if let Some(c) = app.comments.items.iter_mut().find(|c| {
+                                            c.file == committed.file && c.line == committed.line
+                                        }) {
                                             c.debug_snapshot = Some(snap);
                                         }
                                     }
@@ -536,7 +584,12 @@ fn run(
                         let now = app.toggle_breakpoint_at_cursor();
                         dbg.sync_breakpoints(app);
                         app.status_msg = Some(
-                            if now { "breakpoint set" } else { "breakpoint cleared" }.into(),
+                            if now {
+                                "breakpoint set"
+                            } else {
+                                "breakpoint cleared"
+                            }
+                            .into(),
                         );
                     }
                     // `D`: open the launch-type picker (worktree / commit /
@@ -586,8 +639,14 @@ fn run(
                     {
                         if let Some(on) = app.toggle_selected_breakpoint() {
                             dbg.sync_breakpoints(app);
-                            app.status_msg =
-                                Some(if on { "breakpoint enabled" } else { "breakpoint disabled" }.into());
+                            app.status_msg = Some(
+                                if on {
+                                    "breakpoint enabled"
+                                } else {
+                                    "breakpoint disabled"
+                                }
+                                .into(),
+                            );
                         }
                     }
                     (KeyCode::Char('d') | KeyCode::Delete, _)
@@ -842,9 +901,7 @@ fn run(
                     }
                     // [ / ]: when the right pane is focused, switch its tab
                     // (Comments <-> Debug); otherwise switch the Changes/Commits view.
-                    (KeyCode::Char('[') | KeyCode::Char(']'), _)
-                        if app.focus == Pane::Comments =>
-                    {
+                    (KeyCode::Char('[') | KeyCode::Char(']'), _) if app.focus == Pane::Comments => {
                         app.toggle_right_tab();
                     }
                     (KeyCode::Char(']'), _) => {
@@ -1106,11 +1163,19 @@ fn toggle_all_files(repo: &Repo, app: &mut App) {
 }
 
 /// Start a debug session for the chosen launch mode, then focus the Debug tab.
-fn start_debug(repo: &Repo, app: &mut App, dbg: &mut DebugManager, mode: turboreview::app::LaunchMode) {
+fn start_debug(
+    repo: &Repo,
+    app: &mut App,
+    dbg: &mut DebugManager,
+    mode: turboreview::app::LaunchMode,
+) {
     use turboreview::app::LaunchMode;
     let cfg = storage::load_debug_config(&app.repo_root);
     let result = match mode {
-        LaunchMode::Commit => match app.selected_commit_info().map(|c| (c.id.clone(), c.short.clone())) {
+        LaunchMode::Commit => match app
+            .selected_commit_info()
+            .map(|c| (c.id.clone(), c.short.clone()))
+        {
             Some((id, short)) => dbg.launch_commit(app, &cfg, repo, &id, &short),
             None => Err(anyhow::anyhow!("no commit selected")),
         },
@@ -1202,8 +1267,7 @@ fn move_in_focus(repo: &Repo, app: &mut App, delta: isize) {
                 let at_bottom = app.selected_commit + 1 >= app.commits.len();
                 let maybe_more = app.commits.len() == app.commit_limit;
                 if delta > 0 && at_bottom && maybe_more {
-                    app.status_msg =
-                        Some("End of loaded commits — press L to load more".into());
+                    app.status_msg = Some("End of loaded commits — press L to load more".into());
                 } else {
                     app.move_commit_selection(delta);
                 }

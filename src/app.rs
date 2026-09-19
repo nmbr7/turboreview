@@ -5,6 +5,106 @@ use std::path::{Path, PathBuf};
 use crate::comments::Comments;
 use crate::tree::{Row, RowKind};
 
+/// What changed in `comments.json` since the reviewer last loaded it — the
+/// summary shown in the comment pane when an agent has been working.
+///
+/// Counts are over comments matched by `(file, orig_line)`, which survives
+/// relocation. A comment the agent could not match is counted as added.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentUpdate {
+    /// Comments whose status changed to resolved.
+    pub resolved: usize,
+    /// Comments whose status changed to wontfix.
+    pub wontfix: usize,
+    /// Comments whose status changed to needs_info — the agent is asking
+    /// something and is waiting on the reviewer.
+    pub needs_info: usize,
+    /// Comments that gained or changed a `response` without a status change.
+    pub responded: usize,
+    /// Comments present on disk but not in the loaded set.
+    pub added: usize,
+    /// Comments in the loaded set but no longer on disk.
+    pub removed: usize,
+}
+
+impl AgentUpdate {
+    /// Total number of comments touched.
+    pub fn total(&self) -> usize {
+        self.resolved + self.wontfix + self.needs_info + self.responded + self.added + self.removed
+    }
+
+    /// True when nothing actually changed — the file was rewritten with
+    /// equivalent content (a reformat, or the reviewer's own save).
+    pub fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+
+    /// One-line summary for the notification banner, e.g.
+    /// "agent resolved 2, needs info on 1 — press r to reload".
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.resolved > 0 {
+            parts.push(format!("resolved {}", self.resolved));
+        }
+        if self.wontfix > 0 {
+            parts.push(format!("wontfix {}", self.wontfix));
+        }
+        if self.needs_info > 0 {
+            parts.push(format!("needs info on {}", self.needs_info));
+        }
+        if self.responded > 0 {
+            parts.push(format!("replied to {}", self.responded));
+        }
+        if self.added > 0 {
+            parts.push(format!("{} new", self.added));
+        }
+        if self.removed > 0 {
+            parts.push(format!("{} removed", self.removed));
+        }
+        if parts.is_empty() {
+            "comments changed on disk".to_string()
+        } else {
+            format!("agent {}", parts.join(", "))
+        }
+    }
+}
+
+/// Compare the loaded comments against what is now on disk.
+pub fn diff_comments(
+    old: &[crate::comments::Comment],
+    new: &[crate::comments::Comment],
+) -> AgentUpdate {
+    use crate::comments::CommentStatus;
+    use std::collections::HashMap;
+
+    // Key on (file, orig_line): `line` moves when the agent edits the file, but
+    // orig_line is fixed at creation and is what survives a relocation.
+    let key = |c: &crate::comments::Comment| (c.file.clone(), c.orig_line);
+    let old_by: HashMap<_, _> = old.iter().map(|c| (key(c), c)).collect();
+    let new_by: HashMap<_, _> = new.iter().map(|c| (key(c), c)).collect();
+
+    let mut up = AgentUpdate::default();
+    for (k, n) in &new_by {
+        let Some(o) = old_by.get(k) else {
+            up.added += 1;
+            continue;
+        };
+        if o.status != n.status {
+            match n.status {
+                CommentStatus::Resolved => up.resolved += 1,
+                CommentStatus::Wontfix => up.wontfix += 1,
+                CommentStatus::NeedsInfo => up.needs_info += 1,
+                // Reopened by the reviewer; not an agent action worth flagging.
+                CommentStatus::Open => {}
+            }
+        } else if o.response != n.response && n.response.is_some() {
+            up.responded += 1;
+        }
+    }
+    up.removed = old_by.keys().filter(|k| !new_by.contains_key(*k)).count();
+    up
+}
+
 /// Which storage scope is currently active for comments and reviewed flags.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommentScope {
@@ -447,6 +547,13 @@ pub struct App {
     pub comment_scope: CommentScope,
     pub show_comments: bool,
     pub comment_selected: usize,
+    /// Fingerprint of the current scope's `comments.json` as of the last load.
+    /// Compared against the file on the idle tick to notice agent writes.
+    pub comments_fingerprint: Option<(i64, u32, u64)>,
+    /// Set when the file changed on disk since the last load. The view is NOT
+    /// reloaded automatically — the reviewer presses `r`, so nothing shifts
+    /// under them mid-read.
+    pub pending_update: Option<AgentUpdate>,
     pub theme: crate::theme::Theme,
     /// false = unified diff (default), true = side-by-side (split) diff.
     pub split_diff: bool,
@@ -509,9 +616,7 @@ impl ProcPicker {
         let f = self.filter.to_lowercase();
         self.procs
             .iter()
-            .filter(|p| {
-                p.command.to_lowercase().contains(&f) || p.pid.to_string().contains(&f)
-            })
+            .filter(|p| p.command.to_lowercase().contains(&f) || p.pid.to_string().contains(&f))
             .collect()
     }
 }
@@ -560,6 +665,8 @@ impl App {
             comment_scope: CommentScope::Worktree,
             show_comments: false,
             comment_selected: 0,
+            comments_fingerprint: None,
+            pending_update: None,
             theme: crate::theme::Theme::Dark,
             split_diff: false,
             diff_style: DiffStyle::Dim,
@@ -734,7 +841,10 @@ impl App {
         self.show_all_files
             && matches!(
                 self.rows.get(self.selected).map(|r| &r.kind),
-                Some(RowKind::File { section: Section::All, .. })
+                Some(RowKind::File {
+                    section: Section::All,
+                    ..
+                })
             )
     }
 
@@ -1167,9 +1277,9 @@ impl App {
 
     /// Number of breakpoints (for clamping the pane selection).
     pub fn breakpoint_count(&self) -> usize {
-        self.debug.as_ref().map_or(0, |d| {
-            d.breakpoints.values().map(|m| m.len()).sum()
-        })
+        self.debug
+            .as_ref()
+            .map_or(0, |d| d.breakpoints.values().map(|m| m.len()).sum())
     }
 
     /// Move the selection within the breakpoint pane, clamped.
@@ -1230,8 +1340,7 @@ impl App {
         // Only jump within the currently-open file's diff.
         let cur_abs = self.selected_path().map(|p| self.repo_root.join(p));
         if cur_abs.as_deref() != Some(file.as_path()) {
-            self.status_msg =
-                Some("breakpoint is in another file — open it first".into());
+            self.status_msg = Some("breakpoint is in another file — open it first".into());
             return false;
         }
         if let Some(idx) = self
@@ -1350,7 +1459,12 @@ impl App {
 
     /// Store fetched children onto the var at `(frame, path)` in the active
     /// session.
-    pub fn set_var_children(&mut self, frame: usize, path: &[usize], children: Vec<crate::dap::VarRow>) {
+    pub fn set_var_children(
+        &mut self,
+        frame: usize,
+        path: &[usize],
+        children: Vec<crate::dap::VarRow>,
+    ) {
         if let Some(d) = self.debug.as_mut() {
             if let Some(sess) = d.sessions.get_mut(d.active) {
                 if let Some(f) = sess.stack.get_mut(frame) {
@@ -1998,7 +2112,11 @@ impl App {
     /// The anchor fields come from the InputState (captured at `start_comment` time, Fix 4).
     pub fn input_commit(&mut self) -> Option<CommittedComment> {
         let s = self.input.take()?;
-        let debug_snapshot = if s.attach_debug { s.debug_snapshot } else { None };
+        let debug_snapshot = if s.attach_debug {
+            s.debug_snapshot
+        } else {
+            None
+        };
         Some(CommittedComment {
             file: s.target_file,
             line: s.target_line,
@@ -2092,6 +2210,118 @@ impl App {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// A comment anchored at `orig_line` in `file`, used for the update-diff tests.
+    fn cmt(
+        file: &str,
+        orig_line: u32,
+        status: crate::comments::CommentStatus,
+        response: Option<&str>,
+    ) -> crate::comments::Comment {
+        crate::comments::Comment {
+            file: PathBuf::from(file),
+            line: orig_line,
+            hunk: String::new(),
+            text: "please fix".into(),
+            line_text: String::new(),
+            context_before: Vec::new(),
+            context_after: Vec::new(),
+            orig_line,
+            stale: false,
+            status,
+            response: response.map(|s| s.to_string()),
+            updated: 0,
+            debug_snapshot: None,
+        }
+    }
+
+    #[test]
+    fn diff_comments_counts_status_transitions() {
+        use crate::comments::CommentStatus::*;
+        let old = vec![
+            cmt("a.rs", 1, Open, None),
+            cmt("a.rs", 2, Open, None),
+            cmt("b.rs", 3, Open, None),
+        ];
+        let new = vec![
+            cmt("a.rs", 1, Resolved, Some("fixed")),
+            cmt("a.rs", 2, Wontfix, Some("no")),
+            cmt("b.rs", 3, NeedsInfo, Some("which one?")),
+        ];
+        let up = diff_comments(&old, &new);
+        assert_eq!(up.resolved, 1);
+        assert_eq!(up.wontfix, 1);
+        assert_eq!(up.needs_info, 1);
+        assert_eq!(up.total(), 3);
+        assert!(!up.is_empty());
+    }
+
+    #[test]
+    fn diff_comments_counts_a_bare_response_as_replied() {
+        use crate::comments::CommentStatus::*;
+        // Status unchanged, response added: the agent answered without closing.
+        let old = vec![cmt("a.rs", 1, Open, None)];
+        let new = vec![cmt("a.rs", 1, Open, Some("looking into it"))];
+        let up = diff_comments(&old, &new);
+        assert_eq!(up.responded, 1);
+        assert_eq!(up.resolved, 0);
+    }
+
+    #[test]
+    fn diff_comments_is_empty_when_nothing_changed() {
+        use crate::comments::CommentStatus::*;
+        let items = vec![cmt("a.rs", 1, Resolved, Some("fixed"))];
+        // Same content rewritten (a reformat, or our own save) is not an update.
+        assert!(diff_comments(&items, &items).is_empty());
+    }
+
+    #[test]
+    fn diff_comments_tracks_added_and_removed() {
+        use crate::comments::CommentStatus::*;
+        let old = vec![cmt("a.rs", 1, Open, None), cmt("a.rs", 2, Open, None)];
+        let new = vec![cmt("a.rs", 1, Open, None), cmt("c.rs", 9, Open, None)];
+        let up = diff_comments(&old, &new);
+        assert_eq!(up.added, 1);
+        assert_eq!(up.removed, 1);
+    }
+
+    #[test]
+    fn diff_comments_matches_by_orig_line_not_current_line() {
+        use crate::comments::CommentStatus::*;
+        let old = vec![cmt("a.rs", 5, Open, None)];
+        // The agent's fix shifted the comment down; orig_line is what anchors it.
+        let mut moved = cmt("a.rs", 5, Resolved, Some("fixed"));
+        moved.line = 42;
+        let up = diff_comments(&old, &[moved]);
+        assert_eq!(
+            up.resolved, 1,
+            "a relocated comment must not count as added"
+        );
+        assert_eq!(up.added, 0);
+        assert_eq!(up.removed, 0);
+    }
+
+    #[test]
+    fn diff_comments_ignores_a_reviewer_reopening_a_comment() {
+        use crate::comments::CommentStatus::*;
+        let old = vec![cmt("a.rs", 1, Resolved, Some("fixed"))];
+        let new = vec![cmt("a.rs", 1, Open, Some("fixed"))];
+        let up = diff_comments(&old, &new);
+        assert!(
+            up.is_empty(),
+            "reopening is not an agent action to announce"
+        );
+    }
+
+    #[test]
+    fn agent_update_summary_reads_as_a_sentence() {
+        let up = AgentUpdate {
+            resolved: 2,
+            needs_info: 1,
+            ..Default::default()
+        };
+        assert_eq!(up.summary(), "agent resolved 2, needs info on 1");
+    }
 
     /// Build an App with files in the unstaged list only (mirrors the old `App::new(files, root)` pattern).
     fn sample() -> App {
@@ -4295,7 +4525,11 @@ mod tests {
         assert!(app.launch_picker_active());
         assert_eq!(
             app.launch_modes(),
-            vec![LaunchMode::Worktree, LaunchMode::Process, LaunchMode::Remote]
+            vec![
+                LaunchMode::Worktree,
+                LaunchMode::Process,
+                LaunchMode::Remote
+            ]
         );
         assert_eq!(app.selected_launch_mode(), Some(LaunchMode::Worktree));
         app.move_launch_pick(9); // clamp to last
@@ -4321,8 +4555,14 @@ mod tests {
         use crate::storage::ExpandCommand;
         let mut app = sample();
         let cmds = vec![
-            ExpandCommand { name: "lib".into(), command: "cargo expand --lib {module}".into() },
-            ExpandCommand { name: "example".into(), command: "cargo expand --example x".into() },
+            ExpandCommand {
+                name: "lib".into(),
+                command: "cargo expand --lib {module}".into(),
+            },
+            ExpandCommand {
+                name: "example".into(),
+                command: "cargo expand --example x".into(),
+            },
         ];
         app.open_expand_picker(cmds);
         assert!(app.expand_picker_active());
@@ -4340,9 +4580,18 @@ mod tests {
         let mut app = sample();
         app.proc_picker = Some(ProcPicker {
             procs: vec![
-                crate::process::ProcInfo { pid: 100, command: "zsh".into() },
-                crate::process::ProcInfo { pid: 200, command: "myapp".into() },
-                crate::process::ProcInfo { pid: 300, command: "myapp-helper".into() },
+                crate::process::ProcInfo {
+                    pid: 100,
+                    command: "zsh".into(),
+                },
+                crate::process::ProcInfo {
+                    pid: 200,
+                    command: "myapp".into(),
+                },
+                crate::process::ProcInfo {
+                    pid: 300,
+                    command: "myapp-helper".into(),
+                },
             ],
             filter: String::new(),
             sel: 0,

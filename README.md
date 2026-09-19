@@ -135,7 +135,7 @@ Press `?` at any time for an in-app keybinding overlay.
 | `Space`          | toggle the reviewed checkbox on the selected file               |
 | `R`              | toggle hiding reviewed files                                    |
 | `A`              | archive resolved comments in the current scope                  |
-| `r`              | refresh everything from disk / git                              |
+| `r`              | refresh everything from disk / git (also applies agent updates) |
 | `%`              | toggle test-coverage highlight (LCOV)                            |
 | `M`              | run the configured coverage command, then show it               |
 | `?`              | show the keybinding help overlay                                |
@@ -193,6 +193,25 @@ optional `response`. An AI coding agent can close the loop:
 Ask the agent to "review my past comments" and it will distil recurring feedback into
 `.turboreview/lessons.md`, then read that file at the start of later fix loops so the
 same review note doesn't have to be written twice.
+
+#### Live review
+
+You don't have to quit and reopen. While turboreview is running it watches the
+current scope's `comments.json`, so when an agent responds you get a notification
+in the comment pane and the status bar:
+
+```
+● agent resolved 2, needs info on 1 — press r to reload
+```
+
+Nothing moves until you press `r` — the view never shifts under you mid-read. The
+banner says only what changed; `r` applies it.
+
+There is no daemon and no socket: both sides poll the same file. turboreview stats
+`comments.json` every ~500ms while you are idle (mtime and length, so two writes in
+one timestamp tick are still caught). An agent asked to *watch* rather than do a
+single pass polls it the same way — `--skill` tells it how, including re-reading
+immediately before every write so it never clobbers a comment you just added.
 
 ## File history & search
 

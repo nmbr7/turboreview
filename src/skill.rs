@@ -141,6 +141,43 @@ properties affect how you read it:
    decides whether each fix is right. Stage and commit only after the user explicitly
    confirms — and when they do, run `git add` and `git commit` as separate commands.
 
+## Watching for new comments (live review)
+
+The reviewer may be working in turboreview while you are working in the code. If
+you are asked to watch (stay running and respond as comments arrive), rather than
+to do a single pass:
+
+1. Poll the active scope's `comments.json` for changes. Compare modification time
+   *and* file length — two writes inside one filesystem timestamp tick can share
+   an mtime. Every second or two is plenty; this is a human typing.
+2. On a change, re-read the file and look for comments with `status` == `open`
+   that you have not already answered.
+3. Fix, respond, and set the status exactly as in the workflow above.
+4. Go back to waiting. Do not exit after the first comment.
+
+**Do not clobber the reviewer's edits.** You and turboreview both write this file,
+and turboreview holds the whole array in memory. So:
+
+- Re-read `comments.json` immediately before writing it, every time. Never write
+  from a copy you read minutes ago — the reviewer has almost certainly added a
+  comment since.
+- Only ever change `response` and `status`, on the specific comments you are
+  answering. Preserve every other comment and field byte for byte. A whole-file
+  rewrite from stale state silently destroys comments the reviewer just wrote.
+- Write the file once per batch of fixes, not once per comment. Each write makes
+  the reviewer's UI flag an update; a burst of writes is noise.
+
+The reviewer sees a notification when you write, and reloads when they are ready.
+They may be mid-read, so the reload happens on their keypress, not yours — which
+means a comment you resolved can stay on their screen as `open` for a while. That
+is expected; do not write again to try to force it through.
+
+**Waiting on the reviewer.** Set `needs_info` and stop when you need an answer.
+Do not guess and do not keep polling for a reply to a question you just asked —
+the next comment change will tell you. If the reviewer reopens a comment you
+resolved (status back to `open`), treat it as a rejection of your fix: read the
+updated `text` for what they actually want before changing anything.
+
 ## Learning from past reviews
 
 The same comment should not have to be written twice. When the reviewer keeps asking
@@ -265,6 +302,14 @@ mod tests {
         assert!(
             SKILL_DOC.contains("lessons.md"),
             "SKILL_DOC must document the lessons file"
+        );
+        assert!(
+            SKILL_DOC.contains("## Watching for new comments"),
+            "SKILL_DOC must document the live-review watch loop"
+        );
+        assert!(
+            SKILL_DOC.contains("Re-read `comments.json` immediately before writing it"),
+            "SKILL_DOC must warn against clobbering the reviewer's edits"
         );
         assert!(
             SKILL_DOC.contains("## Learning from past reviews"),

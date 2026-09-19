@@ -191,8 +191,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     // The bottom status row only exists when it has something to show — a search
     // input line or a transient message. Otherwise the panes use the full height
     // (no empty padding line), since the "? help" hint lives in the diff border.
-    let want_status =
-        app.search_input.is_some() || app.status_msg.is_some() || app.show_coverage;
+    let want_status = app.search_input.is_some()
+        || app.status_msg.is_some()
+        || app.show_coverage
+        || app.pending_update.is_some();
     let status_h = if want_status { 1 } else { 0 };
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -294,6 +296,29 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
     let pal = app.palette();
     let count = app.comments.items.len();
     let title = format!(" Comments ({}) ", count);
+
+    // An agent wrote comments.json since we loaded it: take one row off the top
+    // for the banner. The list is not reloaded until the reviewer presses `r`.
+    let (banner_area, area) = match &app.pending_update {
+        Some(_) if area.height > 2 => {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(area);
+            (Some(rows[0]), rows[1])
+        }
+        _ => (None, area),
+    };
+    if let (Some(banner), Some(update)) = (banner_area, app.pending_update.as_ref()) {
+        let text = format!(" ● {} — press r to reload ", update.summary());
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                text,
+                Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
+            ))),
+            banner,
+        );
+    }
 
     let rows = app.comment_rows();
     let items: Vec<ListItem> = rows
@@ -421,7 +446,11 @@ fn render_breakpoint_lines(
             .unwrap_or(file.as_path())
             .display()
             .to_string();
-        let (mark, mark_fg) = if *on { ("●", pal.red) } else { ("○", pal.accent_dim) };
+        let (mark, mark_fg) = if *on {
+            ("●", pal.red)
+        } else {
+            ("○", pal.accent_dim)
+        };
         let mut row_style = Style::default();
         let mut text_fg = if *on { pal.accent } else { pal.accent_dim };
         if i == d.bp_sel {
@@ -450,7 +479,9 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
     // Tab header: [ Vars | Breakpoints ], active tab highlighted.
     let tab_span = |label: &str, active: bool| {
         let st = if active {
-            Style::default().fg(pal.accent).add_modifier(Modifier::BOLD | Modifier::REVERSED)
+            Style::default()
+                .fg(pal.accent)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else {
             Style::default().fg(pal.accent_dim)
         };
@@ -470,14 +501,12 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
         render_breakpoint_lines(&mut lines, app, d, &pal);
         let inner_h = area.height.saturating_sub(2) as usize;
         let vscroll = scroll_to_show(bp_sel_line, lines.len(), inner_h) as u16;
-        let para = Paragraph::new(lines)
-            .scroll((vscroll, hscroll))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(focused_border(app, Pane::Comments))
-                    .title(" Debug "),
-            );
+        let para = Paragraph::new(lines).scroll((vscroll, hscroll)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(focused_border(app, Pane::Comments))
+                .title(" Debug "),
+        );
         frame.render_widget(para, area);
         return;
     }
@@ -554,7 +583,11 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
                         let depth = path.len();
                         let indent = "  ".repeat(depth + 1);
                         let marker = if v.var_ref > 0 {
-                            if v.expanded { "▾ " } else { "▸ " }
+                            if v.expanded {
+                                "▾ "
+                            } else {
+                                "▸ "
+                            }
                         } else {
                             "  "
                         };
@@ -590,14 +623,12 @@ fn render_debug_panel(frame: &mut Frame, app: &App, area: Rect) {
     // Vertical auto-scroll so the selected row stays visible.
     let inner_h = area.height.saturating_sub(2) as usize;
     let vscroll = scroll_to_show(sel_line, lines.len(), inner_h) as u16;
-    let para = Paragraph::new(lines)
-        .scroll((vscroll, hscroll))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(focused_border(app, Pane::Comments))
-                .title(" Debug "),
-        );
+    let para = Paragraph::new(lines).scroll((vscroll, hscroll)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(focused_border(app, Pane::Comments))
+            .title(" Debug "),
+    );
     frame.render_widget(para, area);
 }
 
@@ -734,10 +765,7 @@ fn render_commits(frame: &mut Frame, app: &App, area: Rect) {
                         Style::default().fg(pal.red),
                     ));
                 }
-                None => spans.push(Span::styled(
-                    " · …",
-                    Style::default().fg(pal.accent_dim),
-                )),
+                None => spans.push(Span::styled(" · …", Style::default().fg(pal.accent_dim))),
             }
             ListItem::new(Line::from(spans))
         })
@@ -850,20 +878,34 @@ fn push_snapshot_vars(
             return;
         }
         let pad = " ".repeat(indent);
-        let ty = v
-            .ty
-            .as_deref()
-            .map(|t| format!("  : {t}"))
-            .unwrap_or_default();
+        let ty =
+            v.ty.as_deref()
+                .map(|t| format!("  : {t}"))
+                .unwrap_or_default();
         result.push(Line::from(vec![
             Span::styled("    │ ", border_style),
             Span::styled(format!("{pad}{} = ", v.name), body_style),
-            Span::styled(v.value.clone(), Style::default().fg(pal.tick).add_modifier(Modifier::ITALIC)),
-            Span::styled(ty, Style::default().fg(pal.blue).add_modifier(Modifier::ITALIC)),
+            Span::styled(
+                v.value.clone(),
+                Style::default().fg(pal.tick).add_modifier(Modifier::ITALIC),
+            ),
+            Span::styled(
+                ty,
+                Style::default().fg(pal.blue).add_modifier(Modifier::ITALIC),
+            ),
         ]));
         *rendered_rows += 1;
         if !v.children.is_empty() {
-            push_snapshot_vars(result, rendered_rows, page, &v.children, indent + 2, border_style, body_style, pal);
+            push_snapshot_vars(
+                result,
+                rendered_rows,
+                page,
+                &v.children,
+                indent + 2,
+                border_style,
+                body_style,
+                pal,
+            );
         }
     }
 }
@@ -902,7 +944,9 @@ fn comment_box_height(c: &crate::comments::Comment, wrap_w: usize) -> usize {
 /// 12 fewer columns than the body. Continuation lines align to the same start.
 /// `wrap_w` is the body wrap width (= inner_w - 6).
 fn response_wrap_w(wrap_w: usize) -> usize {
-    wrap_w.saturating_sub(RESPONSE_PREFIX_W - BODY_PREFIX_W).max(1)
+    wrap_w
+        .saturating_sub(RESPONSE_PREFIX_W - BODY_PREFIX_W)
+        .max(1)
 }
 
 /// Visible width of the body line prefix `"    │ "`.
@@ -1006,19 +1050,22 @@ fn push_comment_box(
     }
     // Debug snapshot: a captured call stack attached at a breakpoint.
     if let Some(snap) = &c.debug_snapshot {
-        let label_style = Style::default()
-            .fg(pal.tick)
-            .add_modifier(Modifier::ITALIC);
+        let label_style = Style::default().fg(pal.tick).add_modifier(Modifier::ITALIC);
         if *rendered_rows < page {
             result.push(Line::from(vec![
                 Span::styled("    │ ", border_style),
                 Span::styled(
-                    format!("↳ stack @ {} ({}:{})", snap.session_label, {
-                        std::path::Path::new(&snap.stopped_file)
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or(&snap.stopped_file)
-                    }, snap.stopped_line),
+                    format!(
+                        "↳ stack @ {} ({}:{})",
+                        snap.session_label,
+                        {
+                            std::path::Path::new(&snap.stopped_file)
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or(&snap.stopped_file)
+                        },
+                        snap.stopped_line
+                    ),
                     label_style,
                 ),
             ]));
@@ -1045,13 +1092,27 @@ fn push_comment_box(
                 Span::styled("    │ ", border_style),
                 Span::styled(
                     format!("  {}", f.name),
-                    Style::default().fg(pal.yellow).add_modifier(Modifier::ITALIC | Modifier::BOLD),
+                    Style::default()
+                        .fg(pal.yellow)
+                        .add_modifier(Modifier::ITALIC | Modifier::BOLD),
                 ),
-                Span::styled(loc, Style::default().fg(pal.hunk).add_modifier(Modifier::ITALIC)),
+                Span::styled(
+                    loc,
+                    Style::default().fg(pal.hunk).add_modifier(Modifier::ITALIC),
+                ),
             ]));
             *rendered_rows += 1;
             // This frame's locals, recursing into captured children.
-            push_snapshot_vars(result, rendered_rows, page, &f.locals, 2, border_style, body_style, pal);
+            push_snapshot_vars(
+                result,
+                rendered_rows,
+                page,
+                &f.locals,
+                2,
+                border_style,
+                body_style,
+                pal,
+            );
         }
     }
     // Bottom border line
@@ -1070,7 +1131,7 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
     let pal = app.palette();
     let page = area.height.saturating_sub(2) as usize;
     let inner_w = area.width.saturating_sub(2) as usize; // minus borders
-    // Two columns + a 1-char separator between them.
+                                                         // Two columns + a 1-char separator between them.
     let sep_w = 1usize;
     let cell_w = inner_w.saturating_sub(sep_w) / 2;
     let gutter_w = 5usize; // matches `gutter()` width
@@ -1166,7 +1227,11 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
             LineKind::Del if app.diff_style.change_bg() => Some(pal.del_bg),
             _ => None,
         };
-        let cell_bg = if is_cursor_row { Some(pal.selected_bg) } else { bg };
+        let cell_bg = if is_cursor_row {
+            Some(pal.selected_bg)
+        } else {
+            bg
+        };
         let gutter_style = {
             let mut s = Style::default().fg(gutter_fg);
             if let Some(b) = cell_bg {
@@ -1179,7 +1244,11 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
         let shifted: String = if app.wrap_lines {
             dl.text.clone()
         } else {
-            dl.text.chars().skip(app.diff_hscroll).take(text_w).collect()
+            dl.text
+                .chars()
+                .skip(app.diff_hscroll)
+                .take(text_w)
+                .collect()
         };
         // Search tint applies to the whole cell when matched (not on cursor row).
         let search_hit = app.search.as_ref().map_or(false, |s| {
@@ -1216,7 +1285,8 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
         // keeping the 5-col gutter width (marker + 4-digit line number).
         let line_no = dl.new_lineno.or(dl.old_lineno);
         let is_bp = matches!((&bp_file, line_no), (Some(f), Some(n)) if app.has_breakpoint(f, n));
-        let bp_on = matches!((&bp_file, line_no), (Some(f), Some(n)) if app.breakpoint_enabled(f, n));
+        let bp_on =
+            matches!((&bp_file, line_no), (Some(f), Some(n)) if app.breakpoint_enabled(f, n));
         let is_stopped = stopped_line.is_some() && stopped_line == line_no;
         let mut spans: Vec<Span<'static>> = if is_stopped || is_bp {
             let (marker, fg) = if is_stopped {
@@ -1226,7 +1296,9 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
             } else {
                 ("○", pal.accent_dim) // disabled breakpoint
             };
-            let num = line_no.map(|n| format!("{:>4}", n)).unwrap_or_else(|| "    ".into());
+            let num = line_no
+                .map(|n| format!("{:>4}", n))
+                .unwrap_or_else(|| "    ".into());
             let mut mstyle = Style::default().fg(fg);
             if let Some(b) = cell_bg {
                 mstyle = mstyle.bg(b);
@@ -1238,7 +1310,9 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
         } else {
             // 4-digit number + a coverage `│` bar (green/red) in the trailing
             // gutter column, keeping the 5-col width.
-            let num = line_no.map(|n| format!("{:>4}", n)).unwrap_or_else(|| "    ".into());
+            let num = line_no
+                .map(|n| format!("{:>4}", n))
+                .unwrap_or_else(|| "    ".into());
             let (cov_ch, cov_fg) = match cov {
                 crate::coverage::LineCov::Covered => ("▌", pal.tick),
                 crate::coverage::LineCov::Uncovered => ("▌", pal.red),
@@ -1264,7 +1338,8 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
         let blank_gutter = Span::styled(" ".repeat(gutter_w), pad_style);
         let mut rows: Vec<Vec<Span<'static>>> = Vec::with_capacity(text_rows.len());
         for (ri, trow) in text_rows.into_iter().enumerate() {
-            let mut row: Vec<Span<'static>> = Vec::with_capacity(gutter_spans.len() + trow.len() + 1);
+            let mut row: Vec<Span<'static>> =
+                Vec::with_capacity(gutter_spans.len() + trow.len() + 1);
             if ri == 0 {
                 row.extend(gutter_spans.iter().cloned());
             } else {
@@ -1512,7 +1587,8 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                 (Some(f), Some(n)) => app.has_breakpoint(f, n),
                 _ => false,
             };
-            let bp_on = matches!((&bp_file, line_no), (Some(f), Some(n)) if app.breakpoint_enabled(f, n));
+            let bp_on =
+                matches!((&bp_file, line_no), (Some(f), Some(n)) if app.breakpoint_enabled(f, n));
             let is_stopped = stopped_line.is_some() && stopped_line == line_no;
             let (marker, marker_fg) = if is_stopped {
                 ("▶", pal.tick)
@@ -1655,14 +1731,29 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
     // Coverage metrics on the right when the highlight is on; status message on
-    // the left.
-    let msg = app.status_msg.clone().unwrap_or_default();
+    // the left. A pending agent update outranks a transient message: it stays
+    // until the reviewer reloads, and it is the one that asks for an action.
+    let pending = app.pending_update.as_ref();
+    let msg = match pending {
+        Some(u) => format!("● {} — press r to reload", u.summary()),
+        None => app.status_msg.clone().unwrap_or_default(),
+    };
+    // Bold accent for a pending update so it reads as an alert, not a log line.
+    let msg_style = if pending.is_some() {
+        Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(pal.accent_dim)
+    };
     if app.show_coverage {
         if let Some(cov) = app.coverage.as_ref() {
             let (c, t) = cov.totals();
             let mut metrics = format!("cov {:.0}% ({c}/{t})", cov.percent());
             if let Some((fc, ft)) = app.selected_path().and_then(|p| cov.file_totals(p)) {
-                let fpct = if ft == 0 { 0.0 } else { 100.0 * fc as f64 / ft as f64 };
+                let fpct = if ft == 0 {
+                    0.0
+                } else {
+                    100.0 * fc as f64 / ft as f64
+                };
                 metrics.push_str(&format!("  ·  file {fpct:.0}% ({fc}/{ft})"));
             }
             // Lay out: status msg (left) | metrics (right).
@@ -1673,10 +1764,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
                     Constraint::Length(metrics.chars().count() as u16 + 1),
                 ])
                 .split(area);
-            frame.render_widget(
-                Paragraph::new(msg).style(Style::default().fg(pal.accent_dim)),
-                cols[0],
-            );
+            frame.render_widget(Paragraph::new(msg).style(msg_style), cols[0]);
             frame.render_widget(
                 Paragraph::new(metrics).style(Style::default().fg(pal.tick)),
                 cols[1],
@@ -1686,7 +1774,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
     }
     // Transient status message only; the "? for help" hint lives in the diff pane's
     // bottom-right border (see render_diff).
-    let para = Paragraph::new(msg).style(Style::default().fg(pal.accent_dim));
+    let para = Paragraph::new(msg).style(msg_style);
     frame.render_widget(para, area);
 }
 
@@ -1717,7 +1805,9 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 /// The expand-command picker: choose which configured command to run.
 fn render_expand_picker(frame: &mut Frame, app: &App) {
     let pal = app.palette();
-    let Some((cmds, sel)) = app.expand_pick.as_ref() else { return };
+    let Some((cmds, sel)) = app.expand_pick.as_ref() else {
+        return;
+    };
     let area = centered_rect(60, 40, frame.area());
     frame.render_widget(Clear, area);
     let mut lines: Vec<Line> = Vec::new();
@@ -1728,7 +1818,10 @@ fn render_expand_picker(frame: &mut Frame, app: &App) {
         }
         lines.push(Line::from(vec![
             Span::styled(format!("  {}", c.name), st),
-            Span::styled(format!("   {}", c.command), Style::default().fg(pal.accent_dim)),
+            Span::styled(
+                format!("   {}", c.command),
+                Style::default().fg(pal.accent_dim),
+            ),
         ]));
     }
     lines.push(Line::from(""));
@@ -1749,7 +1842,9 @@ fn render_expand_picker(frame: &mut Frame, app: &App) {
 fn render_launch_picker(frame: &mut Frame, app: &App) {
     use crate::app::LaunchMode;
     let pal = app.palette();
-    let Some(sel) = app.debug_launch_pick else { return };
+    let Some(sel) = app.debug_launch_pick else {
+        return;
+    };
     let modes = app.launch_modes();
     let area = centered_rect(48, 30, frame.area());
     frame.render_widget(Clear, area);
@@ -1785,7 +1880,9 @@ fn render_launch_picker(frame: &mut Frame, app: &App) {
 /// The attach-to-process picker: a filter line + the (filtered) process list.
 fn render_proc_picker(frame: &mut Frame, app: &App) {
     let pal = app.palette();
-    let Some(p) = app.proc_picker.as_ref() else { return };
+    let Some(p) = app.proc_picker.as_ref() else {
+        return;
+    };
     let area = centered_rect(60, 70, frame.area());
     frame.render_widget(Clear, area);
     let rows = Layout::default()
@@ -1980,6 +2077,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Space", "toggle reviewed"),
             ("R", "hide reviewed files"),
             ("A", "archive resolved comments"),
+            ("r", "reload (applies agent updates)"),
         ],
     ),
     (
@@ -2531,7 +2629,6 @@ mod tests {
         assert_eq!(diff_scroll_start_center(2, 10, &rh), 0);
     }
 
-    
     #[test]
     fn history_mode_scrolls_cursor_toward_center() {
         use crate::app::{CommentScope, FileHistory};
@@ -3299,6 +3396,45 @@ mod tests {
             dump.contains("stale note"),
             "stale comment text must still appear"
         );
+    }
+
+    #[test]
+    fn pending_agent_update_shows_a_reload_banner() {
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.show_comments = true;
+
+        // No update pending: nothing about reloading on screen.
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let clean: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!clean.contains("reload"));
+
+        app.pending_update = Some(crate::app::AgentUpdate {
+            resolved: 2,
+            needs_info: 1,
+            ..Default::default()
+        });
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(dump.contains("reload"), "banner must prompt for a reload");
+        assert!(dump.contains("resolved"), "banner must say what changed");
     }
 
     #[test]

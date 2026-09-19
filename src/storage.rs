@@ -23,6 +23,32 @@ pub fn scope_dir(repo_root: &Path, scope: &CommentScope) -> PathBuf {
     }
 }
 
+/// Cheap change fingerprint for the current scope's `comments.json`:
+/// `(mtime_secs, mtime_nanos, len)`.
+///
+/// Used to notice that an agent rewrote the file while the reviewer is in the
+/// TUI. `None` when the file is absent or cannot be stat'd — treated as "no
+/// change" so a missing file never produces a spurious notification.
+///
+/// mtime alone is too coarse: an agent that rewrites the file twice inside one
+/// filesystem timestamp tick would otherwise go unnoticed, so length is mixed in.
+/// This is a change hint, not a correctness boundary — the reload re-reads the
+/// file either way.
+pub fn comments_fingerprint(repo_root: &Path, scope: &CommentScope) -> Option<(i64, u32, u64)> {
+    let path = scope_dir(repo_root, scope).join("comments.json");
+    let meta = std::fs::metadata(&path).ok()?;
+    let modified = meta.modified().ok()?;
+    let (secs, nanos) = match modified.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => (d.as_secs() as i64, d.subsec_nanos()),
+        // Pre-epoch mtime (clock skew, odd filesystems): still a usable fingerprint.
+        Err(e) => {
+            let d = e.duration();
+            (-(d.as_secs() as i64), d.subsec_nanos())
+        }
+    };
+    Some((secs, nanos, meta.len()))
+}
+
 #[derive(Serialize)]
 struct LogEntry<'a> {
     path: &'a str,
@@ -428,6 +454,84 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Regression: the watcher must be baselined against the file as loaded, or the
+    /// first poll adopts whatever is on disk and swallows an agent write that landed
+    /// before it. This is exactly the startup bug — unit tests all passed while the
+    /// notification never fired in the real binary.
+    #[test]
+    fn an_unbaselined_fingerprint_swallows_the_first_agent_write() {
+        let dir = tempdir().unwrap();
+        let scope = CommentScope::Worktree;
+        let scope_dir = worktree_dir(dir.path());
+        std::fs::create_dir_all(&scope_dir).unwrap();
+        let path = scope_dir.join("comments.json");
+        std::fs::write(&path, "[]").unwrap();
+
+        // Baselined at load time, as startup must do.
+        let baseline = comments_fingerprint(dir.path(), &scope);
+        assert!(baseline.is_some());
+
+        // An agent writes.
+        std::fs::write(
+            &path,
+            "[{\"file\":\"a.rs\",\"line\":1,\"hunk\":\"\",\"text\":\"x\"}]",
+        )
+        .unwrap();
+        let after = comments_fingerprint(dir.path(), &scope);
+
+        // A baselined watcher sees the change; an unbaselined one (None) would
+        // compare None != Some and silently adopt it as the new normal.
+        assert_ne!(baseline, after, "a baselined watcher must see the write");
+        assert_ne!(None, after);
+    }
+
+    #[test]
+    fn comments_fingerprint_is_none_without_a_file() {
+        let dir = tempdir().unwrap();
+        assert!(comments_fingerprint(dir.path(), &CommentScope::Worktree).is_none());
+    }
+
+    #[test]
+    fn comments_fingerprint_changes_when_the_file_is_rewritten() {
+        let dir = tempdir().unwrap();
+        let scope_dir = worktree_dir(dir.path());
+        std::fs::create_dir_all(&scope_dir).unwrap();
+        let path = scope_dir.join("comments.json");
+
+        std::fs::write(&path, "[]").unwrap();
+        let first = comments_fingerprint(dir.path(), &CommentScope::Worktree);
+        assert!(first.is_some());
+        // Unchanged file: the fingerprint must be stable, or the TUI would
+        // notify on every poll.
+        assert_eq!(
+            first,
+            comments_fingerprint(dir.path(), &CommentScope::Worktree)
+        );
+
+        // A rewrite of a different length is caught by the length component even
+        // if it lands inside the same filesystem timestamp tick.
+        std::fs::write(
+            &path,
+            "[{\"file\":\"a.rs\",\"line\":1,\"hunk\":\"\",\"text\":\"x\"}]",
+        )
+        .unwrap();
+        assert_ne!(
+            first,
+            comments_fingerprint(dir.path(), &CommentScope::Worktree)
+        );
+    }
+
+    #[test]
+    fn comments_fingerprint_is_per_scope() {
+        let dir = tempdir().unwrap();
+        let wt = worktree_dir(dir.path());
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("comments.json"), "[]").unwrap();
+        // A worktree file must not make a commit scope look populated.
+        let commit = CommentScope::Commit("deadbeef".into());
+        assert!(comments_fingerprint(dir.path(), &commit).is_none());
+    }
+
     #[test]
     fn module_path_derivation() {
         use std::path::Path;
@@ -448,7 +552,10 @@ mod tests {
         assert_eq!(r.commands(), vec!["gdb-remote localhost:1234".to_string()]);
         // Explicit commands override host/port.
         r.attach_commands = vec!["process connect connect://x:9".into()];
-        assert_eq!(r.commands(), vec!["process connect connect://x:9".to_string()]);
+        assert_eq!(
+            r.commands(),
+            vec!["process connect connect://x:9".to_string()]
+        );
         assert!(r.is_set());
     }
 
