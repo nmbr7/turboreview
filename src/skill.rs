@@ -166,11 +166,22 @@ generalises beyond the one site it was raised at — naming, error handling, tes
 structure, comment density, API shape. Not a lesson: a one-off fix, anything resting on
 a single comment, or a restatement of what the code already makes obvious.
 
-**Discuss before writing.** Where a pattern is ambiguous or thinly evidenced, ask rather
-than guess. Ask how far it reaches ("everywhere, or only in the parser?"), and how firm
-it is ("hard rule or preference?"). Put candidate lessons to the user for confirmation
-before writing them down. A wrong lesson is worse than a missing one — it gets applied
-silently to every future change.
+**Review every lesson with the user before writing it.** This step is not optional and
+does not depend on how confident you are. Nothing goes into `lessons.md` that the user
+has not seen and approved first.
+
+Show the complete list of candidate lessons, each with the evidence behind it — which
+comments, how many, quoted where it helps. Then stop and wait. Do not write the file in
+the same turn you propose them.
+
+Expect the user to edit the list, not just accept it: they may drop a lesson, reword one,
+merge two, or narrow one's scope. Take that as the normal outcome. Where a pattern is
+ambiguous or thinly evidenced, ask rather than guess — how far it reaches ("everywhere,
+or only in the parser?"), and how firm it is ("hard rule or preference?"). Write only
+what survives that pass, in the user's words where they gave them.
+
+A wrong lesson is worse than a missing one: it gets applied silently to every future
+change, and nothing in the fix loop will ever re-examine it.
 
 **How to write it.** Append to or update `.turboreview/lessons.md`, one lesson per
 bullet, each carrying the evidence behind it (which comments, how many). Preserve
@@ -197,6 +208,8 @@ the review corpus — do not touch any `comments.json` while doing one.
   shows them, which is where the reviewer will look.
 - Wait for explicit user confirmation before staging or committing. You saying "fixed
   it" is not confirmation; the user saying to commit is.
+- NEVER write `lessons.md` without reviewing the candidate lessons with the user first
+  and getting approval — however obvious a pattern looks to you.
 "#;
 
 #[cfg(test)]
@@ -264,6 +277,10 @@ mod tests {
         assert!(
             SKILL_DOC.contains("git add"),
             "SKILL_DOC must state the do-not-stage rule"
+        );
+        assert!(
+            SKILL_DOC.contains("Review every lesson with the user before writing it"),
+            "SKILL_DOC must require reviewing lessons with the user before writing"
         );
     }
 }
