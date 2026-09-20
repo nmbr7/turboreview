@@ -754,6 +754,8 @@ fn run(
                         }
                     }
                     (KeyCode::Char('C'), _) => app.toggle_comment_pane(),
+                    // p collapses the agent responses in the comment pane.
+                    (KeyCode::Char('p'), _) => app.toggle_comment_responses(),
                     (KeyCode::Char('R'), _) => {
                         app.toggle_hide_reviewed();
                         refresh_diff(repo, app);

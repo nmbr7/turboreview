@@ -338,7 +338,14 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
                 let c = &app.comments.items[*i];
                 let basename = c.file.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 let first_line = c.text.lines().next().unwrap_or("");
-                let max_text = area.width.saturating_sub(20) as usize;
+                // Right-aligned age, e.g. "2m". 0 = legacy comment with no stamp.
+                let age = if c.updated > 0 {
+                    crate::git::relative_time(c.updated, crate::storage::now_secs())
+                } else {
+                    String::new()
+                };
+                // Reserve the location prefix plus the age column.
+                let max_text = (area.width as usize).saturating_sub(20 + age.chars().count() + 1);
                 let text_display = if first_line.chars().count() > max_text && max_text > 3 {
                     format!(
                         "{}…",
@@ -350,23 +357,42 @@ fn render_comment_list(frame: &mut Frame, app: &App, area: Rect) {
                 } else {
                     first_line.to_string()
                 };
-                let line = Line::from(vec![
+                let mut spans = vec![
                     Span::styled(
                         format!("  {}:{} ", basename, c.line),
                         Style::default().fg(pal.accent_dim),
                     ),
-                    Span::raw(text_display),
-                ]);
+                    Span::raw(text_display.clone()),
+                ];
+                if !age.is_empty() {
+                    // Pad so the age sits flush right on the row.
+                    let used = 2
+                        + basename.chars().count()
+                        + 1
+                        + c.line.to_string().chars().count()
+                        + 1
+                        + text_display.chars().count();
+                    let pad = (area.width as usize).saturating_sub(used + age.chars().count() + 1);
+                    spans.push(Span::raw(" ".repeat(pad)));
+                    spans.push(Span::styled(
+                        age.clone(),
+                        Style::default()
+                            .fg(pal.accent_dim)
+                            .add_modifier(Modifier::DIM),
+                    ));
+                }
+                let line = Line::from(spans);
                 // The agent's reply on a second line, so the pane answers "what
                 // did it say" without opening the file's diff. Dimmed and marked
                 // with ↳, matching the inline comment box.
                 let mut lines = vec![line];
-                if let Some(resp) = c
-                    .response
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|r| !r.is_empty())
-                {
+                let resp_shown = app.show_responses.then_some(()).and(
+                    c.response
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|r| !r.is_empty()),
+                );
+                if let Some(resp) = resp_shown {
                     let first = resp.lines().next().unwrap_or("");
                     // 6 = the "    ↳ " prefix below.
                     let max_resp = area.width.saturating_sub(6) as usize;
@@ -2178,6 +2204,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("z", "hide/show file pane"),
             ("< / >", "resize focused pane (files / right)"),
             ("C", "toggle comment-list pane"),
+            ("p", "show/hide responses in the comment pane"),
         ],
     ),
     (
@@ -3751,6 +3778,118 @@ mod tests {
             after.contains("SENTINELREPLY"),
             "the comment pane must show the agent's response"
         );
+    }
+
+    #[test]
+    fn comment_pane_response_toggle_hides_and_shows() {
+        fn dump(app: &App) -> String {
+            let backend = TestBackend::new(160, 30);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| render(f, app)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
+        }
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.show_comments = true;
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            5,
+            "@@ -3,4 @@".to_string(),
+            "look at this".to_string(),
+            "fn foo()".to_string(),
+            vec![],
+            vec![],
+            0,
+        );
+        app.comments.items[0].response = Some("TOGGLEREPLY".into());
+
+        assert!(app.show_responses, "responses are shown by default");
+        assert!(dump(&app).contains("TOGGLEREPLY"));
+
+        app.toggle_comment_responses();
+        assert!(!app.show_responses);
+        let hidden = dump(&app);
+        assert!(!hidden.contains("TOGGLEREPLY"), "p must hide the response");
+        // The comment itself stays.
+        assert!(hidden.contains("look at this"));
+
+        app.toggle_comment_responses();
+        assert!(dump(&app).contains("TOGGLEREPLY"), "p must show it again");
+    }
+
+    #[test]
+    fn comment_pane_shows_a_relative_age() {
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.show_comments = true;
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            5,
+            "@@ -3,4 @@".to_string(),
+            "look at this".to_string(),
+            "fn foo()".to_string(),
+            vec![],
+            vec![],
+            0,
+        );
+        // Two hours ago.
+        app.comments.items[0].updated = crate::storage::now_secs() - 7200;
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(dump.contains("2h"), "the row must carry a relative age");
+    }
+
+    #[test]
+    fn comment_pane_omits_an_age_for_a_legacy_comment() {
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let files = vec![FileChange {
+            path: PathBuf::from("a.rs"),
+            status: Status::Modified,
+        }];
+        let mut app = App::new(files, vec![], PathBuf::from("/repo"));
+        app.show_comments = true;
+        app.comments.set(
+            PathBuf::from("a.rs"),
+            5,
+            "@@ -3,4 @@".to_string(),
+            "look at this".to_string(),
+            "fn foo()".to_string(),
+            vec![],
+            vec![],
+            0,
+        );
+        // updated == 0 means a legacy comment with no stamp; "just now" would lie.
+        app.comments.items[0].updated = 0;
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!dump.contains("just now"));
     }
 
     #[test]

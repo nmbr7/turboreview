@@ -116,6 +116,7 @@ Press `?` at any time for an in-app keybinding overlay.
 | `L`              | load more commits (Commits view, when more history exists)       |
 | `Enter`          | open commit · focus a file's Diff · fold dir · jump to comment  |
 | `C`              | toggle the comment-list pane                                    |
+| `p`              | show / hide agent responses in the comment pane                 |
 | `Esc`            | step back (Diff → files → commit list) / focus the Files pane   |
 | `h`/`l` `←`/`→`  | scroll the diff horizontally (Diff pane)                        |
 | `+` / `-`        | increase / decrease diff context (step 5; `+` at max → full file) |

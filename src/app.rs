@@ -546,6 +546,10 @@ pub struct App {
     pub show_help: bool,
     pub comment_scope: CommentScope,
     pub show_comments: bool,
+    /// Show each comment's agent response under it in the comment pane.
+    /// On by default; toggled with `p` so a pane full of long replies can be
+    /// collapsed back to one row per comment.
+    pub show_responses: bool,
     pub comment_selected: usize,
     /// Fingerprint of the current scope's `comments.json` as of the last load.
     /// Compared against the file on the idle tick to notice agent writes.
@@ -665,6 +669,7 @@ impl App {
             comment_scope: CommentScope::Worktree,
             show_comments: false,
             comment_selected: 0,
+            show_responses: true,
             comments_fingerprint: None,
             pending_update: None,
             theme: crate::theme::Theme::Dark,
@@ -1574,6 +1579,22 @@ impl App {
         } else if self.focus == Pane::Comments {
             self.focus = Pane::Diff;
         }
+    }
+
+    /// Show or hide the agent responses under each comment in the pane.
+    ///
+    /// Selection is a row index and rows are per comment, not per line, so
+    /// toggling never moves the selection.
+    pub fn toggle_comment_responses(&mut self) {
+        self.show_responses = !self.show_responses;
+        self.status_msg = Some(
+            if self.show_responses {
+                "responses shown"
+            } else {
+                "responses hidden"
+            }
+            .to_string(),
+        );
     }
 
     /// Build the displayable rows for the comment-list pane.
