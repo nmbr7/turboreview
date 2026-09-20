@@ -1706,6 +1706,8 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                 cov_style = cov_style.bg(b);
             }
             let cov_span = Span::styled(cov_ch.to_string(), cov_style);
+            // Background for this row's trailing pad.
+            let row_bg = if is_cursor { Some(pal.selected_bg) } else { bg };
 
             if app.wrap_lines {
                 // Wrap the code onto continuation rows. The marker/cov/gutter
@@ -1730,16 +1732,37 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                     } else {
                         line_spans.push(Span::styled(indent.clone(), prefix_style));
                     }
+                    let width: usize = row.iter().map(|s| s.content.chars().count()).sum();
                     line_spans.extend(row);
+                    if let Some(b) = cont_bg {
+                        if width < code_w {
+                            line_spans.push(Span::styled(
+                                " ".repeat(code_w - width),
+                                Style::default().bg(b),
+                            ));
+                        }
+                    }
                     result.push(Line::from(line_spans));
                     rendered_rows += 1;
                 }
             } else {
-                let mut all_spans = Vec::with_capacity(3 + spans.len());
+                let mut all_spans = Vec::with_capacity(4 + spans.len());
+                let width: usize = spans.iter().map(|s| s.content.chars().count()).sum();
                 all_spans.push(marker_span);
                 all_spans.push(cov_span);
                 all_spans.push(gutter_span);
                 all_spans.extend(spans);
+                // Pad to the full code column so an add/del fill reaches the
+                // right edge. Without this the colour stops where the text does,
+                // while the split view's fixed-width cells always look filled.
+                if let Some(b) = row_bg {
+                    if width < code_w {
+                        all_spans.push(Span::styled(
+                            " ".repeat(code_w - width),
+                            Style::default().bg(b),
+                        ));
+                    }
+                }
                 result.push(Line::from(all_spans));
                 rendered_rows += 1;
             }
@@ -2832,6 +2855,65 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// An add/del fill must reach the right edge of the diff pane. The unified
+    /// view used to end the line after the text, so the colour stopped where the
+    /// code did while the split view's fixed-width cells always looked filled.
+    #[test]
+    fn unified_change_fill_spans_the_full_row() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = app_with_diff();
+        app.set_diff(vec![
+            DiffLine {
+                kind: LineKind::Context,
+                text: "fn main() {".into(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+            },
+            DiffLine {
+                kind: LineKind::Add,
+                text: "let x = 1;".into(),
+                old_lineno: None,
+                new_lineno: Some(2),
+            },
+        ]);
+        app.rebuild_rows();
+        app.selected = 1;
+        app.diff_cursor = 0; // cursor off the Add row, so its own fill shows
+        terminal.draw(|f| render(f, &app)).unwrap();
+
+        let pal = app.palette();
+        let buf = terminal.backend().buffer().clone();
+        let row = (0..12u16)
+            .find(|y| {
+                (0..80u16)
+                    .map(|x| buf.cell((x, *y)).map(|c| c.symbol()).unwrap_or(" "))
+                    .collect::<String>()
+                    .contains("let x = 1;")
+            })
+            .expect("the added line must render");
+
+        // Walk in from the pane's right border and find the last add_bg cell.
+        let last_filled = (0..80u16)
+            .rev()
+            .find(|x| buf.cell((*x, row)).map(|c| c.bg) == Some(pal.add_bg))
+            .expect("the added line must carry add_bg somewhere");
+        // The last *code* column: non-blank and on the fill. Plain non-blank
+        // would find the pane's right border, which is outside the fill.
+        let text_end = (0..80u16)
+            .rev()
+            .find(|x| {
+                buf.cell((*x, row))
+                    .map(|c| !c.symbol().trim().is_empty() && c.bg == pal.add_bg)
+                    .unwrap_or(false)
+            })
+            .expect("the added line must have code on the fill");
+        assert!(
+            last_filled > text_end,
+            "the fill must continue past the end of the code, not stop at it"
+        );
     }
 
     fn app_with_diff() -> App {
