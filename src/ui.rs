@@ -1315,9 +1315,11 @@ fn build_split_lines(app: &App, area: Rect, ext: &str) -> Vec<Line<'static>> {
                 sp.style = sp.style.bg(pal.accent_dim);
             } else if let Some(b) = cell_bg {
                 sp.style = sp.style.bg(b);
-            } else if !app.diff_style.change_bg() {
-                // Plain: drop the syntax theme's own background so only the
-                // terminal background shows through.
+            } else {
+                // No fill of our own: drop the syntax theme's baked-in background
+                // so the terminal's own shows through. Without this, context
+                // lines carry syntect's dark slab and read as an opaque block
+                // against the add/del rows.
                 sp.style = sp.style.bg(Color::Reset);
             }
             if app.diff_style.dim_context() && !is_cursor_row && dl.kind == LineKind::Context {
@@ -1669,9 +1671,9 @@ fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
                     for s in spans.iter_mut() {
                         s.style = s.style.bg(bg);
                     }
-                } else if !app.diff_style.change_bg() {
-                    // Plain: drop the syntax theme's own background so only the
-                    // terminal background shows through.
+                } else {
+                    // No fill of our own: drop the syntax theme's baked-in
+                    // background so the terminal's own shows through.
                     for s in spans.iter_mut() {
                         s.style = s.style.bg(Color::Reset);
                     }
@@ -2767,6 +2769,69 @@ mod tests {
             !dump.contains("\u{21b3} response:"),
             "a fresh comment has nothing to show above the editor"
         );
+    }
+
+    /// Context lines must carry no background of our own: the syntax theme bakes
+    /// a dark slab into its spans, and leaving it makes unchanged lines read as
+    /// an opaque block instead of sitting on the terminal background.
+    #[test]
+    fn context_lines_have_no_baked_in_background() {
+        for style in [
+            crate::app::DiffStyle::Dim,
+            crate::app::DiffStyle::Bright,
+            crate::app::DiffStyle::Plain,
+        ] {
+            let backend = TestBackend::new(80, 12);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut app = app_with_diff();
+            app.set_diff(vec![
+                DiffLine {
+                    kind: LineKind::Context,
+                    text: "let unchanged = 1;".into(),
+                    old_lineno: Some(1),
+                    new_lineno: Some(1),
+                },
+                DiffLine {
+                    kind: LineKind::Add,
+                    text: "let added = 2;".into(),
+                    old_lineno: None,
+                    new_lineno: Some(2),
+                },
+            ]);
+            app.rebuild_rows();
+            app.selected = 1;
+            app.diff_cursor = 1; // cursor on the Add row, so context is not highlighted
+            app.diff_style = style;
+            terminal.draw(|f| render(f, &app)).unwrap();
+
+            let buf = terminal.backend().buffer().clone();
+            let row = (0..12u16)
+                .find(|y| {
+                    (0..80u16)
+                        .map(|x| buf.cell((x, *y)).map(|c| c.symbol()).unwrap_or(" "))
+                        .collect::<String>()
+                        .contains("unchanged")
+                })
+                .expect("the context line must render");
+            for x in 0..80u16 {
+                let Some(cell) = buf.cell((x, row)) else { continue };
+                if cell.symbol().trim().is_empty() {
+                    continue;
+                }
+                // The syntax theme stamps its own slab (a brown #3b3228 in the
+                // dark theme) onto every span; it must never reach the buffer.
+                assert_ne!(
+                    cell.bg,
+                    ratatui::style::Color::Rgb(0x3b, 0x32, 0x28),
+                    "{style:?}: the syntax theme's background must be cleared"
+                );
+                assert_eq!(
+                    cell.bg,
+                    ratatui::style::Color::Reset,
+                    "{style:?}: context text must sit on the terminal background"
+                );
+            }
+        }
     }
 
     fn app_with_diff() -> App {
