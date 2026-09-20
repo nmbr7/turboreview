@@ -37,8 +37,11 @@ const DARK: Palette = Palette {
     accent: Color::Rgb(0xcb, 0xa6, 0xf7),      // mauve
     accent_dim: Color::Rgb(0x6c, 0x70, 0x86),  // overlay0
     selected_bg: Color::Rgb(0x45, 0x47, 0x5a), // surface1
-    add_bg: Color::Rgb(0x28, 0x3b, 0x2e),
-    del_bg: Color::Rgb(0x44, 0x2b, 0x30),
+    // A little more saturated than the original washed-out #283b2e, but kept
+    // restrained: the fill spans the whole row, so a strong colour covers a lot
+    // of screen. Syntax-highlighted text on top stays well above WCAG AA.
+    add_bg: Color::Rgb(0x2a, 0x43, 0x31),
+    del_bg: Color::Rgb(0x4c, 0x2d, 0x34),
     placeholder: Color::Rgb(0x6c, 0x70, 0x86),
     hunk: Color::Rgb(0x89, 0xdc, 0xeb), // sky
     tick: Color::Rgb(0xa6, 0xe3, 0xa1), // green
@@ -52,8 +55,9 @@ const LIGHT: Palette = Palette {
     accent: Color::Rgb(0x88, 0x39, 0xef),      // latte mauve
     accent_dim: Color::Rgb(0x8c, 0x8f, 0xa1),  // latte overlay0
     selected_bg: Color::Rgb(0xbc, 0xc0, 0xcc), // latte surface1
-    add_bg: Color::Rgb(0xd6, 0xe9, 0xd0),      // light green tint (latte green #40a02b)
-    del_bg: Color::Rgb(0xf2, 0xd5, 0xd9),      // light red tint (latte red #d20f39)
+    // Restrained tints of latte green/red; light enough for dark text on top.
+    add_bg: Color::Rgb(0xcd, 0xe5, 0xc6),
+    del_bg: Color::Rgb(0xf4, 0xcd, 0xd2),
     placeholder: Color::Rgb(0x8c, 0x8f, 0xa1),
     hunk: Color::Rgb(0x04, 0xa5, 0xe5),   // latte sky
     tick: Color::Rgb(0x40, 0xa0, 0x2b),   // latte green
@@ -65,6 +69,34 @@ const LIGHT: Palette = Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    /// The add/del fills must stay saturated enough to read as green and red
+    /// rather than grey. The floor sits just above the original washed-out
+    /// values (light add_bg #d6e9d0 was 0.11), leaving room to tune the fills
+    /// up or down without the guard becoming a straitjacket.
+    #[test]
+    fn add_del_fills_are_saturated_enough_to_read_as_colour() {
+        fn saturation(c: Color) -> f32 {
+            let Color::Rgb(r, g, b) = c else {
+                panic!("palette fills must be explicit rgb");
+            };
+            let (hi, lo) = (r.max(g).max(b), r.min(g).min(b));
+            if hi == 0 {
+                return 0.0;
+            }
+            (hi - lo) as f32 / hi as f32
+        }
+        for theme in [Theme::Dark, Theme::Light] {
+            let p = Palette::for_theme(theme);
+            for (name, c) in [("add_bg", p.add_bg), ("del_bg", p.del_bg)] {
+                assert!(
+                    saturation(c) > 0.13,
+                    "{theme:?} {name} is too desaturated to read as a colour"
+                );
+            }
+        }
+    }
 
     #[test]
     fn dark_palette_add_bg_differs_from_del_bg() {
